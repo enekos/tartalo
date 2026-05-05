@@ -876,27 +876,28 @@ func (g *Generator) emitForRange(s *ast.ForStmt, r *ast.RangeExpr) {
 	end := g.compileExpr(r.End)
 	g.writeLines(start.prologue)
 	g.writeLines(end.prologue)
-	g.writeLine(fmt.Sprintf("%s=%s", shName(s.Var), start.assignmentRHS()))
+	vname := shName(s.Var)
+	g.writeLine(vname + "=" + start.assignmentRHS())
 	// Inline simple end bounds (constants or bare identifiers) to avoid an
 	// extra temp variable. Complex expressions still need a temp.
 	if lit, ok := r.End.(*ast.IntLit); ok {
-		g.writeLine(fmt.Sprintf("while [ \"$%s\" -lt %d ]; do", shName(s.Var), lit.Value))
+		g.writeLine("while [ \"$" + vname + "\" -lt " + itoa64(lit.Value) + " ]; do")
 	} else if id, ok := r.End.(*ast.Ident); ok {
 		name := shName(id.Name)
 		if sym := g.info.Uses[id]; sym != nil && sym.Module != nil {
 			name = shName(checker.MangledName(sym.Module, sym.Name))
 		}
-		g.writeLine(fmt.Sprintf("while [ \"$%s\" -lt \"$%s\" ]; do", shName(s.Var), name))
+		g.writeLine("while [ \"$" + vname + "\" -lt \"$" + name + "\" ]; do")
 	} else {
 		endVar := g.tmp("end")
-		g.writeLine(fmt.Sprintf("%s=%s", endVar, end.assignmentRHS()))
-		g.writeLine(fmt.Sprintf("while [ \"$%s\" -lt \"$%s\" ]; do", shName(s.Var), endVar))
+		g.writeLine(endVar + "=" + end.assignmentRHS())
+		g.writeLine("while [ \"$" + vname + "\" -lt \"$" + endVar + "\" ]; do")
 	}
 	g.indent++
 	for _, st := range s.Body.Stmts {
 		g.emitStmt(st)
 	}
-	g.writeLine(fmt.Sprintf("%s=$((%s + 1))", shName(s.Var), shName(s.Var)))
+	g.writeLine(vname + "=$((" + vname + " + 1))")
 	g.indent--
 	g.writeLine("done")
 }
