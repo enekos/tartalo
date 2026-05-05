@@ -773,18 +773,12 @@ func (g *Generator) emitExprStmt(x ast.Expr) {
 		g.writeLines(v.prologue)
 		// builtins that compile to a single statement put it in prologue and
 		// leave value empty; for non-void calls used as a statement we just
-		// drop the result.
-		if v.value != "" {
-			// e.g. the callee is a non-void function whose result is discarded
-			g.writeLine(fmt.Sprintf("# discard: %s", v.value))
-		}
+		// drop the result. No extra output needed.
 		return
 	}
 	v := g.compileExpr(x)
 	g.writeLines(v.prologue)
-	if v.value != "" {
-		g.writeLine(fmt.Sprintf(": %s # discarded value", v.value))
-	}
+	// Discarded values need no runtime action.
 }
 
 // --- expression compilation -------------------------------------------------
