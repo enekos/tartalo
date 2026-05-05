@@ -125,7 +125,7 @@ func TestStringInterpolation(t *testing.T) {
 func TestForLines(t *testing.T) {
 	sh := compile(t, `
 		func main(): void {
-			for line in ` + "`printf 'a\\nb\\nc\\n'`" + ` {
+			for line in `+"`printf 'a\\nb\\nc\\n'`"+` {
 				echo("got: " + line)
 			}
 		}

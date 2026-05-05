@@ -9,8 +9,13 @@ func parseOrZero(s: string): float {
   return f ?? 0.0
 }
 
-func sum(acc: float, n: float): float { return acc + n }
-func nonzero(n: float): bool { return n != 0.0 }
+func sum(acc: float, n: float): float {
+  return acc + n
+}
+
+func nonzero(n: float): bool {
+  return n != 0.0
+}
 
 func main(): void {
   // Build the input list: prefer args(), fall back to stdin tokens.

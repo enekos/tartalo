@@ -536,7 +536,7 @@ func patternToShCase(p ast.Pattern) string {
 }
 
 // shSingleQuote wraps `s` in single quotes, escaping any embedded single-quote
-// using the standard `'\''` close-reopen idiom. The resulting string matches
+// using the standard `'\”` close-reopen idiom. The resulting string matches
 // `s` literally inside any sh context that interprets glob metacharacters.
 func shSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -1932,7 +1932,7 @@ func (g *Generator) compileSkip(args []exprValue, prologue []string) exprValue {
 
 // escForSingleQuoted escapes text so it can sit inside a single-quoted shell
 // string. POSIX sh has no single-quote escape, so we close-quote, insert an
-// escaped quote, and re-open: `'` → `'\''`.
+// escaped quote, and re-open: `'` → `'\”`.
 func escForSingleQuoted(s string) string {
 	return strings.ReplaceAll(s, "'", `'\''`)
 }

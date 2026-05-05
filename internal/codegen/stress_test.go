@@ -30,7 +30,7 @@ func TestCommandSubstitutionInUserData(t *testing.T) {
 		func main(): void {
 			let s = "$(echo PWNED)"
 			echo(s)
-			let s2 = "` + "`" + `echo PWNED2` + "`" + `"
+			let s2 = "`+"`"+`echo PWNED2`+"`"+`"
 			echo(s2)
 		}
 	`)

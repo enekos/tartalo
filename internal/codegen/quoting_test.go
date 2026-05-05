@@ -12,7 +12,7 @@ func TestNoInjectionViaCommandLiteralInterpolation(t *testing.T) {
 	sh := compile(t, `
 		func main(): void {
 			let evil = "; echo PWNED"
-			let out = ` + "`" + `printf '%s\n' ${evil}` + "`" + `
+			let out = `+"`"+`printf '%s\n' ${evil}`+"`"+`
 			echo("got: " + out)
 		}
 	`)
@@ -31,7 +31,7 @@ func TestNoInjectionViaCommandLiteralInterpolation(t *testing.T) {
 func TestNoInjectionViaArrayElement(t *testing.T) {
 	sh := compile(t, `
 		func main(): void {
-			let xs = ["safe", "$(echo PWNED)", "` + "`" + `echo PWNED2` + "`" + `"]
+			let xs = ["safe", "$(echo PWNED)", "`+"`"+`echo PWNED2`+"`"+`"]
 			for x in xs {
 				echo("- " + x)
 			}

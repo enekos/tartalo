@@ -28,7 +28,9 @@ func main(): void {
 
   for path in fields {
     let p = path
-    if !startsWith(p, ".") { p = "." + p }
+    if !startsWith(p, ".") {
+      p = "." + p
+    }
     echo(p + " = " + (jsonGet(r.body, p) ?? "<missing>"))
   }
 }

@@ -98,8 +98,8 @@ type moduleEnv struct {
 
 // Checker is the type-checker driver.
 type Checker struct {
-	info  *TypeInfo
-	errs  []error
+	info *TypeInfo
+	errs []error
 
 	// Shared, populated once at construction.
 	predeclTypes map[string]types.Type

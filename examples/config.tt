@@ -4,14 +4,14 @@
 type Config = {
   host: string,
   port: number,
-  apiKey: string?,    // truly optional — no sensible default
+  apiKey: string?,  // truly optional — no sensible default
   debug: bool,
 }
 
 func loadConfig(): Config {
   let host = env("HOST") ?? "localhost"
   let port = num(env("PORT") ?? "8080")
-  let key = env("API_KEY")     // string?
+  let key = env("API_KEY")  // string?
   let debug = (env("DEBUG") ?? "0") == "1"
   return Config{host: host, port: port, apiKey: key, debug: debug}
 }

@@ -593,15 +593,15 @@ func (p *Parser) parseReturn() *ast.ReturnStmt {
 
 // Precedence levels — higher binds tighter.
 const (
-	precLowest    = iota
-	precCoalesce  // ??
-	precOr        // ||
-	precAnd       // &&
-	precEq        // == !=
-	precCmp       // < <= > >=
-	precRange     // ..
-	precAdd       // + -
-	precMul       // * / %
+	precLowest   = iota
+	precCoalesce // ??
+	precOr       // ||
+	precAnd      // &&
+	precEq       // == !=
+	precCmp      // < <= > >=
+	precRange    // ..
+	precAdd      // + -
+	precMul      // * / %
 	precUnary
 	precCall
 )
@@ -733,7 +733,7 @@ func (p *Parser) parsePrimary() ast.Expr {
 		// Detect a typed record literal: `Name{` followed by `Ident :` or `}`.
 		// Anything else is just an identifier reference.
 		if p.peekAhead(1).Kind == token.LBrace && p.looksLikeRecordLit(2) {
-			p.advance() // ident
+			p.advance()       // ident
 			lb := p.advance() // {
 			return p.parseRecordLitBody(lb.Pos, t.Value, t.Pos)
 		}

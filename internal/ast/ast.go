@@ -241,11 +241,11 @@ func (s *IfStmt) stmtNode()      {}
 // CmdLit (line-by-line) or any other Expr that resolves to a string at v0
 // (lines split on newline).
 type ForStmt struct {
-	KwPos token.Pos
-	Var   string
+	KwPos  token.Pos
+	Var    string
 	VarPos token.Pos
-	Iter  Expr
-	Body  *Block
+	Iter   Expr
+	Body   *Block
 }
 
 func (s *ForStmt) Pos() token.Pos { return s.KwPos }
@@ -375,7 +375,7 @@ type StringChunk struct {
 func (e *StringChunk) Pos() token.Pos { return e.LitPos }
 func (e *StringChunk) exprNode()      {}
 
-// CmdLit is a command literal `` `cmd args ${x}` `` whose value is the trimmed
+// CmdLit is a command literal “ `cmd args ${x}` “ whose value is the trimmed
 // stdout of the command. Composed the same way as StringLit.
 type CmdLit struct {
 	LitPos token.Pos

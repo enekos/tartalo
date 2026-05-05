@@ -38,77 +38,78 @@ func trace(r any) string {
 // that the front-end should reject without crashing. The test asserts that:
 //   - we get an error (parse never succeeds), OR
 //   - we get no error (some inputs are surprisingly legal, that's fine).
+//
 // The single thing we DO NOT tolerate is a panic.
 var malformedSources = []string{
-	"",                           // empty input
-	" ",                          // whitespace only
-	"\n\n\n",                     // newlines only
-	"// comment only\n",          // comment only
-	"func",                       // bare keyword
-	"func main",                  // missing parens
-	"func main(",                 // unterminated params
-	"func main()",                // missing return
-	"func main(): void",          // missing body
-	"func main(): void {",        // unterminated body
-	"func main(): void {}",       // OK actually
-	"let",                        // bare let
-	"let x",                      // missing =
-	"let x =",                    // missing value
-	"let x: =",                   // missing type
-	"let x: number = ",           // missing rhs
-	"let x: number = 1 + ",       // unterminated expression
-	"let x: number = (((",        // unbalanced parens
-	"let x: number = ((1)+(2",    // unbalanced parens
-	"let x: string = \"unterm",   // unterminated string
-	"let x: string = \"a${\"",    // unterminated interp
-	"let x: string = `unterm",    // unterminated cmd
-	"let x: string = \"\\q\"",    // unknown escape
-	"let x: number = 0..10",      // range outside for
-	"let x: bool = true && && false", // double-op
-	"if {}",                      // missing condition
-	"if true {",                  // unterminated then
-	"if true {} else",            // missing else body
-	"if true {} else if",         // unterminated else-if
-	"for {}",                     // missing iter
-	"for x in {}",                // missing iter expr
-	"match {}",                   // missing subject
-	"match 1 {",                  // unterminated arms
-	"match 1 { 1 }",              // missing =>
-	"match 1 { 1 => }",           // missing body
-	"type",                       // bare keyword
-	"type Foo",                   // missing =
-	"type Foo =",                 // missing body
-	"type Foo = {",               // unterminated
-	"type Foo = { a: }",          // missing field type
-	"import",                     // bare keyword
-	"import {",                   // unterminated
-	"import { a }",               // missing from
-	"import { a } from",          // missing path
-	"import { a } from x",        // path not a string
-	"export",                     // bare keyword
-	"func f(): void { return ",   // unterminated return
-	"func f(): void { let x = }", // empty rhs
-	"func f(): void { x = }",     // empty rhs in assign
-	"func f(): void { x. }",      // missing field name
-	"func f(): void { x[ }",      // unterminated index
-	"func f(): void { f() }",     // ok
-	"func f(): void { f( }",      // unterminated call
-	"func f(): void { f(,) }",    // empty arg before comma
-	"let x: T??",                 // double optional in v0
-	"let x: string?? = null",     // double optional with assign
-	"let x: T[][]?",              // ok grammatically; may reject in checker
-	"let x: T?[]",                // optional-array
-	"let x = null",               // bare null inference (rejected in checker)
-	"let x: string? = null!",     // unwrap of literal null (compile-time? runtime?)
-	"func f(): void {} func f(): void {}", // duplicate funcs
+	"",                                     // empty input
+	" ",                                    // whitespace only
+	"\n\n\n",                               // newlines only
+	"// comment only\n",                    // comment only
+	"func",                                 // bare keyword
+	"func main",                            // missing parens
+	"func main(",                           // unterminated params
+	"func main()",                          // missing return
+	"func main(): void",                    // missing body
+	"func main(): void {",                  // unterminated body
+	"func main(): void {}",                 // OK actually
+	"let",                                  // bare let
+	"let x",                                // missing =
+	"let x =",                              // missing value
+	"let x: =",                             // missing type
+	"let x: number = ",                     // missing rhs
+	"let x: number = 1 + ",                 // unterminated expression
+	"let x: number = (((",                  // unbalanced parens
+	"let x: number = ((1)+(2",              // unbalanced parens
+	"let x: string = \"unterm",             // unterminated string
+	"let x: string = \"a${\"",              // unterminated interp
+	"let x: string = `unterm",              // unterminated cmd
+	"let x: string = \"\\q\"",              // unknown escape
+	"let x: number = 0..10",                // range outside for
+	"let x: bool = true && && false",       // double-op
+	"if {}",                                // missing condition
+	"if true {",                            // unterminated then
+	"if true {} else",                      // missing else body
+	"if true {} else if",                   // unterminated else-if
+	"for {}",                               // missing iter
+	"for x in {}",                          // missing iter expr
+	"match {}",                             // missing subject
+	"match 1 {",                            // unterminated arms
+	"match 1 { 1 }",                        // missing =>
+	"match 1 { 1 => }",                     // missing body
+	"type",                                 // bare keyword
+	"type Foo",                             // missing =
+	"type Foo =",                           // missing body
+	"type Foo = {",                         // unterminated
+	"type Foo = { a: }",                    // missing field type
+	"import",                               // bare keyword
+	"import {",                             // unterminated
+	"import { a }",                         // missing from
+	"import { a } from",                    // missing path
+	"import { a } from x",                  // path not a string
+	"export",                               // bare keyword
+	"func f(): void { return ",             // unterminated return
+	"func f(): void { let x = }",           // empty rhs
+	"func f(): void { x = }",               // empty rhs in assign
+	"func f(): void { x. }",                // missing field name
+	"func f(): void { x[ }",                // unterminated index
+	"func f(): void { f() }",               // ok
+	"func f(): void { f( }",                // unterminated call
+	"func f(): void { f(,) }",              // empty arg before comma
+	"let x: T??",                           // double optional in v0
+	"let x: string?? = null",               // double optional with assign
+	"let x: T[][]?",                        // ok grammatically; may reject in checker
+	"let x: T?[]",                          // optional-array
+	"let x = null",                         // bare null inference (rejected in checker)
+	"let x: string? = null!",               // unwrap of literal null (compile-time? runtime?)
+	"func f(): void {} func f(): void {}",  // duplicate funcs
 	"let x: number = 1; let x: number = 2", // duplicate globals
 	`func main(): void { match "x" { 1 => echo("oops") } }`, // type-mismatched pattern
-	"!!!",                        // sequence of operators
-	"...",                        // dots
-	"=>=>",                       // arrows
-	"\x00\x01\x02",               // control bytes
-	"// \xff\xfe garbage\n",      // invalid UTF-8 in comment
-	`"\xff"`,                     // invalid UTF-8 in string
+	"!!!",                   // sequence of operators
+	"...",                   // dots
+	"=>=>",                  // arrows
+	"\x00\x01\x02",          // control bytes
+	"// \xff\xfe garbage\n", // invalid UTF-8 in comment
+	`"\xff"`,                // invalid UTF-8 in string
 }
 
 func TestParserDoesNotPanicOnMalformedInputs(t *testing.T) {

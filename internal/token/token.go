@@ -46,18 +46,18 @@ const (
 	TyVoid
 
 	// operators / punctuation
-	Assign  // =
-	Plus    // +
-	Minus   // -
-	Star    // *
-	Slash   // /
-	Percent // %
-	Eq      // ==
-	Neq     // !=
-	Lt      // <
-	Lte     // <=
-	Gt      // >
-	Gte     // >=
+	Assign   // =
+	Plus     // +
+	Minus    // -
+	Star     // *
+	Slash    // /
+	Percent  // %
+	Eq       // ==
+	Neq      // !=
+	Lt       // <
+	Lte      // <=
+	Gt       // >
+	Gte      // >=
 	AndAnd   // &&
 	OrOr     // ||
 	Coalesce // ?? (null-coalesce)

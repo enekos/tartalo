@@ -22,7 +22,7 @@ const (
 )
 
 type frame struct {
-	mode    mode
+	mode mode
 	// For modeCode frames started by `${`, braceDepth tracks nested `{` so that
 	// the matching `}` ends the interpolation rather than a block.
 	braceDepth int
@@ -78,8 +78,8 @@ func (l *Lexer) Comments() []token.Comment { return l.comments }
 
 func (l *Lexer) top() *frame { return &l.stack[len(l.stack)-1] }
 
-func (l *Lexer) push(m mode)  { l.stack = append(l.stack, frame{mode: m}) }
-func (l *Lexer) pop()         { l.stack = l.stack[:len(l.stack)-1] }
+func (l *Lexer) push(m mode) { l.stack = append(l.stack, frame{mode: m}) }
+func (l *Lexer) pop()        { l.stack = l.stack[:len(l.stack)-1] }
 
 func (l *Lexer) atEOF() bool { return l.pos >= len(l.src) }
 
