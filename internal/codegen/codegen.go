@@ -384,20 +384,26 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 			// see the safe default — null for optional, empty for everything
 			// else — instead of stale state from a previous call (or, with
 			// `set -u`, an "unbound variable" abort).
+			// When every path returns explicitly we can skip the init.
+			needsInit := !allPathsReturn(fd.Body.Stmts)
 			switch r := ft.Result.(type) {
 			case *types.Optional:
-				g.writeLine(`__ret=""`)
-				g.writeLine(`__ret__null=1`)
+				if needsInit {
+					g.writeLine(`__ret=""`)
+					g.writeLine(`__ret__null=1`)
+				}
 				_ = r
 			case *types.Record:
-				for _, f := range r.Fields {
-					g.writeLine(fmt.Sprintf(`__ret__%s=""`, f.Name))
-					if _, isOpt := f.Type.(*types.Optional); isOpt {
-						g.writeLine(fmt.Sprintf(`__ret__%s__null=1`, f.Name))
+				if needsInit {
+					for _, f := range r.Fields {
+						g.writeLine(fmt.Sprintf(`__ret__%s=""`, f.Name))
+						if _, isOpt := f.Type.(*types.Optional); isOpt {
+							g.writeLine(fmt.Sprintf(`__ret__%s__null=1`, f.Name))
+						}
 					}
 				}
 			default:
-				if ft.Result != types.Void {
+				if ft.Result != types.Void && needsInit {
 					g.writeLine(`__ret=""`)
 				}
 			}
@@ -438,6 +444,27 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	}
 	g.indent--
 	g.writeLine("}")
+}
+
+// allPathsReturn reports whether every execution path through stmts ends with
+// a return statement. It is conservative: returns inside loops or match
+// statements are not considered guaranteed.
+func allPathsReturn(stmts []ast.Stmt) bool {
+	for _, s := range stmts {
+		switch s := s.(type) {
+		case *ast.ReturnStmt:
+			return true
+		case *ast.IfStmt:
+			if allPathsReturn(s.Then.Stmts) && s.Else != nil && allPathsReturn(s.Else.Stmts) {
+				return true
+			}
+		case *ast.Block:
+			if allPathsReturn(s.Stmts) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // paramType resolves the parameter's tartalo type by consulting the function
