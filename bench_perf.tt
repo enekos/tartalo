@@ -1,0 +1,65 @@
+// Benchmark script for codegen and runtime performance
+
+type Point = { x: number, y: number }
+
+func fib(n: number): number {
+  if n <= 1 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+
+func sumArray(xs: number[]): number {
+  let total = 0
+  for x in xs {
+    total = total + x
+  }
+  return total
+}
+
+func buildStrings(n: number): string {
+  let result = ""
+  for i in 0..n {
+    result = result + "a"
+  }
+  return result
+}
+
+func main(): void {
+  // Test recursion
+  let f10 = fib(10)
+
+  // Test array operations
+  let xs: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  let s = sumArray(xs)
+
+  // Test string concatenation
+  let str10 = buildStrings(10)
+
+  // Test conditionals
+  let maxVal = 0
+  for i in 0..100 {
+    if i > maxVal {
+      maxVal = i
+    }
+  }
+
+  // Test records
+  let p = Point{ x: 10, y: 20 }
+  let dist = p.x + p.y
+
+  // Use all variables
+  let ok = false
+  if f10 == 55 {
+    if s == 55 {
+      if len(str10) == 10 {
+        if maxVal == 99 {
+          if dist == 30 {
+            ok = true
+          }
+        }
+      }
+    }
+  }
+  if ok {
+    echo("ok")
+  }
+}
