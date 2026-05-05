@@ -54,6 +54,10 @@ type Generator struct {
 	// known source location on a non-zero exit. Opt-in: it ~doubles the line
 	// count of generated sh, so it's only useful when debugging.
 	trace bool
+
+	// needsArgv tracks whether the emitted script calls the `args()` builtin.
+	// When false the `__tt_argv` snapshot is omitted, shrinking the output.
+	needsArgv bool
 }
 
 func New(info *checker.TypeInfo) *Generator {
@@ -181,7 +185,16 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		g.emitTestFunctions(entry)
 		g.emitTestHarness(entry)
 	}
-	return g.out.String()
+	result := g.out.String()
+	if !g.needsArgv {
+		idx := strings.Index(result, "__tt_argv=")
+		if idx >= 0 {
+			start := strings.LastIndexByte(result[:idx], '\n') + 1
+			end := idx + strings.IndexByte(result[idx:], '\n')
+			result = result[:start] + result[end+1:]
+		}
+	}
+	return result
 }
 
 // emitTestFunctions emits one sh function per `test "..."` declaration in the
@@ -2381,6 +2394,7 @@ func (g *Generator) compileStat(args []exprValue, prologue []string) exprValue {
 // compileArgs returns the script's positional args as a string array. The
 // `__tt_argv` global was populated at script entry by EmitModules.
 func (g *Generator) compileArgs(prologue []string) exprValue {
+	g.needsArgv = true
 	return exprValue{prologue: prologue, value: "${__tt_argv}", form: formStr}
 }
 
