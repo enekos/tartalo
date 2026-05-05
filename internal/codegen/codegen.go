@@ -1674,17 +1674,28 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		return exprValue{prologue: prologue, value: t, form: formArith}
 	case "len":
 		t := g.tmp("len")
-		argTmp := g.tmp("s")
-		prologue = append(prologue, fmt.Sprintf("%s=%s", argTmp, args[0].assignmentRHS()))
 		if _, isArr := argTypes[0].(*types.Array); isArr {
 			// Arrays serialize as newline-joined strings, so the length is the
 			// line count — with an empty-array short-circuit since `wc -l` on
 			// "" still reports 1.
+			argTmp := g.tmp("s")
+			prologue = append(prologue, fmt.Sprintf("%s=%s", argTmp, args[0].assignmentRHS()))
 			prologue = append(prologue,
 				fmt.Sprintf(`if [ -z "$%s" ]; then %s=0; else %s=$(printf '%%s\n' "$%s" | awk 'END{print NR}'); fi`,
 					argTmp, t, t, argTmp))
 		} else {
-			prologue = append(prologue, fmt.Sprintf("%s=${#%s}", t, argTmp))
+			// For a simple string variable we can read ${#name} directly;
+			// otherwise snapshot into a temp first.
+			v := args[0].value
+			if args[0].form == formStr && args[0].nullCheck == "" && len(args[0].prologue) == 0 &&
+				strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") && !strings.Contains(v[2:len(v)-1], "{") {
+				name := v[2 : len(v)-1]
+				prologue = append(prologue, fmt.Sprintf("%s=${#%s}", t, name))
+			} else {
+				argTmp := g.tmp("s")
+				prologue = append(prologue, fmt.Sprintf("%s=%s", argTmp, args[0].assignmentRHS()))
+				prologue = append(prologue, fmt.Sprintf("%s=${#%s}", t, argTmp))
+			}
 		}
 		return exprValue{prologue: prologue, value: t, form: formArith}
 	case "env":
