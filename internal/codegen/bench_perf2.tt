@@ -1,0 +1,14 @@
+// More comprehensive benchmark script
+
+func sumTo(n: number): number {
+  let total = 0
+  for i in 0..n {
+    total = total + i
+  }
+  return total
+}
+
+func main(): void {
+  let n = 10
+  echo("sum(1.." + str(n) + ") = " + str(sumTo(n)))
+}

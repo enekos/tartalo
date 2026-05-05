@@ -686,6 +686,30 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 	if g.tryEmitInlineArray(d.Value, target, declPrefix) {
 		return
 	}
+	// Fast path for simple literals — skip compileExpr entirely.
+	switch val := d.Value.(type) {
+	case *ast.IntLit:
+		g.writeLine(declPrefix + target + "=" + fmt.Sprintf("%d", val.Value))
+		return
+	case *ast.BoolLit:
+		v := "0"
+		if val.Value {
+			v = "1"
+		}
+		g.writeLine(declPrefix + target + "=" + v)
+		return
+	case *ast.StringLit:
+		if len(val.Parts) == 0 {
+			g.writeLine(declPrefix + target + `=""`)
+			return
+		}
+		if len(val.Parts) == 1 {
+			if chunk, ok := val.Parts[0].(*ast.StringChunk); ok {
+				g.writeLine(declPrefix + target + `="` + escapeForDoubleQuoted(chunk.Value) + `"`)
+				return
+			}
+		}
+	}
 	v := g.compileExpr(d.Value)
 	g.writeLines(v.prologue)
 	g.writeLine(fmt.Sprintf("%s%s=%s", declPrefix, target, v.assignmentRHS()))
