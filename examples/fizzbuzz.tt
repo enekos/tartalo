@@ -1,0 +1,15 @@
+// classic fizzbuzz, demonstrating loops, conditionals, and arithmetic.
+
+func main(): void {
+  for i in 1..16 {
+    if i % 15 == 0 {
+      echo("FizzBuzz")
+    } else if i % 3 == 0 {
+      echo("Fizz")
+    } else if i % 5 == 0 {
+      echo("Buzz")
+    } else {
+      echo(str(i))
+    }
+  }
+}

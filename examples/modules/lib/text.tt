@@ -1,0 +1,25 @@
+// Reusable text utilities. Anything not prefixed with `export` stays private
+// to this module.
+
+export type Tag = {
+  name: string,
+  value: string,
+}
+
+// Render a Tag as `name=value`.
+export func renderTag(t: Tag): string {
+  return t.name + "=" + t.value
+}
+
+// Repeat a string n times. Internal helper, not exported.
+func repeatBuf(s: string, n: number): string {
+  let out = ""
+  for i in 0..n {
+    out = out + s
+  }
+  return out
+}
+
+export func indent(s: string, n: number): string {
+  return repeatBuf(" ", n) + s
+}

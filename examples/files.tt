@@ -1,0 +1,29 @@
+// files.tt — survey a directory: count files by extension, print sizes.
+
+func main(): void {
+  let dir = env("DIR") ?? "."
+  if !isDir(dir) {
+    eprint("not a directory: " + dir)
+    exit(1)
+  }
+
+  echo("scanning " + dir)
+  let entries = listDir(dir)
+  let total = 0
+
+  for name in entries {
+    let path = pathJoin(dir, name)
+    if isFile(path) {
+      let r = exec("wc -c < '" + path + "'")
+      let bytes = num(trim(r.stdout))
+      total = total + bytes
+      let ext = extname(name)
+      if ext == "" {
+        ext = "(no extension)"
+      }
+      echo(str(bytes) + "\t" + ext + "\t" + name)
+    }
+  }
+  echo("---")
+  echo("total: " + str(total) + " bytes across " + str(len(entries)) + " entries")
+}

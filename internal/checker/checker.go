@@ -1,0 +1,1214 @@
+// Package checker resolves names, validates type annotations, and infers a
+// type for every expression in the AST. It produces a TypeInfo side table that
+// the code generator consults when emitting shell.
+//
+// With modules, each input file has its own value and type-name namespaces.
+// Imports inject specific symbols from one module's namespace into another.
+// Predeclared types (Response, Process) and builtin functions live in shared
+// scopes that each module's namespaces parent into.
+package checker
+
+import (
+	"fmt"
+
+	"github.com/enekosarasola/tartalo/internal/ast"
+	"github.com/enekosarasola/tartalo/internal/loader"
+	"github.com/enekosarasola/tartalo/internal/token"
+	"github.com/enekosarasola/tartalo/internal/types"
+)
+
+// Symbol represents a named binding (variable, parameter, function).
+//
+// Top-level symbols (functions and globals) carry the *Module they were
+// declared in so the codegen can mangle their shell name to avoid cross-module
+// collisions. Locals and params have a nil Module — they don't need mangling.
+type Symbol struct {
+	Name      string
+	Type      types.Type
+	IsConst   bool
+	IsParam   bool
+	IsFunc    bool
+	IsBuiltin bool
+	IsExport  bool
+	Module    *loader.Module
+	DeclPos   token.Pos
+}
+
+// TypeInfo records the result of checking. Other passes consult it.
+//
+// Decls indexes top-level functions and globals across ALL modules. The map
+// key is the module-mangled name (`__mN__name` for non-entry modules) so the
+// codegen can do simple lookups; for the single-file convenience case the
+// mangling reduces to just `name`.
+//
+// Assigns maps each `name = expr` and `target.field = expr` statement to the
+// resolved symbol of its left-hand side, so the codegen can pick the right
+// shell-name (mangling, `__null` sidecar, etc.) without re-walking scopes.
+type TypeInfo struct {
+	Types   map[ast.Expr]types.Type
+	Uses    map[*ast.Ident]*Symbol
+	Decls   map[string]*Symbol
+	Assigns map[*ast.AssignStmt]*Symbol
+}
+
+func newTypeInfo() *TypeInfo {
+	return &TypeInfo{
+		Types:   map[ast.Expr]types.Type{},
+		Uses:    map[*ast.Ident]*Symbol{},
+		Decls:   map[string]*Symbol{},
+		Assigns: map[*ast.AssignStmt]*Symbol{},
+	}
+}
+
+// scope is a lexical name lookup chain.
+type scope struct {
+	parent *scope
+	syms   map[string]*Symbol
+}
+
+func newScope(parent *scope) *scope {
+	return &scope{parent: parent, syms: map[string]*Symbol{}}
+}
+
+func (s *scope) define(sym *Symbol) bool {
+	if _, exists := s.syms[sym.Name]; exists {
+		return false
+	}
+	s.syms[sym.Name] = sym
+	return true
+}
+
+func (s *scope) resolve(name string) *Symbol {
+	for cur := s; cur != nil; cur = cur.parent {
+		if sym, ok := cur.syms[name]; ok {
+			return sym
+		}
+	}
+	return nil
+}
+
+// moduleEnv is the per-module checker state: its top-level value scope, its
+// type-name namespace (own + imported + predeclared via parent chain), and a
+// link back to the loader module.
+type moduleEnv struct {
+	module    *loader.Module
+	scope     *scope
+	typeNames map[string]types.Type
+}
+
+// Checker is the type-checker driver.
+type Checker struct {
+	info  *TypeInfo
+	errs  []error
+
+	// Shared, populated once at construction.
+	predeclTypes map[string]types.Type
+	builtinScope *scope
+
+	// Per-module state, keyed by *loader.Module pointer.
+	envs map[*loader.Module]*moduleEnv
+
+	// Current-function state.
+	current    *scope
+	currentMod *loader.Module
+	currentRet types.Type
+}
+
+func New() *Checker {
+	c := &Checker{
+		info:         newTypeInfo(),
+		predeclTypes: map[string]types.Type{},
+		builtinScope: newScope(nil),
+		envs:         map[*loader.Module]*moduleEnv{},
+	}
+	for _, r := range builtinTypes() {
+		c.predeclTypes[r.Name] = r
+	}
+	for _, b := range builtins() {
+		c.builtinScope.define(b)
+	}
+	for _, b := range builtinsWithTypes(c.predeclTypes) {
+		c.builtinScope.define(b)
+	}
+	return c
+}
+
+// CheckFile is a convenience wrapper for the single-file case (used by tests
+// and by callers that don't need module resolution). It synthesises a Module
+// with the file as its only content.
+func (c *Checker) CheckFile(f *ast.File) (*TypeInfo, []error) {
+	m := &loader.Module{File: f, IsEntry: true}
+	return c.Check([]*loader.Module{m})
+}
+
+// Check accepts modules in topological order (dependencies before
+// dependents) and returns the populated TypeInfo plus accumulated errors.
+func (c *Checker) Check(modules []*loader.Module) (*TypeInfo, []error) {
+	if len(modules) == 0 {
+		return c.info, nil
+	}
+
+	// Pass 0: build the per-module env for each module.
+	for _, m := range modules {
+		env := &moduleEnv{
+			module:    m,
+			scope:     newScope(c.builtinScope),
+			typeNames: map[string]types.Type{},
+		}
+		c.envs[m] = env
+	}
+
+	// Pass 1a: register placeholder Records for every type decl in every module.
+	// This lets a record's fields reference other records declared later.
+	for _, m := range modules {
+		env := c.envs[m]
+		for _, d := range m.File.Decls {
+			td, ok := d.(*ast.TypeDecl)
+			if !ok {
+				continue
+			}
+			if _, predeclared := c.predeclTypes[td.Name]; predeclared {
+				c.errorf(td.NamePos, "cannot redeclare predeclared type %q", td.Name)
+				continue
+			}
+			if _, exists := env.typeNames[td.Name]; exists {
+				c.errorf(td.NamePos, "redeclaration of type %q in %s", td.Name, moduleLabel(m))
+				continue
+			}
+			env.typeNames[td.Name] = &types.Record{Name: td.Name}
+		}
+	}
+
+	// Pass 1b: import TYPE names from deps. Deps' placeholder records are
+	// already registered (pass 1a), and types-only imports unblock pass 1c.
+	for _, m := range modules {
+		c.resolveTypeImports(m)
+	}
+
+	// Pass 1c: fill in record fields now that all type names (own + imported)
+	// are visible.
+	for _, m := range modules {
+		c.currentMod = m
+		for _, d := range m.File.Decls {
+			if td, ok := d.(*ast.TypeDecl); ok {
+				c.resolveTypeDecl(td)
+			}
+		}
+	}
+
+	// Pass 1d: declare functions in their owning module's scope. Signatures
+	// reference fully-resolved types from pass 1c.
+	for _, m := range modules {
+		c.currentMod = m
+		for _, d := range m.File.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok {
+				c.declareFunc(fd, m)
+			}
+		}
+	}
+
+	// Pass 1e: import VALUE symbols (functions and exported globals). Globals
+	// won't be in the scope yet — only functions and that's enough for body
+	// type-checking; value globals get resolved on use via the dep's scope
+	// after pass 2 populates them. We refresh after pass 2 below where needed.
+	for _, m := range modules {
+		c.resolveValueImports(m)
+	}
+
+	// Pass 2: globals + function bodies, per module in topological order.
+	for _, m := range modules {
+		c.currentMod = m
+		c.current = c.envs[m].scope
+		for _, d := range m.File.Decls {
+			switch d := d.(type) {
+			case *ast.VarDecl:
+				c.checkVarDecl(d, true)
+			case *ast.FuncDecl:
+				c.checkFuncBody(d, m)
+			}
+		}
+	}
+	return c.info, c.errs
+}
+
+// resolveTypeImports brings exported type names from dep modules into m's
+// typeNames. Names that aren't types are silently skipped here — they'll be
+// picked up by resolveValueImports after function declarations exist.
+func (c *Checker) resolveTypeImports(m *loader.Module) {
+	env := c.envs[m]
+	for _, ri := range m.Imports {
+		dep := ri.Module
+		if dep == nil {
+			continue
+		}
+		depEnv := c.envs[dep]
+		for _, n := range ri.Decl.Names {
+			if t := importTypeIfExported(depEnv, dep, n.Name); t != nil {
+				if _, exists := env.typeNames[n.Name]; exists {
+					c.errorf(n.NamePos, "duplicate type name %q in module scope", n.Name)
+					continue
+				}
+				env.typeNames[n.Name] = t
+			}
+		}
+	}
+}
+
+// resolveValueImports brings exported functions and globals into m's scope.
+// Names that didn't resolve as types AND don't resolve as values here are
+// reported as unknown.
+func (c *Checker) resolveValueImports(m *loader.Module) {
+	env := c.envs[m]
+	for _, ri := range m.Imports {
+		dep := ri.Module
+		if dep == nil {
+			continue
+		}
+		depEnv := c.envs[dep]
+		for _, n := range ri.Decl.Names {
+			// If we already imported this as a type, fine — skip the value path.
+			if _, ok := env.typeNames[n.Name]; ok {
+				if isExportedType(dep, n.Name) {
+					continue
+				}
+			}
+			if found := importValueIfExported(depEnv, dep, n.Name); found != nil {
+				if !env.scope.define(found) {
+					c.errorf(n.NamePos, "duplicate name %q in module scope (already imported or declared)", n.Name)
+				}
+				continue
+			}
+			// Nothing matched: report unknown. We only emit this error in the
+			// value pass so that a name that was successfully imported as a
+			// type doesn't trip the diagnostic.
+			if !isExportedType(dep, n.Name) {
+				c.errorf(n.NamePos, "module %q has no exported name %q", ri.Decl.Path, n.Name)
+			}
+		}
+	}
+}
+
+// isExportedType reports whether dep's source declares `export type Name`.
+func isExportedType(dep *loader.Module, name string) bool {
+	for _, d := range dep.File.Decls {
+		if td, ok := d.(*ast.TypeDecl); ok && td.Name == name && td.IsExported {
+			return true
+		}
+	}
+	return false
+}
+
+// importValueIfExported looks up a function/global symbol in the dependency
+// module, returning it iff the corresponding decl was marked `export`. We
+// walk the dep's AST because the env scope contains imported names too, and
+// we want to import only names *originally* declared (and exported) by dep.
+func importValueIfExported(env *moduleEnv, dep *loader.Module, name string) *Symbol {
+	for _, d := range dep.File.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Name == name && d.IsExported {
+				if sym := env.scope.resolveLocal(name); sym != nil {
+					return sym
+				}
+			}
+		case *ast.VarDecl:
+			if d.Name == name && d.IsExported {
+				if sym := env.scope.resolveLocal(name); sym != nil {
+					return sym
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func importTypeIfExported(env *moduleEnv, dep *loader.Module, name string) types.Type {
+	for _, d := range dep.File.Decls {
+		if td, ok := d.(*ast.TypeDecl); ok && td.Name == name && td.IsExported {
+			if t, ok := env.typeNames[name]; ok {
+				return t
+			}
+		}
+	}
+	return nil
+}
+
+// resolveLocal looks up a name only in the immediate scope (no parent walk).
+// Used for import resolution where we want the dep's own symbols, not
+// transitively imported ones, and not builtins.
+func (s *scope) resolveLocal(name string) *Symbol {
+	if sym, ok := s.syms[name]; ok {
+		return sym
+	}
+	return nil
+}
+
+func (c *Checker) errorf(pos token.Pos, format string, args ...any) {
+	c.errs = append(c.errs, fmt.Errorf("%s: %s", pos, fmt.Sprintf(format, args...)))
+}
+
+// resolveTypeName walks a module's typeNames + the predeclared types.
+func (c *Checker) resolveTypeName(name string) types.Type {
+	if c.currentMod != nil {
+		if env := c.envs[c.currentMod]; env != nil {
+			if t, ok := env.typeNames[name]; ok {
+				return t
+			}
+		}
+	}
+	if t, ok := c.predeclTypes[name]; ok {
+		return t
+	}
+	return nil
+}
+
+// resolveTypeDecl fills in the previously-registered placeholder Record.
+func (c *Checker) resolveTypeDecl(td *ast.TypeDecl) {
+	env := c.envs[c.currentMod]
+	target, ok := env.typeNames[td.Name].(*types.Record)
+	if !ok {
+		return
+	}
+	rt, ok := td.Spec.(*ast.RecordType)
+	if !ok {
+		c.errorf(td.NamePos, "type %q must be a record (e.g. `{ a: T, b: U }`)", td.Name)
+		return
+	}
+	seen := map[string]bool{}
+	for _, f := range rt.Fields {
+		if seen[f.Name] {
+			c.errorf(f.NamePos, "duplicate field %q in record %q", f.Name, td.Name)
+			continue
+		}
+		seen[f.Name] = true
+		ft := c.resolveTypeExpr(f.TypeAnn)
+		if !c.isAllowedRecordFieldType(ft) {
+			c.errorf(f.NamePos, "field %q has unsupported type %s; v0 records only support primitive fields",
+				f.Name, types.Format(ft))
+			ft = types.Invalid
+		}
+		target.Fields = append(target.Fields, types.Field{Name: f.Name, Type: ft})
+	}
+}
+
+func (c *Checker) isAllowedRecordFieldType(t types.Type) bool {
+	if t == types.Invalid {
+		return true // already reported; don't cascade
+	}
+	switch t {
+	case types.String, types.Number, types.Bool:
+		return true
+	}
+	// Optional of a primitive is also OK — `nickname: string?` is exactly the
+	// kind of thing optionals exist for.
+	if o, ok := t.(*types.Optional); ok {
+		switch o.Elem {
+		case types.String, types.Number, types.Bool:
+			return true
+		}
+	}
+	return false
+}
+
+// resolveTypeExpr converts an AST type annotation into a types.Type.
+func (c *Checker) resolveTypeExpr(te ast.TypeExpr) types.Type {
+	if te == nil {
+		return types.Invalid
+	}
+	switch t := te.(type) {
+	case *ast.TypeName:
+		if got := types.Lookup(t.Name); got != nil {
+			return got
+		}
+		if got := c.resolveTypeName(t.Name); got != nil {
+			return got
+		}
+		c.errorf(t.NamePos, "unknown type %q", t.Name)
+		return types.Invalid
+	case *ast.ArrayType:
+		elem := c.resolveTypeExpr(t.Elem)
+		if elem == types.Void {
+			c.errorf(t.LBracket, "array element type cannot be void")
+			return types.Invalid
+		}
+		if _, isRec := elem.(*types.Record); isRec {
+			c.errorf(t.LBracket, "v0 does not support arrays of records")
+			return types.Invalid
+		}
+		if _, isOpt := elem.(*types.Optional); isOpt {
+			c.errorf(t.LBracket, "v0 does not support arrays of optionals")
+			return types.Invalid
+		}
+		return &types.Array{Elem: elem}
+	case *ast.OptionalType:
+		elem := c.resolveTypeExpr(t.Elem)
+		if elem == types.Void {
+			c.errorf(t.QPos, "void cannot be made optional")
+			return types.Invalid
+		}
+		if _, ok := elem.(*types.Optional); ok {
+			c.errorf(t.QPos, "type is already optional; `T??` is not allowed")
+			return types.Invalid
+		}
+		if _, ok := elem.(*types.Array); ok {
+			c.errorf(t.QPos, "v0 does not support optional arrays")
+			return types.Invalid
+		}
+		return &types.Optional{Elem: elem}
+	case *ast.RecordType:
+		c.errorf(te.Pos(), "anonymous record types are not supported; declare with `type Name = { ... }`")
+		return types.Invalid
+	}
+	c.errorf(te.Pos(), "unsupported type expression")
+	return types.Invalid
+}
+
+func (c *Checker) declareFunc(fd *ast.FuncDecl, m *loader.Module) {
+	env := c.envs[m]
+	params := make([]types.Type, len(fd.Params))
+	for i, p := range fd.Params {
+		params[i] = c.resolveTypeExpr(p.TypeAnn)
+	}
+	ret := c.resolveTypeExpr(fd.Result)
+	sym := &Symbol{
+		Name:     fd.Name,
+		Type:     &types.Func{Params: params, Result: ret},
+		IsFunc:   true,
+		IsExport: fd.IsExported,
+		Module:   m,
+		DeclPos:  fd.NamePos,
+	}
+	if !env.scope.define(sym) {
+		c.errorf(fd.NamePos, "redeclaration of %q", fd.Name)
+		return
+	}
+	c.info.Decls[mangledName(m, fd.Name)] = sym
+}
+
+// mangledName produces the lookup key used in TypeInfo.Decls and the shell
+// identifier used by codegen. The entry module — and the synthetic
+// single-file module created by CheckFile — keeps unmangled names so the
+// generated sh stays clean for the common case. Imported modules get an
+// `__m<id>__` prefix so their globals can't collide with the entry module's
+// or with each other's.
+func mangledName(m *loader.Module, name string) string {
+	if m == nil || m.IsEntry {
+		return name
+	}
+	return fmt.Sprintf("__m%d__%s", m.ID, name)
+}
+
+// MangledName is the public form, used by codegen.
+func MangledName(m *loader.Module, name string) string { return mangledName(m, name) }
+
+// moduleLabel returns a short human label for a module in error messages.
+func moduleLabel(m *loader.Module) string {
+	if m == nil {
+		return "<synthetic>"
+	}
+	if m.AbsPath != "" {
+		return m.AbsPath
+	}
+	if m.File != nil {
+		return m.File.Path
+	}
+	return "<unknown>"
+}
+
+func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
+	env := c.envs[m]
+	sym := env.scope.resolveLocal(fd.Name)
+	if sym == nil {
+		return
+	}
+	ft := sym.Type.(*types.Func)
+	saved := c.current
+	savedRet := c.currentRet
+	c.current = newScope(env.scope)
+	c.currentRet = ft.Result
+	for i, p := range fd.Params {
+		paramSym := &Symbol{
+			Name:    p.Name,
+			Type:    ft.Params[i],
+			IsParam: true,
+			DeclPos: p.NamePos,
+		}
+		if !c.current.define(paramSym) {
+			c.errorf(p.NamePos, "duplicate parameter %q", p.Name)
+		}
+	}
+	c.checkBlock(fd.Body)
+	c.current = saved
+	c.currentRet = savedRet
+}
+
+func (c *Checker) checkVarDecl(d *ast.VarDecl, isGlobal bool) {
+	// Record-type init shortcut: empty array literal needs the annotated type.
+	var bound types.Type
+	if d.TypeAnn != nil {
+		declared := c.resolveTypeExpr(d.TypeAnn)
+		if al, isArrLit := d.Value.(*ast.ArrayLit); isArrLit && len(al.Elems) == 0 {
+			c.info.Types[al] = declared
+			bound = declared
+			c.bindVar(d, bound, isGlobal)
+			return
+		}
+		got := c.checkExpr(d.Value)
+		if declared != types.Invalid && got != types.Invalid && !types.IsAssignable(got, declared) {
+			c.errorf(d.Value.Pos(),
+				"type mismatch: variable %q declared as %s, initializer is %s",
+				d.Name, types.Format(declared), types.Format(got))
+		}
+		bound = declared
+	} else {
+		got := c.checkExpr(d.Value)
+		switch got {
+		case types.Void:
+			c.errorf(d.Value.Pos(), "cannot infer type for %q: initializer has type void", d.Name)
+			bound = types.Invalid
+		case types.Null:
+			c.errorf(d.Value.Pos(), "cannot infer type for %q from a bare null; add an annotation like `: T?`", d.Name)
+			bound = types.Invalid
+		default:
+			bound = got
+		}
+	}
+	c.bindVar(d, bound, isGlobal)
+}
+
+func (c *Checker) bindVar(d *ast.VarDecl, bound types.Type, isGlobal bool) {
+	sym := &Symbol{
+		Name:     d.Name,
+		Type:     bound,
+		IsConst:  d.IsConst,
+		IsExport: d.IsExported,
+		DeclPos:  d.NamePos,
+	}
+	if isGlobal {
+		sym.Module = c.currentMod
+	}
+	if !c.current.define(sym) {
+		c.errorf(d.NamePos, "redeclaration of %q", d.Name)
+	}
+	if isGlobal {
+		c.info.Decls[mangledName(c.currentMod, d.Name)] = sym
+	}
+}
+
+func (c *Checker) checkBlock(b *ast.Block) {
+	saved := c.current
+	c.current = newScope(saved)
+	for _, s := range b.Stmts {
+		c.checkStmt(s)
+	}
+	c.current = saved
+}
+
+func (c *Checker) checkStmt(s ast.Stmt) {
+	switch s := s.(type) {
+	case *ast.DeclStmt:
+		c.checkVarDecl(s.Decl, false)
+	case *ast.ExprStmt:
+		c.checkExpr(s.X)
+	case *ast.AssignStmt:
+		sym := c.current.resolve(s.Name)
+		if sym == nil {
+			c.errorf(s.NamePos, "undefined name %q", s.Name)
+			c.checkExpr(s.Value)
+			return
+		}
+		c.info.Assigns[s] = sym
+		if sym.IsConst {
+			c.errorf(s.NamePos, "cannot assign to const %q", s.Name)
+		}
+		if sym.IsFunc {
+			c.errorf(s.NamePos, "cannot assign to function %q", s.Name)
+		}
+		got := c.checkExpr(s.Value)
+		if got != types.Invalid && sym.Type != types.Invalid && !types.IsAssignable(got, sym.Type) {
+			c.errorf(s.Value.Pos(),
+				"type mismatch: %q is %s, value is %s",
+				s.Name, types.Format(sym.Type), types.Format(got))
+		}
+	case *ast.ReturnStmt:
+		if s.Value == nil {
+			if c.currentRet != types.Void {
+				c.errorf(s.KwPos, "function returns %s, return statement has no value", types.Format(c.currentRet))
+			}
+			return
+		}
+		got := c.checkExpr(s.Value)
+		if c.currentRet == types.Void {
+			c.errorf(s.Value.Pos(), "void function cannot return a value")
+		} else if got != types.Invalid && c.currentRet != types.Invalid && !types.IsAssignable(got, c.currentRet) {
+			c.errorf(s.Value.Pos(),
+				"return type mismatch: function returns %s, got %s",
+				types.Format(c.currentRet), types.Format(got))
+		}
+	case *ast.IfStmt:
+		ct := c.checkExpr(s.Cond)
+		if ct != types.Invalid && ct != types.Bool {
+			c.errorf(s.Cond.Pos(), "if condition must be bool, got %s", types.Format(ct))
+		}
+		c.checkBlock(s.Then)
+		if s.Else != nil {
+			c.checkBlock(s.Else)
+		}
+	case *ast.ForStmt:
+		var elemTy types.Type
+		switch iter := s.Iter.(type) {
+		case *ast.RangeExpr:
+			st := c.checkExpr(iter.Start)
+			et := c.checkExpr(iter.End)
+			if st != types.Number {
+				c.errorf(iter.Start.Pos(), "range start must be number, got %s", types.Format(st))
+			}
+			if et != types.Number {
+				c.errorf(iter.End.Pos(), "range end must be number, got %s", types.Format(et))
+			}
+			c.info.Types[iter] = types.Number
+			elemTy = types.Number
+		default:
+			ity := c.checkExpr(s.Iter)
+			switch t := ity.(type) {
+			case *types.Array:
+				elemTy = t.Elem
+			case *types.Primitive:
+				if t == types.String {
+					elemTy = types.String
+				} else if t != types.Invalid {
+					c.errorf(s.Iter.Pos(), "for-in iterable must be a range, array, or string, got %s", types.Format(ity))
+					elemTy = types.Invalid
+				} else {
+					elemTy = types.Invalid
+				}
+			default:
+				c.errorf(s.Iter.Pos(), "for-in iterable must be a range, array, or string, got %s", types.Format(ity))
+				elemTy = types.Invalid
+			}
+		}
+		saved := c.current
+		c.current = newScope(saved)
+		c.current.define(&Symbol{Name: s.Var, Type: elemTy, DeclPos: s.VarPos})
+		for _, st := range s.Body.Stmts {
+			c.checkStmt(st)
+		}
+		c.current = saved
+	case *ast.Block:
+		c.checkBlock(s)
+	case *ast.MatchStmt:
+		c.checkMatch(s)
+	case *ast.FieldAssignStmt:
+		tt := c.checkExpr(s.Target)
+		rec, ok := tt.(*types.Record)
+		if !ok {
+			if tt != types.Invalid {
+				c.errorf(s.NamePos, "field assignment requires a record, got %s", types.Format(tt))
+			}
+			c.checkExpr(s.Value)
+			return
+		}
+		f := rec.Lookup(s.Name)
+		if f == nil {
+			c.errorf(s.NamePos, "record %q has no field %q", rec.Name, s.Name)
+			c.checkExpr(s.Value)
+			return
+		}
+		got := c.checkExpr(s.Value)
+		if got != types.Invalid && f.Type != types.Invalid && !types.IsAssignable(got, f.Type) {
+			c.errorf(s.Value.Pos(),
+				"field %q: expected %s, got %s",
+				s.Name, types.Format(f.Type), types.Format(got))
+		}
+	default:
+		c.errorf(s.Pos(), "unhandled statement type %T", s)
+	}
+}
+
+func (c *Checker) checkMatch(s *ast.MatchStmt) {
+	subj := c.checkExpr(s.Subject)
+	if subj != types.Invalid && subj != types.String && subj != types.Number && subj != types.Bool {
+		c.errorf(s.Subject.Pos(), "match subject must be a primitive (string, number, bool), got %s", types.Format(subj))
+	}
+	for _, arm := range s.Cases {
+		for _, pat := range arm.Patterns {
+			c.checkPattern(pat, subj)
+		}
+		c.checkBlock(arm.Body)
+	}
+}
+
+func (c *Checker) checkPattern(p ast.Pattern, subjectTy types.Type) {
+	switch p := p.(type) {
+	case *ast.WildcardPattern:
+		return
+	case *ast.LiteralPattern:
+		var lt types.Type
+		switch lit := p.Lit.(type) {
+		case *ast.IntLit:
+			lt = types.Number
+		case *ast.BoolLit:
+			lt = types.Bool
+		case *ast.StringLit:
+			for _, part := range lit.Parts {
+				if _, ok := part.(*ast.StringChunk); !ok {
+					c.errorf(part.Pos(), "match pattern strings cannot contain interpolations")
+				}
+			}
+			lt = types.String
+		default:
+			c.errorf(p.Pos(), "unsupported literal pattern")
+			return
+		}
+		if subjectTy != types.Invalid && !types.Equal(lt, subjectTy) {
+			c.errorf(p.Pos(), "pattern type %s does not match subject type %s",
+				types.Format(lt), types.Format(subjectTy))
+		}
+		c.info.Types[p.Lit] = lt
+	}
+}
+
+func (c *Checker) checkExpr(e ast.Expr) types.Type {
+	if e == nil {
+		return types.Invalid
+	}
+	t := c.inferExpr(e)
+	c.info.Types[e] = t
+	return t
+}
+
+func (c *Checker) inferExpr(e ast.Expr) types.Type {
+	switch e := e.(type) {
+	case *ast.IntLit:
+		return types.Number
+	case *ast.BoolLit:
+		return types.Bool
+	case *ast.NullLit:
+		return types.Null
+	case *ast.StringChunk:
+		return types.String
+	case *ast.StringLit:
+		for _, p := range e.Parts {
+			pt := c.checkExpr(p)
+			if _, isChunk := p.(*ast.StringChunk); isChunk {
+				continue
+			}
+			if pt != types.String && pt != types.Number && pt != types.Bool && pt != types.Invalid {
+				c.errorf(p.Pos(), "cannot interpolate value of type %s into string", types.Format(pt))
+			}
+		}
+		return types.String
+	case *ast.CmdLit:
+		for _, p := range e.Parts {
+			pt := c.checkExpr(p)
+			if _, isChunk := p.(*ast.StringChunk); isChunk {
+				continue
+			}
+			if pt != types.String && pt != types.Number && pt != types.Bool && pt != types.Invalid {
+				c.errorf(p.Pos(), "cannot interpolate value of type %s into command", types.Format(pt))
+			}
+		}
+		return types.String
+	case *ast.Ident:
+		sym := c.current.resolve(e.Name)
+		if sym == nil {
+			c.errorf(e.NamePos, "undefined name %q", e.Name)
+			return types.Invalid
+		}
+		c.info.Uses[e] = sym
+		if sym.IsFunc {
+			return sym.Type
+		}
+		return sym.Type
+	case *ast.CallExpr:
+		return c.checkCall(e)
+	case *ast.UnaryExpr:
+		ot := c.checkExpr(e.Operand)
+		switch e.Op {
+		case token.Minus:
+			if ot != types.Number && ot != types.Invalid {
+				c.errorf(e.OpPos, "unary - requires number, got %s", types.Format(ot))
+			}
+			return types.Number
+		case token.Bang:
+			if ot != types.Bool && ot != types.Invalid {
+				c.errorf(e.OpPos, "unary ! requires bool, got %s", types.Format(ot))
+			}
+			return types.Bool
+		}
+		c.errorf(e.OpPos, "invalid unary operator %s", e.Op)
+		return types.Invalid
+	case *ast.BinaryExpr:
+		return c.checkBinary(e)
+	case *ast.RangeExpr:
+		c.errorf(e.OpPos, "range expression is only allowed as a for-in iterator")
+		return types.Invalid
+	case *ast.ArrayLit:
+		return c.checkArrayLit(e)
+	case *ast.IndexExpr:
+		return c.checkIndexExpr(e)
+	case *ast.RecordLit:
+		return c.checkRecordLit(e)
+	case *ast.FieldExpr:
+		return c.checkFieldExpr(e)
+	case *ast.CoalesceExpr:
+		return c.checkCoalesce(e)
+	case *ast.UnwrapExpr:
+		return c.checkUnwrap(e)
+	}
+	c.errorf(e.Pos(), "unhandled expression type %T", e)
+	return types.Invalid
+}
+
+func (c *Checker) checkRecordLit(e *ast.RecordLit) types.Type {
+	resolved := c.resolveTypeName(e.TypeName)
+	if resolved == nil {
+		c.errorf(e.NamePos, "unknown type %q", e.TypeName)
+		for _, f := range e.Fields {
+			c.checkExpr(f.Value)
+		}
+		return types.Invalid
+	}
+	rec, ok := resolved.(*types.Record)
+	if !ok {
+		c.errorf(e.NamePos, "%q is not a record type", e.TypeName)
+		return types.Invalid
+	}
+	seen := map[string]bool{}
+	for _, init := range e.Fields {
+		if seen[init.Name] {
+			c.errorf(init.NamePos, "duplicate field %q in record literal", init.Name)
+			c.checkExpr(init.Value)
+			continue
+		}
+		seen[init.Name] = true
+		f := rec.Lookup(init.Name)
+		if f == nil {
+			c.errorf(init.NamePos, "record %q has no field %q", rec.Name, init.Name)
+			c.checkExpr(init.Value)
+			continue
+		}
+		got := c.checkExpr(init.Value)
+		if got != types.Invalid && f.Type != types.Invalid && !types.IsAssignable(got, f.Type) {
+			c.errorf(init.Value.Pos(),
+				"field %q: expected %s, got %s",
+				init.Name, types.Format(f.Type), types.Format(got))
+		}
+	}
+	for _, f := range rec.Fields {
+		if !seen[f.Name] {
+			c.errorf(e.LBrace, "record literal is missing field %q", f.Name)
+		}
+	}
+	return rec
+}
+
+func (c *Checker) checkFieldExpr(e *ast.FieldExpr) types.Type {
+	tt := c.checkExpr(e.Target)
+	rec, ok := tt.(*types.Record)
+	if !ok {
+		if tt != types.Invalid {
+			c.errorf(e.DotPos, "field access requires a record, got %s", types.Format(tt))
+		}
+		return types.Invalid
+	}
+	f := rec.Lookup(e.Name)
+	if f == nil {
+		c.errorf(e.NamePos, "record %q has no field %q", rec.Name, e.Name)
+		return types.Invalid
+	}
+	return f.Type
+}
+
+func (c *Checker) checkCoalesce(e *ast.CoalesceExpr) types.Type {
+	lt := c.checkExpr(e.Lhs)
+	rt := c.checkExpr(e.Rhs)
+	if lt == types.Invalid || rt == types.Invalid {
+		return types.Invalid
+	}
+	opt, ok := lt.(*types.Optional)
+	if !ok {
+		c.errorf(e.OpPos, "?? requires an optional left-hand side, got %s", types.Format(lt))
+		return types.Invalid
+	}
+	// Right side must be assignable to the underlying T, or to the optional itself
+	// (chained nullable defaults).
+	if rt == types.Null {
+		c.errorf(e.Rhs.Pos(), "?? right-hand side cannot be null")
+		return types.Invalid
+	}
+	if !types.Equal(rt, opt.Elem) && !types.Equal(rt, lt) {
+		c.errorf(e.OpPos, "?? type mismatch: left is %s, right is %s",
+			types.Format(lt), types.Format(rt))
+		return types.Invalid
+	}
+	// If the right side is itself optional (T?), result stays optional;
+	// otherwise the result is non-optional T.
+	if types.IsOptional(rt) {
+		return lt
+	}
+	return opt.Elem
+}
+
+func (c *Checker) checkUnwrap(e *ast.UnwrapExpr) types.Type {
+	t := c.checkExpr(e.Operand)
+	if t == types.Invalid {
+		return types.Invalid
+	}
+	opt, ok := t.(*types.Optional)
+	if !ok {
+		c.errorf(e.OpPos, "! requires an optional operand, got %s", types.Format(t))
+		return types.Invalid
+	}
+	return opt.Elem
+}
+
+func (c *Checker) checkArrayLit(e *ast.ArrayLit) types.Type {
+	if len(e.Elems) == 0 {
+		c.errorf(e.LBracket, "cannot infer type of empty array literal; add an annotation like `: T[]`")
+		return types.Invalid
+	}
+	first := c.checkExpr(e.Elems[0])
+	if first == types.Void {
+		c.errorf(e.Elems[0].Pos(), "array element cannot be void")
+		first = types.Invalid
+	}
+	for i := 1; i < len(e.Elems); i++ {
+		got := c.checkExpr(e.Elems[i])
+		if got != types.Invalid && first != types.Invalid && !types.Equal(got, first) {
+			c.errorf(e.Elems[i].Pos(), "array element %d: expected %s, got %s",
+				i+1, types.Format(first), types.Format(got))
+		}
+	}
+	return &types.Array{Elem: first}
+}
+
+func (c *Checker) checkIndexExpr(e *ast.IndexExpr) types.Type {
+	tt := c.checkExpr(e.Target)
+	it := c.checkExpr(e.Index)
+	if it != types.Number && it != types.Invalid {
+		c.errorf(e.Index.Pos(), "index must be number, got %s", types.Format(it))
+	}
+	arr, ok := tt.(*types.Array)
+	if !ok {
+		if tt != types.Invalid {
+			c.errorf(e.LBracket, "indexing requires an array, got %s", types.Format(tt))
+		}
+		return types.Invalid
+	}
+	return arr.Elem
+}
+
+func (c *Checker) checkBinary(e *ast.BinaryExpr) types.Type {
+	lt := c.checkExpr(e.Lhs)
+	rt := c.checkExpr(e.Rhs)
+	if lt == types.Invalid || rt == types.Invalid {
+		return types.Invalid
+	}
+	switch e.Op {
+	case token.Plus:
+		if lt == types.Number && rt == types.Number {
+			return types.Number
+		}
+		if lt == types.String && rt == types.String {
+			return types.String
+		}
+		c.errorf(e.OpPos, "+ requires both operands to be number or both to be string (got %s and %s)", types.Format(lt), types.Format(rt))
+		return types.Invalid
+	case token.Minus, token.Star, token.Slash, token.Percent:
+		if lt != types.Number || rt != types.Number {
+			c.errorf(e.OpPos, "%s requires number operands (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
+			return types.Invalid
+		}
+		return types.Number
+	case token.Eq, token.Neq:
+		// Null comparisons are the only operation v0 directly supports on
+		// optional values: `x == null`, `x != null`, mirrored.
+		if lt == types.Null && rt == types.Null {
+			return types.Bool
+		}
+		if lt == types.Null {
+			if !types.IsOptional(rt) {
+				c.errorf(e.OpPos, "cannot compare %s to null (only optional types are nullable)", types.Format(rt))
+			}
+			return types.Bool
+		}
+		if rt == types.Null {
+			if !types.IsOptional(lt) {
+				c.errorf(e.OpPos, "cannot compare %s to null (only optional types are nullable)", types.Format(lt))
+			}
+			return types.Bool
+		}
+		if types.IsOptional(lt) || types.IsOptional(rt) {
+			c.errorf(e.OpPos, "cannot use %s on optional values directly; use `??` or `!` first, or compare against null", e.Op)
+			return types.Bool
+		}
+		if !types.Equal(lt, rt) {
+			c.errorf(e.OpPos, "%s requires operands of the same type (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
+			return types.Bool
+		}
+		return types.Bool
+	case token.Lt, token.Lte, token.Gt, token.Gte:
+		if lt == types.Number && rt == types.Number {
+			return types.Bool
+		}
+		if lt == types.String && rt == types.String {
+			return types.Bool
+		}
+		c.errorf(e.OpPos, "%s requires number or string operands (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
+		return types.Bool
+	case token.AndAnd, token.OrOr:
+		if lt != types.Bool || rt != types.Bool {
+			c.errorf(e.OpPos, "%s requires bool operands (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
+		}
+		return types.Bool
+	}
+	c.errorf(e.OpPos, "invalid binary operator %s", e.Op)
+	return types.Invalid
+}
+
+func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
+	id, ok := e.Callee.(*ast.Ident)
+	if !ok {
+		c.errorf(e.LParenPos, "only direct function calls are supported")
+		return types.Invalid
+	}
+	sym := c.current.resolve(id.Name)
+	if sym == nil {
+		c.errorf(id.NamePos, "undefined function %q", id.Name)
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	c.info.Uses[id] = sym
+	// `len` is polymorphic over string and array types.
+	if sym.IsBuiltin && sym.Name == "len" {
+		if len(e.Args) != 1 {
+			c.errorf(e.LParenPos, "len expects 1 argument, got %d", len(e.Args))
+		}
+		for _, a := range e.Args {
+			at := c.checkExpr(a)
+			if _, ok := at.(*types.Array); ok {
+				continue
+			}
+			if at == types.String || at == types.Invalid {
+				continue
+			}
+			c.errorf(a.Pos(), "len requires a string or array, got %s", types.Format(at))
+		}
+		return types.Number
+	}
+	ft, ok := sym.Type.(*types.Func)
+	if !ok {
+		c.errorf(id.NamePos, "%q is not a function", id.Name)
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	if len(e.Args) != len(ft.Params) {
+		c.errorf(e.LParenPos, "function %q expects %d argument(s), got %d", id.Name, len(ft.Params), len(e.Args))
+	}
+	n := len(e.Args)
+	if len(ft.Params) < n {
+		n = len(ft.Params)
+	}
+	for i := 0; i < n; i++ {
+		at := c.checkExpr(e.Args[i])
+		if at != types.Invalid && !types.IsAssignable(at, ft.Params[i]) {
+			c.errorf(e.Args[i].Pos(),
+				"argument %d to %q: expected %s, got %s",
+				i+1, id.Name, types.Format(ft.Params[i]), types.Format(at))
+		}
+	}
+	for i := n; i < len(e.Args); i++ {
+		c.checkExpr(e.Args[i])
+	}
+	return ft.Result
+}
+
+// builtins returns the symbol set seeded into the global scope. These do not
+// reference any predeclared user-record types.
+func builtins() []*Symbol {
+	str := types.String
+	num := types.Number
+	bln := types.Bool
+	void := types.Void
+	stringArr := &types.Array{Elem: types.String}
+	mk := func(name string, params []types.Type, result types.Type) *Symbol {
+		return &Symbol{Name: name, IsFunc: true, IsBuiltin: true,
+			Type: &types.Func{Params: params, Result: result}}
+	}
+	return []*Symbol{
+		mk("echo", []types.Type{str}, void),
+		mk("eprint", []types.Type{str}, void),
+		mk("str", []types.Type{num}, str),
+		mk("num", []types.Type{str}, num),
+		mk("len", []types.Type{str}, num),
+		mk("env", []types.Type{str}, &types.Optional{Elem: str}),
+		mk("exit", []types.Type{num}, void),
+		mk("split", []types.Type{str, str}, stringArr),
+		mk("join", []types.Type{stringArr, str}, str),
+		mk("trim", []types.Type{str}, str),
+		mk("upper", []types.Type{str}, str),
+		mk("lower", []types.Type{str}, str),
+		mk("replace", []types.Type{str, str, str}, str),
+		mk("contains", []types.Type{str, str}, bln),
+		mk("startsWith", []types.Type{str, str}, bln),
+		mk("endsWith", []types.Type{str, str}, bln),
+		mk("slice", []types.Type{str, num, num}, str),
+
+		// File I/O.
+		mk("readFile", []types.Type{str}, str),
+		mk("writeFile", []types.Type{str, str}, void),
+		mk("appendFile", []types.Type{str, str}, void),
+		mk("removeFile", []types.Type{str}, void),
+		mk("mkdir", []types.Type{str}, void),
+		mk("listDir", []types.Type{str}, stringArr),
+		mk("exists", []types.Type{str}, bln),
+		mk("isFile", []types.Type{str}, bln),
+		mk("isDir", []types.Type{str}, bln),
+		mk("readStdin", nil, str),
+
+		// Path manipulation (no I/O).
+		mk("pathJoin", []types.Type{str, str}, str),
+		mk("basename", []types.Type{str}, str),
+		mk("dirname", []types.Type{str}, str),
+		mk("extname", []types.Type{str}, str),
+	}
+}
+
+// builtinTypes returns the predeclared record types available without import.
+func builtinTypes() []*types.Record {
+	return []*types.Record{
+		{
+			Name: "Response",
+			Fields: []types.Field{
+				{Name: "status", Type: types.Number},
+				{Name: "ok", Type: types.Bool},
+				{Name: "body", Type: types.String},
+				{Name: "headers", Type: types.String},
+			},
+		},
+		{
+			Name: "Process",
+			Fields: []types.Field{
+				{Name: "code", Type: types.Number},
+				{Name: "ok", Type: types.Bool},
+				{Name: "stdout", Type: types.String},
+				{Name: "stderr", Type: types.String},
+			},
+		},
+	}
+}
+
+// builtinsWithTypes returns builtins whose signatures reference predeclared types.
+func builtinsWithTypes(typeNames map[string]types.Type) []*Symbol {
+	response := typeNames["Response"]
+	process := typeNames["Process"]
+	return []*Symbol{
+		{Name: "fetch", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: response}},
+		{Name: "exec", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: process}},
+	}
+}

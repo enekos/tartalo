@@ -1,0 +1,26 @@
+// fetch.tt — make HTTP requests from a tartalo script.
+//
+// `fetch` is a built-in that returns a `Response` record:
+//
+//   type Response = { status: number, ok: bool, body: string, headers: string }
+//
+// Under the hood it shells out to curl. A network failure or unreachable host
+// gives back `status: 0, ok: false`.
+
+func main(): void {
+  let url = env("TARTALO_FETCH_URL") ?? "https://example.com"
+
+  echo("GET " + url)
+  let r = fetch(url)
+
+  if r.ok {
+    echo("HTTP " + str(r.status))
+    echo("body length: " + str(len(r.body)))
+  } else if r.status == 0 {
+    eprint("fetch failed (network/curl error)")
+    exit(1)
+  } else {
+    eprint("HTTP " + str(r.status))
+    exit(1)
+  }
+}

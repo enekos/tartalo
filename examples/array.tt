@@ -1,0 +1,17 @@
+// Arrays: literals, iteration, indexing, length.
+
+func main(): void {
+  let names = ["alice", "bob", "carol"]
+  echo("there are " + str(len(names)) + " people:")
+  for n in names {
+    echo("  - " + n)
+  }
+  echo("the second one is " + names[1])
+
+  let primes = [2, 3, 5, 7, 11]
+  let total = 0
+  for p in primes {
+    total = total + p
+  }
+  echo("sum of first 5 primes = " + str(total))
+}

@@ -1,0 +1,24 @@
+// String stdlib walkthrough.
+
+func main(): void {
+  let s = "  Hello, World!  "
+  echo("upper: " + upper(trim(s)))
+  echo("lower: " + lower(trim(s)))
+  echo("replaced: " + replace(trim(s), "World", "tartalo"))
+
+  let parts = split("alpha,beta,gamma", ",")
+  echo("count: " + str(len(parts)))
+  echo("joined: " + join(parts, " | "))
+
+  if startsWith("foobar", "foo") {
+    echo("foobar starts with foo")
+  }
+  if endsWith("script.sh", ".sh") {
+    echo("script.sh ends with .sh")
+  }
+  if contains("hello world", "lo wo") {
+    echo("substring found")
+  }
+
+  echo("slice: " + slice("abcdefgh", 2, 6))
+}

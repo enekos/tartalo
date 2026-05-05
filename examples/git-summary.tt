@@ -1,0 +1,22 @@
+// Summarise the recent git log: combine `exec`, `split`, `trim`, and records.
+
+func main(): void {
+  let r = exec("git log --pretty=format:'%h%x09%s' -n 5 2>/dev/null")
+  if !r.ok {
+    eprint("not a git repo (exit " + str(r.code) + ")")
+    exit(1)
+  }
+
+  let lines = split(trim(r.stdout), "\n")
+  echo("last " + str(len(lines)) + " commits:")
+  for line in lines {
+    let parts = split(line, "\t")
+    let sha = parts[0]
+    let subject = parts[1]
+    if startsWith(subject, "fix:") {
+      echo("  [fix] " + sha + "  " + slice(subject, 5, len(subject)))
+    } else {
+      echo("       " + sha + "  " + subject)
+    }
+  }
+}

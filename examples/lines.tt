@@ -1,0 +1,7 @@
+// iterate over the lines of a command's output.
+
+func main(): void {
+  for f in `ls -1 /` {
+    echo("/ contains: " + f)
+  }
+}

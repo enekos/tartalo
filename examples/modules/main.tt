@@ -1,0 +1,11 @@
+// Entry program: pulls helpers in from a sibling module.
+
+import { Tag, renderTag, indent } from "./lib/text.tt"
+
+func main(): void {
+  let envTag: Tag = Tag{name: "env", value: "prod"}
+  let regionTag: Tag = Tag{name: "region", value: "eu-west-1"}
+
+  echo(indent(renderTag(envTag), 2))
+  echo(indent(renderTag(regionTag), 4))
+}

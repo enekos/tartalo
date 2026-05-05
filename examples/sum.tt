@@ -1,0 +1,14 @@
+// sum demonstrates user-defined functions, mutable state, and arithmetic.
+
+func sumTo(n: number): number {
+  let total: number = 0
+  for i in 1..(n + 1) {
+    total = total + i
+  }
+  return total
+}
+
+func main(): void {
+  let n: number = 10
+  echo("sum(1.." + str(n) + ") = " + str(sumTo(n)))
+}

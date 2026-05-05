@@ -1,0 +1,36 @@
+// Records: a tiny inventory system.
+
+type Item = {
+  name: string,
+  price: number,
+  inStock: bool,
+}
+
+func describe(it: Item): string {
+  let availability = "out of stock"
+  if it.inStock {
+    availability = "available"
+  }
+  return it.name + " (" + str(it.price) + "¢, " + availability + ")"
+}
+
+func discount(it: Item, off: number): Item {
+  return Item{
+    name: it.name,
+    price: it.price - off,
+    inStock: it.inStock,
+  }
+}
+
+func main(): void {
+  let coffee = Item{name: "coffee", price: 350, inStock: true}
+  let donut = Item{name: "donut", price: 250, inStock: false}
+
+  echo(describe(coffee))
+  echo(describe(donut))
+
+  // Aliasing is a deep copy: a discounted item leaves the original alone.
+  let cheap = discount(coffee, 50)
+  echo("after discount: " + describe(cheap))
+  echo("original: " + describe(coffee))
+}

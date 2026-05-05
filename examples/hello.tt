@@ -1,0 +1,10 @@
+// hello.tt - the smallest interesting tartalo program.
+
+func greet(who: string): string {
+  return "Hello, " + who + "!"
+}
+
+func main(): void {
+  let who: string = "world"
+  echo(greet(who))
+}

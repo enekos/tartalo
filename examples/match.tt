@@ -1,0 +1,11 @@
+// Match a subcommand and dispatch.
+
+func main(): void {
+  let action = env("ACTION") ?? ""
+  match action {
+    "build" | "compile" => echo("compiling…")
+    "run" => echo("running…")
+    "" => echo("usage: ACTION=<build|run|test>")
+    _ => echo("unknown action: " + action)
+  }
+}

@@ -1,0 +1,31 @@
+// Load a small config from environment variables, with sensible defaults
+// where the variable is absent.
+
+type Config = {
+  host: string,
+  port: number,
+  apiKey: string?,    // truly optional — no sensible default
+  debug: bool,
+}
+
+func loadConfig(): Config {
+  let host = env("HOST") ?? "localhost"
+  let port = num(env("PORT") ?? "8080")
+  let key = env("API_KEY")     // string?
+  let debug = (env("DEBUG") ?? "0") == "1"
+  return Config{host: host, port: port, apiKey: key, debug: debug}
+}
+
+func main(): void {
+  let cfg = loadConfig()
+  echo("host:  " + cfg.host)
+  echo("port:  " + str(cfg.port))
+  if cfg.apiKey == null {
+    echo("apiKey: <unset>")
+  } else {
+    echo("apiKey: <present>")
+  }
+  if cfg.debug {
+    echo("debug mode on")
+  }
+}
