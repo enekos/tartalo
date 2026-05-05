@@ -725,10 +725,15 @@ func (g *Generator) emitForRange(s *ast.ForStmt, r *ast.RangeExpr) {
 	end := g.compileExpr(r.End)
 	g.writeLines(start.prologue)
 	g.writeLines(end.prologue)
-	endVar := g.tmp("end")
-	g.writeLine(fmt.Sprintf("%s=%s", endVar, end.assignmentRHS()))
 	g.writeLine(fmt.Sprintf("%s=%s", shName(s.Var), start.assignmentRHS()))
-	g.writeLine(fmt.Sprintf("while [ \"$%s\" -lt \"$%s\" ]; do", shName(s.Var), endVar))
+	// Inline constant end bounds to avoid an extra temp variable.
+	if lit, ok := r.End.(*ast.IntLit); ok {
+		g.writeLine(fmt.Sprintf("while [ \"$%s\" -lt %d ]; do", shName(s.Var), lit.Value))
+	} else {
+		endVar := g.tmp("end")
+		g.writeLine(fmt.Sprintf("%s=%s", endVar, end.assignmentRHS()))
+		g.writeLine(fmt.Sprintf("while [ \"$%s\" -lt \"$%s\" ]; do", shName(s.Var), endVar))
+	}
 	g.indent++
 	for _, st := range s.Body.Stmts {
 		g.emitStmt(st)
