@@ -1,0 +1,87 @@
+// numbers/extra — integer math helpers and reducers/predicates intended
+// for use with the higher-order builtins (map, filter, reduce).
+//
+//   import { clamp, isEven, addNum } from "tartalo:numbers/extra"
+
+// min2 returns the smaller of a and b.
+export func min2(a: number, b: number): number {
+  if a < b { return a }
+  return b
+}
+
+// max2 returns the larger of a and b.
+export func max2(a: number, b: number): number {
+  if a > b { return a }
+  return b
+}
+
+// clamp constrains v to the inclusive range [lo, hi].
+// If lo > hi, the result is unspecified — callers should validate.
+export func clamp(v: number, lo: number, hi: number): number {
+  if v < lo { return lo }
+  if v > hi { return hi }
+  return v
+}
+
+// abs returns the absolute value of n.
+export func abs(n: number): number {
+  if n < 0 { return -n }
+  return n
+}
+
+// sign returns -1 for negatives, 0 for zero, 1 for positives.
+export func sign(n: number): number {
+  if n < 0 { return -1 }
+  if n > 0 { return 1 }
+  return 0
+}
+
+// pow raises base to the (non-negative) integer exponent exp.
+// Negative exponents return 0 — there is no float fallback in v0.
+export func pow(base: number, exp: number): number {
+  if exp < 0 { return 0 }
+  let result: number = 1
+  for i in 0..exp {
+    result = result * base
+  }
+  return result
+}
+
+// gcd returns the greatest common divisor of |a| and |b| via the Euclidean
+// algorithm. gcd(0, 0) is 0; gcd(a, 0) is |a|.
+export func gcd(a: number, b: number): number {
+  let x: number = abs(a)
+  let y: number = abs(b)
+  // Without break/while we run a generous bounded loop. 64 iterations is
+  // more than enough for any int64-shaped inputs (Euclid converges in log).
+  for i in 0..64 {
+    if y != 0 {
+      let t: number = y
+      y = x % y
+      x = t
+    }
+  }
+  return x
+}
+
+// --- predicates: pass to filter() -----------------------------------------
+
+export func isEven(n: number): bool { return n % 2 == 0 }
+export func isOdd(n: number): bool { return n % 2 != 0 }
+export func isPositive(n: number): bool { return n > 0 }
+export func isNegative(n: number): bool { return n < 0 }
+export func isZero(n: number): bool { return n == 0 }
+
+// --- reducers: pass to reduce() -------------------------------------------
+
+// addNum and mulNum are the canonical sum / product reducers.
+//
+//   let total = reduce(xs, 0, addNum)
+//   let prod  = reduce(xs, 1, mulNum)
+export func addNum(acc: number, n: number): number { return acc + n }
+export func mulNum(acc: number, n: number): number { return acc * n }
+
+// maxOf / minOf reduce an array to its maximum or minimum. Seed with the
+// first element (or a sentinel) since reduce requires an explicit init.
+export func maxOf(acc: number, n: number): number { return max2(acc, n) }
+export func minOf(acc: number, n: number): number { return min2(acc, n) }

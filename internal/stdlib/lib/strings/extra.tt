@@ -1,0 +1,131 @@
+// strings/extra — handy helpers that don't need to live in the core builtin
+// table. Pull in with: import { repeat, padLeft, ... } from "tartalo:strings/extra"
+
+export func repeat(s: string, n: number): string {
+  let out: string = ""
+  for i in 0..n {
+    out = out + s
+  }
+  return out
+}
+
+export func padLeft(s: string, total: number, fill: string): string {
+  let need: number = total - len(s)
+  if need <= 0 {
+    return s
+  }
+  return repeat(fill, need) + s
+}
+
+export func padRight(s: string, total: number, fill: string): string {
+  let need: number = total - len(s)
+  if need <= 0 {
+    return s
+  }
+  return s + repeat(fill, need)
+}
+
+// center pads s with `fill` on both sides until it reaches `total` length.
+// When the padding is uneven, the extra char goes on the right.
+export func center(s: string, total: number, fill: string): string {
+  let need: number = total - len(s)
+  if need <= 0 {
+    return s
+  }
+  let left: number = need / 2
+  let right: number = need - left
+  return repeat(fill, left) + s + repeat(fill, right)
+}
+
+export func isBlank(s: string): bool {
+  return len(trim(s)) == 0
+}
+
+export func lines(s: string): string[] {
+  return split(s, "\n")
+}
+
+// capitalize uppercases the first character; the rest is left untouched.
+// Empty input returns "".
+export func capitalize(s: string): string {
+  if len(s) == 0 {
+    return s
+  }
+  return upper(slice(s, 0, 1)) + slice(s, 1, len(s))
+}
+
+// removePrefix strips `prefix` from the front of s if present, otherwise
+// returns s unchanged.
+export func removePrefix(s: string, prefix: string): string {
+  if startsWith(s, prefix) {
+    return slice(s, len(prefix), len(s))
+  }
+  return s
+}
+
+// removeSuffix strips `suffix` from the end of s if present, otherwise
+// returns s unchanged.
+export func removeSuffix(s: string, suffix: string): string {
+  if endsWith(s, suffix) {
+    return slice(s, 0, len(s) - len(suffix))
+  }
+  return s
+}
+
+// count returns the number of non-overlapping occurrences of `sub` in s.
+// Empty `sub` returns 0 (rather than infinity, which the obvious recurrence
+// would give).
+//
+// The skip counter avoids needing `break`/`continue` (not in v0): on a
+// match, we jump past the matched span by burning the next len(sub)-1
+// iterations.
+export func count(s: string, sub: string): number {
+  if len(sub) == 0 {
+    return 0
+  }
+  let n: number = 0
+  let skip: number = 0
+  let limit: number = len(s) - len(sub) + 1
+  for i in 0..limit {
+    if skip > 0 {
+      skip = skip - 1
+    } else {
+      if slice(s, i, i + len(sub)) == sub {
+        n = n + 1
+        skip = len(sub) - 1
+      }
+    }
+  }
+  return n
+}
+
+// truncate returns s shortened to at most `n` characters. When s is longer
+// than n, the result is the first (n - len(ellipsis)) characters of s with
+// `ellipsis` appended. If `n` is smaller than the ellipsis itself, s is
+// truncated to exactly `n` characters with no ellipsis.
+export func truncate(s: string, n: number, ellipsis: string): string {
+  if len(s) <= n {
+    return s
+  }
+  if n <= len(ellipsis) {
+    return slice(s, 0, n)
+  }
+  return slice(s, 0, n - len(ellipsis)) + ellipsis
+}
+
+// indent prefixes every line of s with `prefix`. The trailing line is
+// preserved (so a string ending in "\n" stays that way).
+export func indent(s: string, prefix: string): string {
+  let parts: string[] = split(s, "\n")
+  let out: string = ""
+  let first: bool = true
+  for line in parts {
+    if first {
+      out = prefix + line
+      first = false
+    } else {
+      out = out + "\n" + prefix + line
+    }
+  }
+  return out
+}
