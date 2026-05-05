@@ -290,10 +290,10 @@ A command in statement position runs for side effects:
 
 - `echo(s: string): void` — print line to stdout
 - `eprint(s: string): void` — print line to stderr
-- `str(n: number): string` — int → string
+- `str(n: number | float | bool): string` — convert a scalar to its string representation
 - `num(s: string): number` — string → int (errors at runtime if not numeric)
 - `len(s | T[]): number` — string byte-length or array element count
-- `env(name: string): string` — read env var (empty string if unset)
+- `env(name: string): string?` — read env var (`null` if unset, empty string if set to `""`)
 - `exit(code: number): void` — exit with code
 
 ### Strings
@@ -308,6 +308,16 @@ A command in statement position runs for side effects:
 - `slice(s: string, start, end: number): string` — half-open `[start, end)`, 0-based
 - `split(s, sep: string): string[]`
 - `join(arr: string[], sep: string): string`
+
+### Float
+
+- `floatOf(n: number): float` — widen an integer to a float
+- `intOf(f: float): number` — truncate a float toward zero
+- `parseFloat(s: string): float?` — parse a float, or `null` if not numeric
+- `formatFloat(f: float, decimals: number): string` — format with the given number of decimal places
+- `floor(f: float): number` — largest integer ≤ f
+- `ceil(f: float): number` — smallest integer ≥ f
+- `round(f: float): number` — round to nearest integer (half away from zero)
 
 ### File I/O
 
@@ -384,6 +394,16 @@ script that uses them must have `jq` on `PATH`.
 - `jsonHas(json: string, path: string): bool` — true iff the path exists *and* its value is non-null.
 - `jsonArray(json: string, path: string): string[]` — array elements as a string[]; each element is jq's stringified form (raw for scalars, JSON for objects/arrays).
 - `jsonEscape(s: string): string` — encode a string as a JSON string literal *with* surrounding quotes. Convenient when hand-building a request body.
+
+### Test framework
+
+These builtins may only be called inside a `test "..." { ... }` block.
+
+- `assertEq(a: string, b: string): void` — abort with a diagnostic if `a != b`
+- `assertNe(a: string, b: string): void` — abort with a diagnostic if `a == b`
+- `check(cond: bool): void` — abort with a diagnostic if `cond` is false
+- `fail(msg: string): void` — unconditionally abort the test with `msg`
+- `skip(msg: string): void` — mark the test as skipped and exit cleanly
 
 ### Predeclared types
 

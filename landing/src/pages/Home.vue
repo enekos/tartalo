@@ -312,7 +312,7 @@ const exMatch = `func main(): void {
 const stages = ["source.tt", "lexer", "parser", "type checker", "sh emitter", "source.sh"];
 
 const buildCmd = `# clone & build
-git clone https://github.com/your/tartalo.git
+git clone https://github.com/enekos/tartalo.git
 cd tartalo
 go build -o tartalo ./cmd/tartalo`;
 
@@ -323,7 +323,13 @@ tartalo build hello.tt -o hello.sh
 tartalo run hello.tt
 
 # type-check only, no codegen
-tartalo check ./examples/*.tt`;
+tartalo check ./examples/*.tt
+
+# run test declarations
+tartalo test hello.tt
+
+# format source
+tartalo fmt -w ./examples/*.tt`;
 </script>
 
 <style scoped>

@@ -11,7 +11,7 @@
         <router-link to="/reference">Reference</router-link>
         <router-link to="/#features">Features</router-link>
         <router-link to="/#install">Install</router-link>
-        <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/enekos/tartalo" target="_blank" rel="noopener">GitHub</a>
       </div>
 
       <div class="nav-actions">

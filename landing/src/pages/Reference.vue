@@ -385,6 +385,7 @@ const toc = [
   { id: ids.builtins, label: "Builtins" },
   { id: "core", label: "core", sub: true },
   { id: "strings", label: "strings", sub: true },
+  { id: "float", label: "float", sub: true },
   { id: "fileio", label: "file I/O", sub: true },
   { id: "paths", label: "paths", sub: true },
   { id: "subprocess", label: "subprocess & HTTP", sub: true },
@@ -392,6 +393,7 @@ const toc = [
   { id: "higher-order", label: "higher-order", sub: true },
   { id: "process", label: "process / time", sub: true },
   { id: "json", label: "json", sub: true },
+  { id: "test", label: "test framework", sub: true },
   { id: ids.operators, label: "Operators" },
   { id: ids.model, label: "Compilation model" },
 ];
@@ -403,10 +405,10 @@ const builtins = [
     items: [
       { sig: "echo(s: string): void", desc: "print line to stdout" },
       { sig: "eprint(s: string): void", desc: "print line to stderr" },
-      { sig: "str(n: number): string", desc: "int → string" },
+      { sig: "str(n: number | float | bool): string", desc: "scalar → string" },
       { sig: "num(s: string): number", desc: "string → int (errors at runtime if not numeric)" },
       { sig: "len(s | T[]): number", desc: "string byte-length or array element count" },
-      { sig: "env(name: string): string", desc: "read env var (empty string if unset)" },
+      { sig: "env(name: string): string?", desc: "read env var (<code>null</code> if unset, empty string if set to <code>\"\"</code>)" },
       { sig: "exit(code: number): void", desc: "exit with code" },
     ],
   },
@@ -427,6 +429,19 @@ const builtins = [
     ],
   },
   {
+    id: "float",
+    title: "Float",
+    items: [
+      { sig: "floatOf(n: number): float", desc: "widen an integer to a float" },
+      { sig: "intOf(f: float): number", desc: "truncate a float toward zero" },
+      { sig: "parseFloat(s: string): float?", desc: "parse a float, or <code>null</code> if not numeric" },
+      { sig: "formatFloat(f: float, decimals: number): string", desc: "format with the given number of decimal places" },
+      { sig: "floor(f: float): number", desc: "largest integer ≤ f" },
+      { sig: "ceil(f: float): number", desc: "smallest integer ≥ f" },
+      { sig: "round(f: float): number", desc: "round to nearest integer (half away from zero)" },
+    ],
+  },
+  {
     id: "fileio",
     title: "File I/O",
     intro:
@@ -441,6 +456,7 @@ const builtins = [
       { sig: "exists(path: string): bool" },
       { sig: "isFile(path: string): bool" },
       { sig: "isDir(path: string): bool" },
+      { sig: "stat(path: string): FileInfo", desc: "one-shot metadata bundle. Falls back to BSD <code>stat -f</code> when GNU <code>stat -c</code> isn't available. For a missing path, <code>exists</code> is false and numeric fields are 0." },
       { sig: "readStdin(): string", desc: "read all of stdin" },
     ],
   },
@@ -452,6 +468,7 @@ const builtins = [
       { sig: "basename(path: string): string" },
       { sig: "dirname(path: string): string" },
       { sig: "extname(path: string): string", desc: 'extension <em>including</em> the leading dot, or <code>""</code> when the basename has no dot' },
+      { sig: "parsePath(path: string): PathParts", desc: "split a path into <code>{ dir, base, name, ext }</code> in one go" },
     ],
   },
   {
@@ -504,6 +521,18 @@ const builtins = [
       { sig: "jsonHas(json: string, path: string): bool", desc: "true iff the path exists <em>and</em> its value is non-null." },
       { sig: "jsonArray(json: string, path: string): string[]", desc: "array elements as a string[]; each element is jq's stringified form (raw for scalars, JSON for objects/arrays)." },
       { sig: "jsonEscape(s: string): string", desc: "encode a string as a JSON string literal <em>with</em> surrounding quotes. Convenient when hand-building a request body." },
+    ],
+  },
+  {
+    id: "test",
+    title: "Test framework",
+    intro: "These builtins may only be called inside a <code>test \"...\" { ... }</code> block.",
+    items: [
+      { sig: "assertEq(a: string, b: string): void", desc: "abort with a diagnostic if <code>a != b</code>" },
+      { sig: "assertNe(a: string, b: string): void", desc: "abort with a diagnostic if <code>a == b</code>" },
+      { sig: "check(cond: bool): void", desc: "abort with a diagnostic if <code>cond</code> is false" },
+      { sig: "fail(msg: string): void", desc: "unconditionally abort the test with <code>msg</code>" },
+      { sig: "skip(msg: string): void", desc: "mark the test as skipped and exit cleanly" },
     ],
   },
 ];
@@ -617,6 +646,22 @@ type Process = {
   ok: bool,          // true iff code == 0
   stdout: string,    // captured stdout
   stderr: string,    // captured stderr
+}
+
+type FileInfo = {
+  exists: bool,      // false if the path doesn't exist
+  isFile: bool,
+  isDir: bool,
+  size: number,      // bytes; 0 if missing
+  mtime: number,     // Unix seconds; 0 if missing
+  mode: string,      // octal permission bits, e.g. "644"; "" if missing
+}
+
+type PathParts = {
+  dir: string,       // dirname(path)
+  base: string,      // basename(path) — final component, with extension
+  name: string,      // basename minus the last \`.ext\` (same rule as extname)
+  ext: string,       // extension including leading dot, or ""
 }`;
 
 const codeModel = `source.tt  →  lexer  →  parser  →  type checker  →  sh emitter  →  source.sh`;

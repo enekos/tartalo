@@ -25,7 +25,7 @@
           </div>
           <div class="link-column">
             <h4>Project</h4>
-            <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/enekos/tartalo" target="_blank" rel="noopener">GitHub</a>
             <router-link to="/reference">Spec</router-link>
             <router-link to="/#install">Install</router-link>
             <router-link to="/#examples">Examples</router-link>
