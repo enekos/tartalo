@@ -593,6 +593,28 @@ func (g *Generator) tryEmitDirectRet(e ast.Expr, target, declPrefix string) bool
 	return true
 }
 
+// tryEmitInlineArray checks whether e is an array literal whose temp can
+// be elided and the body assigned directly to the target variable.
+func (g *Generator) tryEmitInlineArray(e ast.Expr, target, declPrefix string) bool {
+	_, ok := e.(*ast.ArrayLit)
+	if !ok {
+		return false
+	}
+	v := g.compileExpr(e)
+	if len(v.prologue) == 0 {
+		return false
+	}
+	last := v.prologue[len(v.prologue)-1]
+	idx := strings.Index(last, `="`)
+	if idx == -1 || last[len(last)-1] != '"' {
+		return false
+	}
+	g.writeLines(v.prologue[:len(v.prologue)-1])
+	body := last[idx+2 : len(last)-1]
+	g.writeLine(declPrefix + target + `="` + body + `"`)
+	return true
+}
+
 func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 	declPrefix := ""
 	if d.IsConst {
@@ -619,6 +641,9 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 		return
 	}
 	if g.tryEmitDirectRet(d.Value, target, declPrefix) {
+		return
+	}
+	if g.tryEmitInlineArray(d.Value, target, declPrefix) {
 		return
 	}
 	v := g.compileExpr(d.Value)
