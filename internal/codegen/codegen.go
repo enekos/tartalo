@@ -568,6 +568,31 @@ func shSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// tryEmitDirectRet checks whether e is a bare function call whose return
+// value can be read straight from __ret without a temp. When true it emits
+// the call prologue (minus the temp snapshot) and the assignment, then
+// returns true so the caller knows it's done.
+func (g *Generator) tryEmitDirectRet(e ast.Expr, target, declPrefix string) bool {
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	v := g.compileCall(call, false)
+	if v.form != formArith && v.form != formBool && v.form != formStr {
+		return false
+	}
+	if len(v.prologue) == 0 {
+		return false
+	}
+	last := v.prologue[len(v.prologue)-1]
+	if !strings.HasPrefix(last, "__ret") || !strings.HasSuffix(last, `="$__ret"`) {
+		return false
+	}
+	g.writeLines(v.prologue[:len(v.prologue)-1])
+	g.writeLine(declPrefix + target + `="$__ret"`)
+	return true
+}
+
 func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 	declPrefix := ""
 	if d.IsConst {
@@ -591,6 +616,9 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 	}
 	if rec, ok := g.info.Types[d.Value].(*types.Record); ok {
 		g.emitRecordCopy(target, declPrefix, rec, d.Value)
+		return
+	}
+	if g.tryEmitDirectRet(d.Value, target, declPrefix) {
 		return
 	}
 	v := g.compileExpr(d.Value)
@@ -652,6 +680,9 @@ func (g *Generator) emitAssign(s *ast.AssignStmt) {
 			return
 		}
 	}
+	if g.tryEmitDirectRet(s.Value, target, "") {
+		return
+	}
 	v := g.compileExpr(s.Value)
 	g.writeLines(v.prologue)
 	g.writeLine(fmt.Sprintf("%s=%s", target, v.assignmentRHS()))
@@ -664,6 +695,10 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 	}
 	if rec, ok := g.info.Types[s.Value].(*types.Record); ok {
 		g.emitRecordCopy("__ret", "", rec, s.Value)
+		g.writeLine("return 0")
+		return
+	}
+	if g.tryEmitDirectRet(s.Value, "__ret", "") {
 		g.writeLine("return 0")
 		return
 	}
