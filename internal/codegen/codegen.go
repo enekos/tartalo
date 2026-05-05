@@ -786,8 +786,8 @@ func (g *Generator) emitAssign(s *ast.AssignStmt) {
 			if nullExpr == "" {
 				nullExpr = "0"
 			}
-			g.writeLine(fmt.Sprintf("%s__null=$((%s))", target, nullExpr))
-			g.writeLine(fmt.Sprintf("%s=%s", target, v.assignmentRHS()))
+			g.writeLine(target + "__null=$((" + nullExpr + "))")
+			g.writeLine(target + "=" + v.assignmentRHS())
 			return
 		}
 	}
@@ -796,7 +796,7 @@ func (g *Generator) emitAssign(s *ast.AssignStmt) {
 	}
 	v := g.compileExpr(s.Value)
 	g.writeLines(v.prologue)
-	g.writeLine(fmt.Sprintf("%s=%s", target, v.assignmentRHS()))
+	g.writeLine(target + "=" + v.assignmentRHS())
 }
 
 func (g *Generator) emitReturn(s *ast.ReturnStmt) {
@@ -836,7 +836,7 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 func (g *Generator) emitIf(s *ast.IfStmt) {
 	cond := g.compileCond(s.Cond)
 	g.writeLines(cond.prologue)
-	g.writeLine(fmt.Sprintf("if %s; then", cond.test))
+	g.writeLine("if " + cond.test + "; then")
 	g.indent++
 	if len(s.Then.Stmts) == 0 {
 		// sh requires at least one command in `then`. `:` is the POSIX no-op.
