@@ -29,14 +29,15 @@ type frame struct {
 }
 
 type Lexer struct {
-	file    string
-	src     string
-	pos     int // byte offset of next rune to consume
-	line    int
-	col     int
-	stack   []frame
-	tokens  []token.Token
-	errs    []error
+	file     string
+	src      string
+	pos      int // byte offset of next rune to consume
+	line     int
+	col      int
+	stack    []frame
+	tokens   []token.Token
+	comments []token.Comment
+	errs     []error
 }
 
 func New(file, src string) *Lexer {
@@ -69,6 +70,11 @@ func (l *Lexer) Tokenize() ([]token.Token, []error) {
 	l.emit(token.EOF, "")
 	return l.tokens, l.errs
 }
+
+// Comments returns the line comments captured during tokenization, in source
+// order. Comments are dropped from the token stream itself; callers that want
+// to preserve them (for example, a formatter) consult this list.
+func (l *Lexer) Comments() []token.Comment { return l.comments }
 
 func (l *Lexer) top() *frame { return &l.stack[len(l.stack)-1] }
 
@@ -131,9 +137,12 @@ func (l *Lexer) lexCode() {
 			continue
 		}
 		if c == '/' && l.peekAt(1) == '/' {
+			startPos := l.currentPos()
+			start := l.pos
 			for !l.atEOF() && l.peek() != '\n' {
 				l.advance()
 			}
+			l.comments = append(l.comments, token.Comment{Pos: startPos, Text: l.src[start:l.pos]})
 			continue
 		}
 

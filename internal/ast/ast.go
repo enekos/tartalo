@@ -157,6 +157,7 @@ func (t *FuncType) typeExprNode()  {}
 // RecordType: `{ f1: T1, f2: T2, ... }`. Used as the RHS of a `type` decl.
 type RecordType struct {
 	LBrace token.Pos
+	RBrace token.Pos
 	Fields []FieldDecl
 }
 
@@ -250,9 +251,11 @@ type ForStmt struct {
 func (s *ForStmt) Pos() token.Pos { return s.KwPos }
 func (s *ForStmt) stmtNode()      {}
 
-// Block: `{ stmts... }`.
+// Block: `{ stmts... }`. RBrace is captured so source-position-based passes
+// (formatter, IDE tools) know where the block ends without re-scanning.
 type Block struct {
 	LBrace token.Pos
+	RBrace token.Pos
 	Stmts  []Stmt
 }
 
@@ -261,10 +264,11 @@ func (b *Block) stmtNode()      {}
 
 // MatchStmt: `match expr { pat | pat => stmts ... }`. Codegens to a `case`.
 type MatchStmt struct {
-	KwPos    token.Pos
-	Subject  Expr
-	Cases    []*MatchCase
-	HasDflt  bool // true if any case is purely the wildcard `_`
+	KwPos   token.Pos
+	Subject Expr
+	Cases   []*MatchCase
+	RBrace  token.Pos
+	HasDflt bool // true if any case is purely the wildcard `_`
 }
 
 func (s *MatchStmt) Pos() token.Pos { return s.KwPos }
@@ -479,6 +483,7 @@ type RecordLit struct {
 	NamePos  token.Pos
 	TypeName string
 	LBrace   token.Pos
+	RBrace   token.Pos
 	Fields   []FieldInit
 }
 

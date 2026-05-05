@@ -39,10 +39,23 @@ type Generator struct {
 	// emitting. emitReturn consults it to decide whether to also write a
 	// `__ret__null` flag (for optional returns) or not.
 	currentReturnType types.Type
+
+	// trace, when true, makes the emitter prefix every statement with an
+	// assignment to `__tt_loc` and install an EXIT trap that prints the last
+	// known source location on a non-zero exit. Opt-in: it ~doubles the line
+	// count of generated sh, so it's only useful when debugging.
+	trace bool
 }
 
 func New(info *checker.TypeInfo) *Generator {
 	return &Generator{info: info}
+}
+
+// WithTrace toggles the source-map runtime trace on/off. Returns the receiver
+// for chaining: `codegen.New(info).WithTrace(true).EmitModules(...)`.
+func (g *Generator) WithTrace(on bool) *Generator {
+	g.trace = on
+	return g
 }
 
 // EmitMode selects the script footer: EmitRun calls `main "$@"` when present
@@ -88,6 +101,20 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 	// `args()` returns a stable view even from inside helper functions whose
 	// own `$@` shadows the script's.
 	g.writeLine(`__tt_argv=$(if [ $# -gt 0 ]; then for __tt_a in "$@"; do printf '%s\n' "$__tt_a"; done; fi)`)
+	if g.trace {
+		g.writeLines([]string{
+			`__tt_loc=""`,
+			`__tt_on_exit() {`,
+			`  __tt_ec=$?`,
+			`  trap - EXIT`,
+			`  if [ "$__tt_ec" -ne 0 ] && [ -n "$__tt_loc" ]; then`,
+			`    printf 'tartalo: error near %s (exit %d)\n' "$__tt_loc" "$__tt_ec" >&2`,
+			`  fi`,
+			`  exit "$__tt_ec"`,
+			`}`,
+			`trap __tt_on_exit EXIT`,
+		})
+	}
 	g.writeLine("")
 
 	// In test mode we declare placeholder test-state vars right after `set -eu`
@@ -399,6 +426,16 @@ func (g *Generator) paramType(fd *ast.FuncDecl, paramName string) types.Type {
 // --- statements -------------------------------------------------------------
 
 func (g *Generator) emitStmt(s ast.Stmt) {
+	if g.trace {
+		if p := s.Pos(); p.File != "" && p.Line > 0 {
+			// Skip the redundant case where Block forwards to its children:
+			// the children will write their own __tt_loc, so writing one for
+			// the wrapping block just adds noise.
+			if _, ok := s.(*ast.Block); !ok {
+				g.writeLine(fmt.Sprintf(`__tt_loc='%s:%d'`, escForSingleQuoted(p.File), p.Line))
+			}
+		}
+	}
 	switch s := s.(type) {
 	case *ast.DeclStmt:
 		g.emitVarDecl(s.Decl, true)

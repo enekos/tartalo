@@ -126,6 +126,13 @@ type Token struct {
 	Pos   Pos
 }
 
+// Comment is a `// ...` line comment captured by the lexer. The text includes
+// the leading `//` and never the trailing newline.
+type Comment struct {
+	Pos  Pos
+	Text string
+}
+
 func (t Token) String() string {
 	if t.Value != "" {
 		return fmt.Sprintf("%s(%q)@%s", t.Kind, t.Value, t.Pos)

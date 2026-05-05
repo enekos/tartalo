@@ -199,6 +199,156 @@ func TestImportingTypeAcrossModules(t *testing.T) {
 	}
 }
 
+func TestDiamondImportLoadsSharedDepOnce(t *testing.T) {
+	// main imports left + right; both import shared. Shared must resolve to
+	// the same *Module pointer (single ID) regardless of which path reaches it
+	// first under the parallel loader.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "shared.tt"), `
+		export func tag(s: string): string { return "[" + s + "]" }
+	`)
+	writeFile(t, filepath.Join(dir, "left.tt"), `
+		import { tag } from "./shared.tt"
+		export func leftSay(s: string): string { return tag("L:" + s) }
+	`)
+	writeFile(t, filepath.Join(dir, "right.tt"), `
+		import { tag } from "./shared.tt"
+		export func rightSay(s: string): string { return tag("R:" + s) }
+	`)
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { leftSay } from "./left.tt"
+		import { rightSay } from "./right.tt"
+		func main(): void {
+			echo(leftSay("hi"))
+			echo(rightSay("hi"))
+		}
+	`)
+	modules, errs := loader.Load(filepath.Join(dir, "main.tt"))
+	if len(errs) > 0 {
+		t.Fatalf("loader errs: %v", errs)
+	}
+	// 4 modules: shared, left, right, main.
+	if len(modules) != 4 {
+		t.Fatalf("expected 4 modules, got %d", len(modules))
+	}
+	// Shared dep should appear exactly once.
+	sharedCount := 0
+	for _, m := range modules {
+		if filepath.Base(m.AbsPath) == "shared.tt" {
+			sharedCount++
+		}
+	}
+	if sharedCount != 1 {
+		t.Fatalf("expected shared.tt to appear once, got %d", sharedCount)
+	}
+	// And both left/right should reference the same pointer.
+	var left, right *loader.Module
+	for _, m := range modules {
+		switch filepath.Base(m.AbsPath) {
+		case "left.tt":
+			left = m
+		case "right.tt":
+			right = m
+		}
+	}
+	if left == nil || right == nil {
+		t.Fatal("missing left/right module")
+	}
+	if left.Imports[0].Module != right.Imports[0].Module {
+		t.Fatal("left and right resolved to distinct shared modules")
+	}
+
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "[L:hi]\n[R:hi]\n"
+	if out != want {
+		t.Errorf("got %q want %q", out, want)
+	}
+}
+
+func TestStdlibImport(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { padLeft } from "tartalo:strings/extra"
+		func main(): void {
+			echo(padLeft("7", 3, "0"))
+		}
+	`)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "007" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestStdlibStringsExtra(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { capitalize, removePrefix, removeSuffix, count, truncate, indent } from "tartalo:strings/extra"
+		func main(): void {
+			echo(capitalize("alice"))
+			echo(removePrefix("foo:bar", "foo:"))
+			echo(removeSuffix("name.tt", ".tt"))
+			echo(str(count("xxxx", "xx")))
+			echo(truncate("abcdef", 5, ".."))
+			echo(indent("a\nb", "> "))
+		}
+	`)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "Alice\nbar\nname\n2\nabc..\n> a\n> b\n"
+	if out != want {
+		t.Errorf("got %q\nwant %q", out, want)
+	}
+}
+
+func TestStdlibNumbersExtra(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { clamp, abs, gcd, pow, isEven, addNum, mulNum } from "tartalo:numbers/extra"
+		func main(): void {
+			echo(str(clamp(15, 0, 10)))
+			echo(str(abs(-7)))
+			echo(str(gcd(48, 18)))
+			echo(str(pow(3, 4)))
+			let xs = [1, 2, 3, 4]
+			echo("evens=" + str(len(filter(xs, isEven))))
+			echo("sum=" + str(reduce(xs, 0, addNum)))
+			echo("prod=" + str(reduce(xs, 1, mulNum)))
+		}
+	`)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "10\n7\n6\n81\nevens=2\nsum=10\nprod=24\n"
+	if out != want {
+		t.Errorf("got %q\nwant %q", out, want)
+	}
+}
+
+func TestStdlibImportMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { whatever } from "tartalo:nope/missing"
+		func main(): void {}
+	`)
+	_, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err == nil || !strings.Contains(err.Error(), "stdlib module") {
+		t.Fatalf("expected stdlib-not-found error, got %v", err)
+	}
+}
+
 func TestRedeclareImportedNameErrors(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "lib.tt"), `

@@ -395,7 +395,8 @@ func (p *Parser) parseRecordType() *ast.RecordType {
 		}
 		break
 	}
-	p.expect(token.RBrace, "record type")
+	rb := p.expect(token.RBrace, "record type")
+	rt.RBrace = rb.Pos
 	return rt
 }
 
@@ -410,7 +411,8 @@ func (p *Parser) parseBlock() *ast.Block {
 			b.Stmts = append(b.Stmts, s)
 		}
 	}
-	p.expect(token.RBrace, "block")
+	rb := p.expect(token.RBrace, "block")
+	b.RBrace = rb.Pos
 	return b
 }
 
@@ -516,7 +518,8 @@ func (p *Parser) parseMatch() *ast.MatchStmt {
 			}
 		}
 	}
-	p.expect(token.RBrace, "match statement")
+	rb := p.expect(token.RBrace, "match statement")
+	m.RBrace = rb.Pos
 	return m
 }
 
@@ -790,7 +793,8 @@ func (p *Parser) parseRecordLitBody(lbracePos token.Pos, typeName string, namePo
 		}
 		break
 	}
-	p.expect(token.RBrace, "record literal")
+	rb := p.expect(token.RBrace, "record literal")
+	lit.RBrace = rb.Pos
 	return lit
 }
 

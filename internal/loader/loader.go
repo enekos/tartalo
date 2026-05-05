@@ -4,16 +4,24 @@
 // module. The result is a flat slice of *Module values in topological order
 // (dependencies before dependents) with stable per-module IDs that the
 // codegen uses to mangle global names.
+//
+// Lex+parse runs in parallel across modules: when a module is parsed and its
+// imports are known, each unseen import is dispatched to its own goroutine.
+// Cycle detection happens after the parse phase via a colored DFS, since the
+// previous "visiting set" approach didn't survive concurrent recursion.
 package loader
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/enekos/tartalo/internal/ast"
 	"github.com/enekos/tartalo/internal/lexer"
 	"github.com/enekos/tartalo/internal/parser"
+	"github.com/enekos/tartalo/internal/stdlib"
 )
 
 // Module is one parsed source file plus its resolved import edges.
@@ -22,7 +30,8 @@ type Module struct {
 	// same module imported via two different relative paths is loaded once.
 	AbsPath string
 
-	// ID is a unique 0-based index. The entry file is ID 0, dependencies follow.
+	// ID is a unique 0-based index. Assigned in topological order so deps
+	// always have lower IDs than dependents.
 	ID int
 
 	// File is the parsed AST for this module.
@@ -51,14 +60,20 @@ func Load(entryPath string) ([]*Module, []error) {
 	if err != nil {
 		return nil, []error{err}
 	}
-	l := &loader{
-		cache:    map[string]*Module{},
-		visiting: map[string]bool{},
+	l := &loader{cache: map[string]*Module{}}
+	root := l.startLoad(abs, true)
+	l.wg.Wait()
+	if root == nil || root.File == nil {
+		return nil, l.errs
 	}
-	root, errs := l.load(abs, true)
-	if root == nil {
-		return nil, errs
+
+	if cycErr := detectCycles(root); cycErr != nil {
+		l.errs = append(l.errs, cycErr)
+		// Drop back-edges so downstream walks don't loop. Front-end bails on
+		// errs anyway, but a defensive break keeps callers safe.
+		breakBackEdges(root)
 	}
+
 	// Topological sort: post-order DFS gives us deps-before-dependents.
 	var ordered []*Module
 	seen := map[*Module]bool{}
@@ -76,72 +91,189 @@ func Load(entryPath string) ([]*Module, []error) {
 		ordered = append(ordered, m)
 	}
 	visit(root)
-	// Re-assign IDs in topological order so codegen's mangling is stable.
 	for i, m := range ordered {
 		m.ID = i
 	}
-	return ordered, errs
+	return ordered, l.errs
 }
 
 type loader struct {
-	cache    map[string]*Module
-	visiting map[string]bool
-	errs     []error
+	mu    sync.Mutex
+	cache map[string]*Module
+	errs  []error
+	wg    sync.WaitGroup
 }
 
-func (l *loader) load(absPath string, isEntry bool) (*Module, []error) {
-	// Cycle check must come BEFORE the cache check: we eagerly cache modules
-	// the moment they're parsed (so two siblings that import a shared dep get
-	// the same Module pointer), which means a cycle would be silently
-	// resolvable without this guard.
-	if l.visiting[absPath] {
-		l.errs = append(l.errs, fmt.Errorf("import cycle detected involving %s", absPath))
-		return nil, l.errs
-	}
+// startLoad guarantees there is exactly one *Module per absolute path. If we
+// haven't seen this path before, it allocates the Module, caches it, and
+// kicks off a goroutine to parse it. Returns the (possibly still-being-parsed)
+// pointer; callers must wait on wg before reading File or Imports.
+func (l *loader) startLoad(absPath string, isEntry bool) *Module {
+	l.mu.Lock()
 	if m, ok := l.cache[absPath]; ok {
-		return m, nil
+		l.mu.Unlock()
+		return m
 	}
-	l.visiting[absPath] = true
-	defer delete(l.visiting, absPath)
-
-	src, err := os.ReadFile(absPath)
-	if err != nil {
-		l.errs = append(l.errs, fmt.Errorf("read %s: %w", absPath, err))
-		return nil, l.errs
-	}
-	toks, lerrs := lexer.New(filepath.Base(absPath), string(src)).Tokenize()
-	l.errs = append(l.errs, lerrs...)
-	file, perrs := parser.New(toks).Parse(filepath.Base(absPath))
-	l.errs = append(l.errs, perrs...)
-	if file == nil {
-		return nil, l.errs
-	}
-	m := &Module{
-		AbsPath: absPath,
-		File:    file,
-		IsEntry: isEntry,
-	}
+	m := &Module{AbsPath: absPath, IsEntry: isEntry}
 	l.cache[absPath] = m
+	l.mu.Unlock()
 
-	dir := filepath.Dir(absPath)
-	for _, imp := range file.Imports {
-		resolvedPath := imp.Path
-		if !filepath.IsAbs(resolvedPath) {
-			resolvedPath = filepath.Join(dir, resolvedPath)
+	l.wg.Add(1)
+	go l.parseModule(m)
+	return m
+}
+
+func (l *loader) parseModule(m *Module) {
+	defer l.wg.Done()
+
+	var (
+		src      []byte
+		fileName string
+	)
+	if stdlib.IsStdlibPath(m.AbsPath) {
+		_, data, ok := stdlib.Resolve(m.AbsPath)
+		if !ok {
+			l.addErr(fmt.Errorf("read stdlib %s: not found", m.AbsPath))
+			return
 		}
-		canonical, err := filepath.Abs(resolvedPath)
+		src = data
+		fileName = m.AbsPath
+	} else {
+		data, err := os.ReadFile(m.AbsPath)
 		if err != nil {
-			l.errs = append(l.errs, fmt.Errorf("%s: %w", imp.PathPos, err))
+			l.addErr(fmt.Errorf("read %s: %w", m.AbsPath, err))
+			return
+		}
+		src = data
+		fileName = filepath.Base(m.AbsPath)
+	}
+	toks, lerrs := lexer.New(fileName, string(src)).Tokenize()
+	l.addErrs(lerrs)
+	file, perrs := parser.New(toks).Parse(fileName)
+	l.addErrs(perrs)
+	if file == nil {
+		return
+	}
+	m.File = file
+
+	for _, imp := range file.Imports {
+		dep, err := l.resolveImport(m, imp)
+		if err != nil {
+			l.addErr(err)
 			m.Imports = append(m.Imports, ResolvedImport{Decl: imp})
 			continue
 		}
-		if _, err := os.Stat(canonical); err != nil {
-			l.errs = append(l.errs, fmt.Errorf("%s: cannot find module %q (resolved to %s)", imp.PathPos, imp.Path, canonical))
-			m.Imports = append(m.Imports, ResolvedImport{Decl: imp})
-			continue
-		}
-		dep, _ := l.load(canonical, false)
 		m.Imports = append(m.Imports, ResolvedImport{Decl: imp, Module: dep})
 	}
-	return m, l.errs
+}
+
+// resolveImport turns an ImportDecl's path string into a *Module pointer,
+// loading it if necessary. Two flavours:
+//
+//   - "tartalo:foo/bar" — a stdlib import. Resolved against the embedded
+//     filesystem in the stdlib package; the canonical path is the import
+//     string itself, kept stable so two `import` statements for the same
+//     stdlib path collapse to a single Module.
+//   - any other path — a relative file path resolved against the importing
+//     module's directory. Stdlib modules cannot use relative imports.
+func (l *loader) resolveImport(m *Module, imp *ast.ImportDecl) (*Module, error) {
+	if strings.HasPrefix(imp.Path, stdlib.Prefix) {
+		canonical, _, ok := stdlib.Resolve(imp.Path)
+		if !ok {
+			return nil, fmt.Errorf("%s: cannot find stdlib module %q", imp.PathPos, imp.Path)
+		}
+		return l.startLoad(canonical, false), nil
+	}
+	if stdlib.IsStdlibPath(m.AbsPath) {
+		return nil, fmt.Errorf("%s: stdlib modules cannot use relative imports (got %q)", imp.PathPos, imp.Path)
+	}
+	dir := filepath.Dir(m.AbsPath)
+	resolvedPath := imp.Path
+	if !filepath.IsAbs(resolvedPath) {
+		resolvedPath = filepath.Join(dir, resolvedPath)
+	}
+	canonical, err := filepath.Abs(resolvedPath)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", imp.PathPos, err)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		return nil, fmt.Errorf("%s: cannot find module %q (resolved to %s)", imp.PathPos, imp.Path, canonical)
+	}
+	return l.startLoad(canonical, false), nil
+}
+
+func (l *loader) addErr(e error) {
+	l.mu.Lock()
+	l.errs = append(l.errs, e)
+	l.mu.Unlock()
+}
+
+func (l *loader) addErrs(es []error) {
+	if len(es) == 0 {
+		return
+	}
+	l.mu.Lock()
+	l.errs = append(l.errs, es...)
+	l.mu.Unlock()
+}
+
+// detectCycles walks the import graph from root with the classic
+// white/gray/black DFS coloring and returns the first cycle found.
+func detectCycles(root *Module) error {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := map[*Module]int{}
+	var visit func(m *Module) error
+	visit = func(m *Module) error {
+		switch color[m] {
+		case gray:
+			return fmt.Errorf("import cycle detected involving %s", m.AbsPath)
+		case black:
+			return nil
+		}
+		color[m] = gray
+		for _, imp := range m.Imports {
+			if imp.Module != nil {
+				if err := visit(imp.Module); err != nil {
+					return err
+				}
+			}
+		}
+		color[m] = black
+		return nil
+	}
+	return visit(root)
+}
+
+// breakBackEdges nils out any import edge that closes a cycle, so post-error
+// walks of the graph can't loop.
+func breakBackEdges(root *Module) {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := map[*Module]int{}
+	var visit func(m *Module)
+	visit = func(m *Module) {
+		if color[m] == black {
+			return
+		}
+		color[m] = gray
+		for i, imp := range m.Imports {
+			if imp.Module == nil {
+				continue
+			}
+			if color[imp.Module] == gray {
+				m.Imports[i].Module = nil
+				continue
+			}
+			visit(imp.Module)
+		}
+		color[m] = black
+	}
+	visit(root)
 }

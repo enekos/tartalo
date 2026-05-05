@@ -8,11 +8,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/enekos/tartalo/internal/checker"
 	"github.com/enekos/tartalo/internal/codegen"
+	"github.com/enekos/tartalo/internal/format"
 	"github.com/enekos/tartalo/internal/loader"
+	"github.com/enekos/tartalo/internal/lsp"
+	"github.com/enekos/tartalo/internal/verify"
 )
 
 func main() {
@@ -41,6 +46,12 @@ func run(args []string) error {
 		return cmdCheck(rest)
 	case "test":
 		return cmdTest(rest)
+	case "fmt":
+		return cmdFmt(rest)
+	case "bench":
+		return cmdBench(rest)
+	case "lsp":
+		return lsp.Run(os.Stdin, os.Stdout)
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return nil
@@ -52,11 +63,18 @@ func run(args []string) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
-  tartalo build <file.tt> [-o <out.sh>]
-  tartalo run   <file.tt> [-- args...]
-  tartalo test  <file.tt>             # run all `+"`test \"...\" { ... }`"+` declarations
+  tartalo build <file.tt> [-o <out.sh>] [--no-verify] [--trace]
+  tartalo run   [--no-verify] [--trace] <file.tt> [-- args...]
+  tartalo test  <file.tt> [--no-verify]   # run all `+"`test \"...\" { ... }`"+` declarations
   tartalo check <file.tt>             # type-check without emitting sh
-  tartalo help`)
+  tartalo fmt   [-l|-d|-w] <file.tt>...   # format source (default: rewrite in place)
+  tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]   # time compile phases (and run) over N iterations
+  tartalo lsp                             # speak Language Server Protocol over stdio (syntax diagnostics)
+  tartalo help
+
+By default, build/run/test pipe the emitted sh through shellcheck before
+writing or executing it. Pass --no-verify (or set TARTALO_NO_VERIFY=1) to
+skip the safety check.`)
 }
 
 // compileErrors is a typed wrapper around lex/parse/check error lists so the
@@ -86,12 +104,12 @@ func frontEnd(path string) ([]*loader.Module, *checker.TypeInfo, error) {
 	return modules, info, nil
 }
 
-func compileFile(path string) (string, error) {
+func compileFile(path string, trace bool) (string, error) {
 	modules, info, err := frontEnd(path)
 	if err != nil {
 		return "", err
 	}
-	return codegen.New(info).EmitModules(modules), nil
+	return codegen.New(info).WithTrace(trace).EmitModules(modules), nil
 }
 
 // compileFileForTest compiles in test mode: the resulting script runs every
@@ -104,11 +122,39 @@ func compileFileForTest(path string) (string, error) {
 	return codegen.New(info).EmitModulesTest(modules), nil
 }
 
+// verifySh is the compile-output guardrail: it pipes the emitted script
+// through shellcheck (POSIX sh mode) and aborts the command if anything
+// survives the suppression list. Skipped when noVerify is true or when the
+// TARTALO_NO_VERIFY env var is set to a non-empty value.
+//
+// When shellcheck isn't installed, we surface a hard error rather than
+// silently passing — the whole point of this hook is to *ensure* output
+// safety; "we couldn't tell" is not the same as "it's fine."
+func verifySh(label, script string, noVerify bool) error {
+	if noVerify || os.Getenv("TARTALO_NO_VERIFY") != "" {
+		return nil
+	}
+	findings, err := verify.Run(script)
+	if err != nil {
+		if errors.Is(err, verify.ErrShellcheckMissing) {
+			return fmt.Errorf("%s: shellcheck not found on PATH; install it (brew/apt/etc.) or pass --no-verify to skip the safety check", label)
+		}
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	if len(findings) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s: shellcheck found %d issue(s) in generated sh:\n%s",
+		label, len(findings), verify.FormatFindings(findings))
+}
+
 func cmdBuild(args []string) error {
 	var (
-		input   string
-		out     string
-		hadFlag bool
+		input    string
+		out      string
+		hadFlag  bool
+		noVerify bool
+		trace    bool
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -126,8 +172,12 @@ func cmdBuild(args []string) error {
 		case strings.HasPrefix(a, "--output="):
 			out = strings.TrimPrefix(a, "--output=")
 			hadFlag = true
+		case a == "--no-verify":
+			noVerify = true
+		case a == "--trace":
+			trace = true
 		case a == "-h" || a == "--help":
-			fmt.Println("usage: tartalo build <file.tt> [-o <out.sh>]")
+			fmt.Println("usage: tartalo build <file.tt> [-o <out.sh>] [--no-verify] [--trace]")
 			return nil
 		case strings.HasPrefix(a, "-"):
 			return fmt.Errorf("build: unknown flag %q", a)
@@ -142,8 +192,11 @@ func cmdBuild(args []string) error {
 	if input == "" {
 		return fmt.Errorf("build: expected an input file")
 	}
-	sh, err := compileFile(input)
+	sh, err := compileFile(input, trace)
 	if err != nil {
+		return err
+	}
+	if err := verifySh("build", sh, noVerify); err != nil {
 		return err
 	}
 	target := out
@@ -181,13 +234,18 @@ func cmdCheck(args []string) error {
 }
 
 func cmdTest(args []string) error {
-	var input string
+	var (
+		input    string
+		noVerify bool
+	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "-h" || a == "--help":
-			fmt.Println("usage: tartalo test <file.tt>")
+			fmt.Println("usage: tartalo test <file.tt> [--no-verify]")
 			return nil
+		case a == "--no-verify":
+			noVerify = true
 		case strings.HasPrefix(a, "-"):
 			return fmt.Errorf("test: unknown flag %q", a)
 		default:
@@ -202,6 +260,9 @@ func cmdTest(args []string) error {
 	}
 	sh, err := compileFileForTest(input)
 	if err != nil {
+		return err
+	}
+	if err := verifySh("test", sh, noVerify); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp("", "tartalo-test-*.sh")
@@ -234,13 +295,36 @@ func cmdRun(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("run: expected an input file")
 	}
+	// Strip leading run-only flags (--no-verify, --trace). Anything after the
+	// input file is forwarded to the script.
+	noVerify := false
+	trace := false
+	for len(args) > 0 {
+		switch args[0] {
+		case "--no-verify":
+			noVerify = true
+			args = args[1:]
+		case "--trace":
+			trace = true
+			args = args[1:]
+		default:
+			goto doneFlags
+		}
+	}
+doneFlags:
+	if len(args) == 0 {
+		return fmt.Errorf("run: expected an input file")
+	}
 	in := args[0]
 	scriptArgs := args[1:]
 	if len(scriptArgs) > 0 && scriptArgs[0] == "--" {
 		scriptArgs = scriptArgs[1:]
 	}
-	sh, err := compileFile(in)
+	sh, err := compileFile(in, trace)
 	if err != nil {
+		return err
+	}
+	if err := verifySh("run", sh, noVerify); err != nil {
 		return err
 	}
 
@@ -269,4 +353,291 @@ func cmdRun(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// cmdFmt implements `tartalo fmt`. The default action is in-place rewrite,
+// matching gofmt with `-w`. Flags:
+//
+//	-l     list files whose formatting differs from the canonical form
+//	-d     write a unified-style diff to stdout instead of rewriting
+//	-w     write back to source (the default; included for parity with gofmt)
+//	--     end of flags
+//
+// With no file arguments, fmt reads from stdin and writes to stdout. A
+// non-zero exit indicates either an unparseable input or, in -l mode, that at
+// least one file would change.
+func cmdFmt(args []string) error {
+	var (
+		listOnly bool
+		diffOnly bool
+		write    = true
+		paths    []string
+	)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-l":
+			listOnly = true
+			write = false
+		case a == "-d":
+			diffOnly = true
+			write = false
+		case a == "-w":
+			write = true
+		case a == "-h" || a == "--help":
+			fmt.Println("usage: tartalo fmt [-l|-d|-w] <file.tt>...")
+			return nil
+		case a == "--":
+			paths = append(paths, args[i+1:]...)
+			i = len(args)
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("fmt: unknown flag %q", a)
+		default:
+			paths = append(paths, a)
+		}
+	}
+
+	if len(paths) == 0 {
+		// stdin → stdout
+		src, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		out, err := format.Source("<stdin>", string(src))
+		if err != nil {
+			return err
+		}
+		_, _ = io.WriteString(os.Stdout, out)
+		return nil
+	}
+
+	anyDiff := false
+	for _, path := range paths {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out, err := format.Source(filepath.Base(path), string(src))
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		if string(src) == out {
+			continue
+		}
+		anyDiff = true
+		switch {
+		case listOnly:
+			fmt.Println(path)
+		case diffOnly:
+			io.WriteString(os.Stdout, simpleDiff(path, string(src), out))
+		case write:
+			if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	if listOnly && anyDiff {
+		os.Exit(1)
+	}
+	return nil
+}
+
+// cmdBench measures how long each compile phase takes on a given source file
+// and (unless --no-run is set) how long the resulting script takes to run.
+// Each phase is timed across N iterations and reported as min / median / mean
+// / max. Output is plain-text, one row per phase.
+func cmdBench(args []string) error {
+	var (
+		input    string
+		n        = 5
+		noVerify bool
+		noRun    bool
+	)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-n":
+			if i+1 >= len(args) {
+				return fmt.Errorf("bench: -n requires a value")
+			}
+			v, err := parsePositiveInt(args[i+1])
+			if err != nil {
+				return fmt.Errorf("bench: -n: %w", err)
+			}
+			n = v
+			i++
+		case strings.HasPrefix(a, "-n="):
+			v, err := parsePositiveInt(strings.TrimPrefix(a, "-n="))
+			if err != nil {
+				return fmt.Errorf("bench: -n: %w", err)
+			}
+			n = v
+		case a == "--no-verify":
+			noVerify = true
+		case a == "--no-run":
+			noRun = true
+		case a == "-h" || a == "--help":
+			fmt.Println("usage: tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]")
+			return nil
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("bench: unknown flag %q", a)
+		default:
+			if input != "" {
+				return fmt.Errorf("bench: expected exactly one input file")
+			}
+			input = a
+		}
+	}
+	if input == "" {
+		return fmt.Errorf("bench: expected an input file")
+	}
+
+	phases := []string{"frontend", "codegen"}
+	if !noVerify {
+		phases = append(phases, "verify")
+	}
+	if !noRun {
+		phases = append(phases, "run")
+	}
+	timings := map[string][]time.Duration{}
+
+	for iter := 0; iter < n; iter++ {
+		t0 := time.Now()
+		modules, info, err := frontEnd(input)
+		timings["frontend"] = append(timings["frontend"], time.Since(t0))
+		if err != nil {
+			return err
+		}
+
+		t0 = time.Now()
+		sh := codegen.New(info).EmitModules(modules)
+		timings["codegen"] = append(timings["codegen"], time.Since(t0))
+
+		if !noVerify {
+			t0 = time.Now()
+			if err := verifySh("bench", sh, false); err != nil {
+				return err
+			}
+			timings["verify"] = append(timings["verify"], time.Since(t0))
+		}
+
+		if !noRun {
+			tmp, err := os.CreateTemp("", "tartalo-bench-*.sh")
+			if err != nil {
+				return err
+			}
+			if _, err := tmp.WriteString(sh); err != nil {
+				tmp.Close()
+				os.Remove(tmp.Name())
+				return err
+			}
+			if err := tmp.Close(); err != nil {
+				os.Remove(tmp.Name())
+				return err
+			}
+			t0 = time.Now()
+			cmd := exec.Command("/bin/sh", tmp.Name())
+			cmd.Stdin = nil
+			cmd.Stdout = io.Discard
+			cmd.Stderr = io.Discard
+			runErr := cmd.Run()
+			timings["run"] = append(timings["run"], time.Since(t0))
+			os.Remove(tmp.Name())
+			if runErr != nil {
+				return fmt.Errorf("bench: script failed on iteration %d: %w", iter+1, runErr)
+			}
+		}
+	}
+
+	fmt.Printf("tartalo bench: %s  (n=%d)\n", input, n)
+	fmt.Printf("%-10s %10s %10s %10s %10s\n", "phase", "min", "median", "mean", "max")
+	for _, p := range phases {
+		ds := timings[p]
+		min, med, mean, max := summarize(ds)
+		fmt.Printf("%-10s %10s %10s %10s %10s\n",
+			p, fmtDur(min), fmtDur(med), fmtDur(mean), fmtDur(max))
+	}
+	return nil
+}
+
+func parsePositiveInt(s string) (int, error) {
+	v := 0
+	if s == "" {
+		return 0, fmt.Errorf("expected a number")
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("expected a number, got %q", s)
+		}
+		v = v*10 + int(c-'0')
+	}
+	if v <= 0 {
+		return 0, fmt.Errorf("must be > 0")
+	}
+	return v, nil
+}
+
+func summarize(ds []time.Duration) (min, med, mean, max time.Duration) {
+	if len(ds) == 0 {
+		return
+	}
+	cp := make([]time.Duration, len(ds))
+	copy(cp, ds)
+	sort.Slice(cp, func(i, j int) bool { return cp[i] < cp[j] })
+	min = cp[0]
+	max = cp[len(cp)-1]
+	med = cp[len(cp)/2]
+	var total time.Duration
+	for _, d := range cp {
+		total += d
+	}
+	mean = total / time.Duration(len(cp))
+	return
+}
+
+func fmtDur(d time.Duration) string {
+	switch {
+	case d >= time.Second:
+		return fmt.Sprintf("%.2fs", d.Seconds())
+	case d >= time.Millisecond:
+		return fmt.Sprintf("%.2fms", float64(d)/float64(time.Millisecond))
+	default:
+		return fmt.Sprintf("%dµs", d.Microseconds())
+	}
+}
+
+// simpleDiff returns a header-prefixed line-by-line diff that's good enough
+// for human inspection without pulling in an external diff dependency. Lines
+// only in the original are prefixed `-`, lines only in the formatted output
+// are prefixed `+`, and a context header names the file.
+func simpleDiff(path, before, after string) string {
+	if before == after {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- %s (original)\n+++ %s (formatted)\n", path, path)
+	bs := strings.Split(before, "\n")
+	as := strings.Split(after, "\n")
+	// Longest common prefix and suffix to compress identical context lines.
+	pre := 0
+	for pre < len(bs) && pre < len(as) && bs[pre] == as[pre] {
+		pre++
+	}
+	suf := 0
+	for suf < len(bs)-pre && suf < len(as)-pre && bs[len(bs)-1-suf] == as[len(as)-1-suf] {
+		suf++
+	}
+	if pre > 0 {
+		fmt.Fprintf(&b, "@@ ... %d unchanged lines @@\n", pre)
+	}
+	for _, line := range bs[pre : len(bs)-suf] {
+		fmt.Fprintf(&b, "-%s\n", line)
+	}
+	for _, line := range as[pre : len(as)-suf] {
+		fmt.Fprintf(&b, "+%s\n", line)
+	}
+	if suf > 0 {
+		fmt.Fprintf(&b, "@@ ... %d unchanged lines @@\n", suf)
+	}
+	return b.String()
 }
