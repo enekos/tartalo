@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/enekosarasola/tartalo/internal/token"
+	"github.com/enekos/tartalo/internal/token"
 )
 
 type mode int

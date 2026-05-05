@@ -11,9 +11,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/enekosarasola/tartalo/internal/ast"
-	"github.com/enekosarasola/tartalo/internal/lexer"
-	"github.com/enekosarasola/tartalo/internal/parser"
+	"github.com/enekos/tartalo/internal/ast"
+	"github.com/enekos/tartalo/internal/lexer"
+	"github.com/enekos/tartalo/internal/parser"
 )
 
 // Module is one parsed source file plus its resolved import edges.

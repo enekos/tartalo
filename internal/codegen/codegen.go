@@ -19,11 +19,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/enekosarasola/tartalo/internal/ast"
-	"github.com/enekosarasola/tartalo/internal/checker"
-	"github.com/enekosarasola/tartalo/internal/loader"
-	"github.com/enekosarasola/tartalo/internal/token"
-	"github.com/enekosarasola/tartalo/internal/types"
+	"github.com/enekos/tartalo/internal/ast"
+	"github.com/enekos/tartalo/internal/checker"
+	"github.com/enekos/tartalo/internal/loader"
+	"github.com/enekos/tartalo/internal/token"
+	"github.com/enekos/tartalo/internal/types"
 )
 
 type Generator struct {
@@ -1249,15 +1249,24 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		// We use POSIX `${var+x}` to distinguish "unset" (null) from "set to
 		// empty" (non-null empty string). Both branches populate the sidecar
 		// `__null` flag so consumers see a consistent optional shape.
+		//
+		// The `eval` here would be a shell-injection vector if the runtime
+		// name contained metacharacters (e.g. `FOO}; rm -rf /; #`). We gate it
+		// behind a `case` that only admits strings matching the POSIX env-var
+		// name grammar `[A-Za-z_][A-Za-z0-9_]*`. Anything else cannot name a
+		// real env var anyway, so reporting it as unset is correct.
 		val := g.tmp("env")
 		nullVar := g.tmp("envn")
 		nameTmp := g.tmp("envname")
 		isSet := g.tmp("envset")
 		prologue = append(prologue, fmt.Sprintf("%s=%s", nameTmp, args[0].assignmentRHS()))
-		prologue = append(prologue, fmt.Sprintf(`eval "%s=\${$%s+1}"`, isSet, nameTmp))
 		prologue = append(prologue, fmt.Sprintf(
-			`if [ -z "$%s" ]; then %s=""; %s=1; else eval "%s=\$$%s"; %s=0; fi`,
-			isSet, val, nullVar, val, nameTmp, nullVar))
+			`case "$%s" in ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) %s=""; %s=1 ;; *) eval "%s=\${$%s+1}"; if [ -z "$%s" ]; then %s=""; %s=1; else eval "%s=\$$%s"; %s=0; fi ;; esac`,
+			nameTmp,
+			val, nullVar,
+			isSet, nameTmp,
+			isSet, val, nullVar,
+			val, nameTmp, nullVar))
 		return exprValue{
 			prologue:  prologue,
 			value:     "${" + val + "}",

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/enekosarasola/tartalo/internal/checker"
-	"github.com/enekosarasola/tartalo/internal/codegen"
-	"github.com/enekosarasola/tartalo/internal/lexer"
-	"github.com/enekosarasola/tartalo/internal/parser"
+	"github.com/enekos/tartalo/internal/checker"
+	"github.com/enekos/tartalo/internal/codegen"
+	"github.com/enekos/tartalo/internal/lexer"
+	"github.com/enekos/tartalo/internal/parser"
 )
 
 // compile is the test-side version of the compiler pipeline. It returns the

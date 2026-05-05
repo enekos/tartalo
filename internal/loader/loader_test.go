@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/enekosarasola/tartalo/internal/checker"
-	"github.com/enekosarasola/tartalo/internal/codegen"
-	"github.com/enekosarasola/tartalo/internal/loader"
+	"github.com/enekos/tartalo/internal/checker"
+	"github.com/enekos/tartalo/internal/codegen"
+	"github.com/enekos/tartalo/internal/loader"
 )
 
 // writeFile is a test helper that creates a file at the given path with the

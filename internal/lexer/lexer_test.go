@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/enekosarasola/tartalo/internal/token"
+	"github.com/enekos/tartalo/internal/token"
 )
 
 func tokenize(t *testing.T, src string) []token.Token {

@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/enekosarasola/tartalo/internal/ast"
-	"github.com/enekosarasola/tartalo/internal/token"
+	"github.com/enekos/tartalo/internal/ast"
+	"github.com/enekos/tartalo/internal/token"
 )
 
 type Parser struct {

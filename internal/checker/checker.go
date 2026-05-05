@@ -11,10 +11,10 @@ package checker
 import (
 	"fmt"
 
-	"github.com/enekosarasola/tartalo/internal/ast"
-	"github.com/enekosarasola/tartalo/internal/loader"
-	"github.com/enekosarasola/tartalo/internal/token"
-	"github.com/enekosarasola/tartalo/internal/types"
+	"github.com/enekos/tartalo/internal/ast"
+	"github.com/enekos/tartalo/internal/loader"
+	"github.com/enekos/tartalo/internal/token"
+	"github.com/enekos/tartalo/internal/types"
 )
 
 // Symbol represents a named binding (variable, parameter, function).

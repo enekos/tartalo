@@ -4,7 +4,7 @@
 // checker and stored separately in a TypeInfo side table keyed by node pointer.
 package ast
 
-import "github.com/enekosarasola/tartalo/internal/token"
+import "github.com/enekos/tartalo/internal/token"
 
 // Node is the root interface for every AST node.
 type Node interface {

@@ -34,5 +34,5 @@ build/
 .DS_Store
 Thumbs.db
 
-# Project binary
-tartalo
+# Project binary (root only — don't shadow cmd/tartalo/)
+/tartalo

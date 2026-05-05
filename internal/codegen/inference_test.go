@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/enekosarasola/tartalo/internal/checker"
-	"github.com/enekosarasola/tartalo/internal/lexer"
-	"github.com/enekosarasola/tartalo/internal/parser"
+	"github.com/enekos/tartalo/internal/checker"
+	"github.com/enekos/tartalo/internal/lexer"
+	"github.com/enekos/tartalo/internal/parser"
 )
 
 func checkOnly(t *testing.T, src string) []error {

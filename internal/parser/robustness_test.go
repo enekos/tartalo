@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/enekosarasola/tartalo/internal/lexer"
-	"github.com/enekosarasola/tartalo/internal/parser"
+	"github.com/enekos/tartalo/internal/lexer"
+	"github.com/enekos/tartalo/internal/parser"
 )
 
 // safeParse runs the full lex+parse pipeline and recovers from any panic.
