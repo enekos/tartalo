@@ -726,9 +726,16 @@ func (g *Generator) emitForRange(s *ast.ForStmt, r *ast.RangeExpr) {
 	g.writeLines(start.prologue)
 	g.writeLines(end.prologue)
 	g.writeLine(fmt.Sprintf("%s=%s", shName(s.Var), start.assignmentRHS()))
-	// Inline constant end bounds to avoid an extra temp variable.
+	// Inline simple end bounds (constants or bare identifiers) to avoid an
+	// extra temp variable. Complex expressions still need a temp.
 	if lit, ok := r.End.(*ast.IntLit); ok {
 		g.writeLine(fmt.Sprintf("while [ \"$%s\" -lt %d ]; do", shName(s.Var), lit.Value))
+	} else if id, ok := r.End.(*ast.Ident); ok {
+		name := shName(id.Name)
+		if sym := g.info.Uses[id]; sym != nil && sym.Module != nil {
+			name = shName(checker.MangledName(sym.Module, sym.Name))
+		}
+		g.writeLine(fmt.Sprintf("while [ \"$%s\" -lt \"$%s\" ]; do", shName(s.Var), name))
 	} else {
 		endVar := g.tmp("end")
 		g.writeLine(fmt.Sprintf("%s=%s", endVar, end.assignmentRHS()))
