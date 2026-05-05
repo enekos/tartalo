@@ -789,8 +789,19 @@ func (g *Generator) emitForRange(s *ast.ForStmt, r *ast.RangeExpr) {
 func (g *Generator) emitForLines(s *ast.ForStmt) {
 	v := g.compileExpr(s.Iter)
 	g.writeLines(v.prologue)
-	linesVar := g.tmp("lines")
-	g.writeLine(fmt.Sprintf("%s=%s", linesVar, v.assignmentRHS()))
+	// For a simple string variable we can use it directly in the heredoc
+	// instead of copying into a temp first.
+	linesVar := ""
+	if id, ok := s.Iter.(*ast.Ident); ok {
+		name := shName(id.Name)
+		if sym := g.info.Uses[id]; sym != nil && sym.Module != nil {
+			name = shName(checker.MangledName(sym.Module, sym.Name))
+		}
+		linesVar = name
+	} else {
+		linesVar = g.tmp("lines")
+		g.writeLine(fmt.Sprintf("%s=%s", linesVar, v.assignmentRHS()))
+	}
 	g.writeLine(fmt.Sprintf("if [ -n \"$%s\" ]; then", linesVar))
 	g.indent++
 	g.writeLine(fmt.Sprintf("while IFS= read -r %s; do", shName(s.Var)))
