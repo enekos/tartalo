@@ -2578,6 +2578,10 @@ func (g *Generator) compileCond(e ast.Expr) condValue {
 	}
 	// Fallback: evaluate to a 0/1 value and test it.
 	v := g.compileExpr(e)
+	// For simple identifiers (bool/number locals) we can test directly.
+	if len(v.prologue) == 0 && (v.form == formArith || v.form == formBool) && isSimpleIdent(v.value) {
+		return condValue{test: fmt.Sprintf("[ \"$%s\" = 1 ]", v.value)}
+	}
 	t := g.tmp("cond")
 	prologue := append([]string{}, v.prologue...)
 	prologue = append(prologue, fmt.Sprintf("%s=%s", t, v.assignmentRHS()))
