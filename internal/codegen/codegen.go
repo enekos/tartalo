@@ -367,6 +367,28 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
+func itoa64(n int64) string {
+	if n >= 0 && n < 10 {
+		return string(byte('0' + byte(n)))
+	}
+	var buf [24]byte
+	i := len(buf)
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
 // --- function declarations --------------------------------------------------
 
 func (g *Generator) emitFunc(fd *ast.FuncDecl) {
@@ -1016,7 +1038,7 @@ func isIntLiteral(s string) bool {
 func (g *Generator) compileExpr(e ast.Expr) exprValue {
 	switch e := e.(type) {
 	case *ast.IntLit:
-		return exprValue{value: fmt.Sprintf("%d", e.Value), form: formArith}
+		return exprValue{value: itoa64(e.Value), form: formArith}
 	case *ast.FloatLit:
 		// Floats live as plain shell strings; awk handles arithmetic on them.
 		return exprValue{value: e.Text, form: formStr}
@@ -1552,7 +1574,7 @@ func (g *Generator) arithOp(b *ast.BinaryExpr) exprValue {
 	op := arithSym(b.Op)
 	return exprValue{
 		prologue: concatPrologues(lv.prologue, rv.prologue),
-		value:    fmt.Sprintf("%s %s %s", arithGroup(lv, b.Op, true), op, arithGroup(rv, b.Op, false)),
+		value:    arithGroup(lv, b.Op, true) + " " + op + " " + arithGroup(rv, b.Op, false),
 		form:     formArith,
 	}
 }
