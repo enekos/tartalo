@@ -704,7 +704,11 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 	}
 	v := g.compileExpr(s.Value)
 	g.writeLines(v.prologue)
-	g.writeLine(fmt.Sprintf("__ret=%s", v.assignmentRHS()))
+	if (v.form == formArith || v.form == formBool) && isSimpleIdent(v.value) {
+		g.writeLine("__ret=$" + v.value)
+	} else {
+		g.writeLine(fmt.Sprintf("__ret=%s", v.assignmentRHS()))
+	}
 	// If the function's return type is optional, also propagate the null flag.
 	// We detect this by whether the value carries one OR the function's
 	// declared return type is optional and we're auto-wrapping a non-optional.
@@ -2766,8 +2770,12 @@ func isSimpleIdent(s string) bool {
 	if s == "" {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
+	c := s[0]
+	if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c = s[i]
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
 			return false
 		}
