@@ -409,13 +409,14 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 				}
 			}
 		case *types.Optional:
-			g.writeLine(fmt.Sprintf(`local %s="$%d"`, shName(p.Name), pos))
+			name := shName(p.Name)
+			g.writeLine("local " + name + `="$` + itoa(pos) + `"`)
 			pos++
-			g.writeLine(fmt.Sprintf(`local %s__null="$%d"`, shName(p.Name), pos))
+			g.writeLine("local " + name + `__null="$` + itoa(pos) + `"`)
 			pos++
 		default:
 			_ = t
-			g.writeLine(fmt.Sprintf(`local %s="$%d"`, shName(p.Name), pos))
+			g.writeLine("local " + shName(p.Name) + `="$` + itoa(pos) + `"`)
 			pos++
 		}
 	}
