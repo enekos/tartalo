@@ -2633,7 +2633,7 @@ func (g *Generator) compileCmpCond(b *ast.BinaryExpr) condValue {
 	}
 	return condValue{
 		prologue: prologue,
-		test:     fmt.Sprintf("[ \"%s\" %s \"%s\" ]", asArithExpansion(lv), op, asArithExpansion(rv)),
+		test:     fmt.Sprintf("[ %s %s %s ]", asTestNum(lv), op, asTestNum(rv)),
 	}
 }
 
@@ -2676,6 +2676,40 @@ func asArithExpansion(v exprValue) string {
 	default:
 		return v.value
 	}
+}
+
+// asTestNum returns the operand form for numeric test contexts like
+// `[ "$i" -eq "$j" ]`. Simple identifiers use "$name" instead of the
+// heavier "$((name))"; complex expressions still use $((...)).
+func asTestNum(v exprValue) string {
+	switch v.form {
+	case formArith, formBool:
+		if isIntLiteral(v.value) {
+			return v.value
+		}
+		if isSimpleIdent(v.value) {
+			return `"$` + v.value + `"`
+		}
+		return `"$((` + v.value + `))"`
+	default:
+		return v.value
+	}
+}
+
+// isSimpleIdent reports whether s is a plain shell identifier (no operators,
+// no parens, no special characters). Used to decide whether "$name" is safe
+// in a test context.
+func isSimpleIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // awkStringCmpOp returns the awk comparison operator for an ordering token.
