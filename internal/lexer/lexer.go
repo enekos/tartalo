@@ -204,7 +204,41 @@ func (l *Lexer) lexNumber() {
 	for !l.atEOF() && l.peek() >= '0' && l.peek() <= '9' {
 		l.advance()
 	}
-	l.emitAt(token.Int, l.src[start:l.pos], p)
+	// Float? `123.45` (we require a digit after the dot so `0..10` still
+	// parses as Int + DotDot + Int, the range syntax).
+	isFloat := false
+	if l.peek() == '.' && l.peekAt(1) >= '0' && l.peekAt(1) <= '9' {
+		isFloat = true
+		l.advance() // consume '.'
+		for !l.atEOF() && l.peek() >= '0' && l.peek() <= '9' {
+			l.advance()
+		}
+	}
+	// Optional exponent: `e+10`, `E-3`, `e2`.
+	if l.peek() == 'e' || l.peek() == 'E' {
+		// Lookahead to confirm the exponent — otherwise we'd swallow the `e`
+		// of an identifier that happens to start at this position (unlikely
+		// because we already lexed digits, but defensive).
+		j := 1
+		if l.peekAt(j) == '+' || l.peekAt(j) == '-' {
+			j++
+		}
+		if l.peekAt(j) >= '0' && l.peekAt(j) <= '9' {
+			isFloat = true
+			l.advance() // e
+			if l.peek() == '+' || l.peek() == '-' {
+				l.advance()
+			}
+			for !l.atEOF() && l.peek() >= '0' && l.peek() <= '9' {
+				l.advance()
+			}
+		}
+	}
+	if isFloat {
+		l.emitAt(token.Float, l.src[start:l.pos], p)
+	} else {
+		l.emitAt(token.Int, l.src[start:l.pos], p)
+	}
 }
 
 func (l *Lexer) lexPunct() {

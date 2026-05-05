@@ -1,0 +1,52 @@
+// stats.tt — read numbers from stdin (or args), compute stats with
+// map/filter/reduce, format with floats.
+//
+//   echo "1 2 3.5 4 5.5" | tartalo run examples/stats.tt
+//   tartalo run examples/stats.tt -- 10 20 30 nope 40
+
+func parseOrZero(s: string): float {
+  let f = parseFloat(s)
+  return f ?? 0.0
+}
+
+func sum(acc: float, n: float): float { return acc + n }
+func nonzero(n: float): bool { return n != 0.0 }
+
+func main(): void {
+  // Build the input list: prefer args(), fall back to stdin tokens.
+  let raw: string[] = []
+  if len(args()) > 0 {
+    raw = args()
+  } else {
+    raw = regexFindAll(readStdin(), "[-+]?[0-9]+(\\.[0-9]+)?")
+  }
+
+  if len(raw) == 0 {
+    eprint("usage: tartalo run examples/stats.tt -- <numbers...>")
+    eprint("       echo '1 2 3' | tartalo run examples/stats.tt")
+    exit(1)
+  }
+
+  // Parse, filter out the zeros (which represent unparseable inputs from
+  // parseOrZero), and reduce.
+  let parsed = map(raw, parseOrZero)
+  let valid = filter(parsed, nonzero)
+  let total: float = reduce(valid, 0.0, sum)
+  let n: number = len(valid)
+
+  echo("inputs: " + str(len(raw)) + ", valid: " + str(n))
+  echo("sum:    " + formatFloat(total, 4))
+  if n > 0 {
+    let mean: float = total / floatOf(n)
+    echo("mean:   " + formatFloat(mean, 4))
+  }
+  let started = now()
+  sleep(1)
+  echo("elapsed about: " + str(now() - started) + "s (testing sleep+now)")
+
+  // Show off regex+execTimeout: count words via wc, with a 2s budget.
+  let r = execTimeout("printf '%s\\n' " + str(n) + " | wc -l", 2)
+  if r.ok {
+    echo("via wc: " + trim(r.stdout))
+  }
+}

@@ -112,6 +112,12 @@ type Checker struct {
 	current    *scope
 	currentMod *loader.Module
 	currentRet types.Type
+
+	// inTest is true while checking the body of a `test "..." { ... }` decl.
+	// Assertion builtins (assertEq, fail, skip, ...) require this to be true.
+	// Helpers called from tests cannot use them directly — pass a bool back
+	// and use `check(...)` at the call site.
+	inTest bool
 }
 
 func New() *Checker {
@@ -215,7 +221,11 @@ func (c *Checker) Check(modules []*loader.Module) (*TypeInfo, []error) {
 		c.resolveValueImports(m)
 	}
 
-	// Pass 2: globals + function bodies, per module in topological order.
+	// Pass 2: globals + function bodies + test bodies, per module in
+	// topological order. Tests share the function-body machinery: they're
+	// effectively void parameterless functions, just not addressable as
+	// callable values.
+	seenTestNames := map[*loader.Module]map[string]token.Pos{}
 	for _, m := range modules {
 		c.currentMod = m
 		c.current = c.envs[m].scope
@@ -225,10 +235,37 @@ func (c *Checker) Check(modules []*loader.Module) (*TypeInfo, []error) {
 				c.checkVarDecl(d, true)
 			case *ast.FuncDecl:
 				c.checkFuncBody(d, m)
+			case *ast.TestDecl:
+				if seenTestNames[m] == nil {
+					seenTestNames[m] = map[string]token.Pos{}
+				}
+				if prev, ok := seenTestNames[m][d.Name]; ok {
+					c.errorf(d.NamePos, "duplicate test name %q (previous at %s)", d.Name, prev)
+				} else {
+					seenTestNames[m][d.Name] = d.NamePos
+				}
+				c.checkTestBody(d, m)
 			}
 		}
 	}
 	return c.info, c.errs
+}
+
+// checkTestBody walks a test declaration body in module scope. Tests have no
+// parameters and no return value, so the body looks like a void function with
+// an empty parameter list. The lexical scope chain is module → fresh body.
+func (c *Checker) checkTestBody(td *ast.TestDecl, m *loader.Module) {
+	env := c.envs[m]
+	saved := c.current
+	savedRet := c.currentRet
+	savedInTest := c.inTest
+	c.current = newScope(env.scope)
+	c.currentRet = types.Void
+	c.inTest = true
+	c.checkBlock(td.Body)
+	c.current = saved
+	c.currentRet = savedRet
+	c.inTest = savedInTest
 }
 
 // resolveTypeImports brings exported type names from dep modules into m's
@@ -458,6 +495,13 @@ func (c *Checker) resolveTypeExpr(te ast.TypeExpr) types.Type {
 	case *ast.RecordType:
 		c.errorf(te.Pos(), "anonymous record types are not supported; declare with `type Name = { ... }`")
 		return types.Invalid
+	case *ast.FuncType:
+		params := make([]types.Type, len(t.Params))
+		for i, p := range t.Params {
+			params[i] = c.resolveTypeExpr(p)
+		}
+		result := c.resolveTypeExpr(t.Result)
+		return &types.Func{Params: params, Result: result}
 	}
 	c.errorf(te.Pos(), "unsupported type expression")
 	return types.Invalid
@@ -524,8 +568,10 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	ft := sym.Type.(*types.Func)
 	saved := c.current
 	savedRet := c.currentRet
+	savedInTest := c.inTest
 	c.current = newScope(env.scope)
 	c.currentRet = ft.Result
+	c.inTest = false
 	for i, p := range fd.Params {
 		paramSym := &Symbol{
 			Name:    p.Name,
@@ -540,6 +586,7 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	c.checkBlock(fd.Body)
 	c.current = saved
 	c.currentRet = savedRet
+	c.inTest = savedInTest
 }
 
 func (c *Checker) checkVarDecl(d *ast.VarDecl, isGlobal bool) {
@@ -781,6 +828,8 @@ func (c *Checker) inferExpr(e ast.Expr) types.Type {
 	switch e := e.(type) {
 	case *ast.IntLit:
 		return types.Number
+	case *ast.FloatLit:
+		return types.Float
 	case *ast.BoolLit:
 		return types.Bool
 	case *ast.NullLit:
@@ -826,8 +875,11 @@ func (c *Checker) inferExpr(e ast.Expr) types.Type {
 		ot := c.checkExpr(e.Operand)
 		switch e.Op {
 		case token.Minus:
-			if ot != types.Number && ot != types.Invalid {
-				c.errorf(e.OpPos, "unary - requires number, got %s", types.Format(ot))
+			if ot != types.Number && ot != types.Float && ot != types.Invalid {
+				c.errorf(e.OpPos, "unary - requires numeric, got %s", types.Format(ot))
+			}
+			if ot == types.Float {
+				return types.Float
 			}
 			return types.Number
 		case token.Bang:
@@ -1007,17 +1059,25 @@ func (c *Checker) checkBinary(e *ast.BinaryExpr) types.Type {
 	}
 	switch e.Op {
 	case token.Plus:
-		if lt == types.Number && rt == types.Number {
-			return types.Number
+		if isNumeric(lt) && isNumeric(rt) {
+			return promoteNumeric(lt, rt)
 		}
 		if lt == types.String && rt == types.String {
 			return types.String
 		}
-		c.errorf(e.OpPos, "+ requires both operands to be number or both to be string (got %s and %s)", types.Format(lt), types.Format(rt))
+		c.errorf(e.OpPos, "+ requires both operands to be numeric or both to be string (got %s and %s)", types.Format(lt), types.Format(rt))
 		return types.Invalid
-	case token.Minus, token.Star, token.Slash, token.Percent:
+	case token.Minus, token.Star, token.Slash:
+		if !isNumeric(lt) || !isNumeric(rt) {
+			c.errorf(e.OpPos, "%s requires numeric operands (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
+			return types.Invalid
+		}
+		return promoteNumeric(lt, rt)
+	case token.Percent:
+		// Modulo is integer-only; promoting to float would silently change
+		// behaviour from the user's intent.
 		if lt != types.Number || rt != types.Number {
-			c.errorf(e.OpPos, "%s requires number operands (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
+			c.errorf(e.OpPos, "%s requires number operands (got %s and %s); use intOf() to truncate floats first", e.Op, types.Format(lt), types.Format(rt))
 			return types.Invalid
 		}
 		return types.Number
@@ -1043,19 +1103,23 @@ func (c *Checker) checkBinary(e *ast.BinaryExpr) types.Type {
 			c.errorf(e.OpPos, "cannot use %s on optional values directly; use `??` or `!` first, or compare against null", e.Op)
 			return types.Bool
 		}
+		// Allow cross-type numeric equality (number == float widens).
+		if isNumeric(lt) && isNumeric(rt) {
+			return types.Bool
+		}
 		if !types.Equal(lt, rt) {
 			c.errorf(e.OpPos, "%s requires operands of the same type (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
 			return types.Bool
 		}
 		return types.Bool
 	case token.Lt, token.Lte, token.Gt, token.Gte:
-		if lt == types.Number && rt == types.Number {
+		if isNumeric(lt) && isNumeric(rt) {
 			return types.Bool
 		}
 		if lt == types.String && rt == types.String {
 			return types.Bool
 		}
-		c.errorf(e.OpPos, "%s requires number or string operands (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
+		c.errorf(e.OpPos, "%s requires numeric or string operands (got %s and %s)", e.Op, types.Format(lt), types.Format(rt))
 		return types.Bool
 	case token.AndAnd, token.OrOr:
 		if lt != types.Bool || rt != types.Bool {
@@ -1082,6 +1146,35 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 		return types.Invalid
 	}
 	c.info.Uses[id] = sym
+	// `map`, `filter`, and `reduce` are higher-order builtins. We type-check
+	// them by hand because v0 has no generics.
+	if sym.IsBuiltin {
+		switch sym.Name {
+		case "map":
+			return c.checkMapCall(e)
+		case "filter":
+			return c.checkFilterCall(e)
+		case "reduce":
+			return c.checkReduceCall(e)
+		case "assertEq", "assertNe", "check", "fail", "skip":
+			return c.checkTestBuiltinCall(e, sym)
+		}
+	}
+	// `str` is polymorphic over the numeric primitives and bool. Optional
+	// support could be added later, but for now we keep it strict.
+	if sym.IsBuiltin && sym.Name == "str" {
+		if len(e.Args) != 1 {
+			c.errorf(e.LParenPos, "str expects 1 argument, got %d", len(e.Args))
+		}
+		for _, a := range e.Args {
+			at := c.checkExpr(a)
+			if at == types.Number || at == types.Float || at == types.Bool || at == types.Invalid {
+				continue
+			}
+			c.errorf(a.Pos(), "str requires a number, float, or bool, got %s", types.Format(at))
+		}
+		return types.String
+	}
 	// `len` is polymorphic over string and array types.
 	if sym.IsBuiltin && sym.Name == "len" {
 		if len(e.Args) != 1 {
@@ -1128,11 +1221,198 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 	return ft.Result
 }
 
+// isNumeric reports whether t is one of the numeric primitives (number/float).
+func isNumeric(t types.Type) bool { return t == types.Number || t == types.Float }
+
+// promoteNumeric returns Float if either operand is Float, otherwise Number.
+// Used when checking arithmetic on mixed integer/float operands.
+func promoteNumeric(a, b types.Type) types.Type {
+	if a == types.Float || b == types.Float {
+		return types.Float
+	}
+	return types.Number
+}
+
+// checkMapCall validates `map(arr: T[], f: func(T): U): U[]` and returns U[].
+func (c *Checker) checkMapCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "map expects 2 arguments (array, function), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	at := c.checkExpr(e.Args[0])
+	ft := c.checkExpr(e.Args[1])
+	arr, ok := at.(*types.Array)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "map: first argument must be an array, got %s", types.Format(at))
+		return types.Invalid
+	}
+	fn, ok := ft.(*types.Func)
+	if !ok {
+		c.errorf(e.Args[1].Pos(), "map: second argument must be a function, got %s", types.Format(ft))
+		return types.Invalid
+	}
+	if len(fn.Params) != 1 || !types.Equal(fn.Params[0], arr.Elem) {
+		c.errorf(e.Args[1].Pos(), "map: function must take one parameter of type %s", types.Format(arr.Elem))
+		return types.Invalid
+	}
+	if !c.isAllowedRecordFieldType(fn.Result) && fn.Result != types.Float {
+		// Same scalar restriction as record fields, plus float.
+		c.errorf(e.Args[1].Pos(), "map: function result must be a primitive, got %s", types.Format(fn.Result))
+		return types.Invalid
+	}
+	return &types.Array{Elem: fn.Result}
+}
+
+// checkFilterCall validates `filter(arr: T[], pred: func(T): bool): T[]`.
+func (c *Checker) checkFilterCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "filter expects 2 arguments (array, predicate), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	at := c.checkExpr(e.Args[0])
+	ft := c.checkExpr(e.Args[1])
+	arr, ok := at.(*types.Array)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "filter: first argument must be an array, got %s", types.Format(at))
+		return types.Invalid
+	}
+	fn, ok := ft.(*types.Func)
+	if !ok {
+		c.errorf(e.Args[1].Pos(), "filter: second argument must be a function, got %s", types.Format(ft))
+		return types.Invalid
+	}
+	if len(fn.Params) != 1 || !types.Equal(fn.Params[0], arr.Elem) {
+		c.errorf(e.Args[1].Pos(), "filter: predicate must take one parameter of type %s", types.Format(arr.Elem))
+		return types.Invalid
+	}
+	if fn.Result != types.Bool {
+		c.errorf(e.Args[1].Pos(), "filter: predicate must return bool, got %s", types.Format(fn.Result))
+		return types.Invalid
+	}
+	return arr
+}
+
+// checkTestBuiltinCall handles the assertion/test-control builtins. Common
+// rule: they may only appear inside a `test "..." { ... }` body, not in
+// regular functions or globals. assertEq/assertNe are also polymorphic over
+// scalar primitives (string, number, bool, float).
+func (c *Checker) checkTestBuiltinCall(e *ast.CallExpr, sym *Symbol) types.Type {
+	if !c.inTest {
+		c.errorf(e.LParenPos, "%s may only be called inside a `test \"...\" { ... }` body", sym.Name)
+	}
+	switch sym.Name {
+	case "assertEq", "assertNe":
+		if len(e.Args) != 2 {
+			c.errorf(e.LParenPos, "%s expects 2 arguments, got %d", sym.Name, len(e.Args))
+			for _, a := range e.Args {
+				c.checkExpr(a)
+			}
+			return types.Void
+		}
+		at := c.checkExpr(e.Args[0])
+		bt := c.checkExpr(e.Args[1])
+		if at == types.Invalid || bt == types.Invalid {
+			return types.Void
+		}
+		if !isAssertableScalar(at) {
+			c.errorf(e.Args[0].Pos(), "%s: argument 1 must be string, number, float, or bool, got %s",
+				sym.Name, types.Format(at))
+			return types.Void
+		}
+		// Allow cross-numeric comparison: number vs float widens to float at
+		// runtime via awk; everything else must match exactly.
+		if !(isNumeric(at) && isNumeric(bt)) && !types.Equal(at, bt) {
+			c.errorf(e.LParenPos, "%s: arguments must have the same type, got %s and %s",
+				sym.Name, types.Format(at), types.Format(bt))
+		}
+		return types.Void
+	case "check":
+		if len(e.Args) != 1 {
+			c.errorf(e.LParenPos, "check expects 1 argument, got %d", len(e.Args))
+		}
+		for _, a := range e.Args {
+			at := c.checkExpr(a)
+			if at != types.Invalid && at != types.Bool {
+				c.errorf(a.Pos(), "check: argument must be bool, got %s", types.Format(at))
+			}
+		}
+		return types.Void
+	case "fail", "skip":
+		if len(e.Args) != 1 {
+			c.errorf(e.LParenPos, "%s expects 1 argument, got %d", sym.Name, len(e.Args))
+		}
+		for _, a := range e.Args {
+			at := c.checkExpr(a)
+			if at != types.Invalid && at != types.String {
+				c.errorf(a.Pos(), "%s: argument must be string, got %s", sym.Name, types.Format(at))
+			}
+		}
+		return types.Void
+	}
+	return types.Void
+}
+
+func isAssertableScalar(t types.Type) bool {
+	switch t {
+	case types.String, types.Number, types.Bool, types.Float:
+		return true
+	}
+	return false
+}
+
+// checkReduceCall validates `reduce(arr: T[], init: U, f: func(U, T): U): U`.
+func (c *Checker) checkReduceCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 3 {
+		c.errorf(e.LParenPos, "reduce expects 3 arguments (array, initial, function), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	at := c.checkExpr(e.Args[0])
+	it := c.checkExpr(e.Args[1])
+	ft := c.checkExpr(e.Args[2])
+	arr, ok := at.(*types.Array)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "reduce: first argument must be an array, got %s", types.Format(at))
+		return types.Invalid
+	}
+	fn, ok := ft.(*types.Func)
+	if !ok {
+		c.errorf(e.Args[2].Pos(), "reduce: third argument must be a function, got %s", types.Format(ft))
+		return types.Invalid
+	}
+	if len(fn.Params) != 2 {
+		c.errorf(e.Args[2].Pos(), "reduce: function must take two parameters (accumulator, element)")
+		return types.Invalid
+	}
+	if !types.IsAssignable(it, fn.Params[0]) {
+		c.errorf(e.Args[1].Pos(), "reduce: initial value type %s does not match accumulator parameter type %s",
+			types.Format(it), types.Format(fn.Params[0]))
+	}
+	if !types.Equal(fn.Params[1], arr.Elem) {
+		c.errorf(e.Args[2].Pos(), "reduce: second function parameter must be element type %s, got %s",
+			types.Format(arr.Elem), types.Format(fn.Params[1]))
+	}
+	if !types.Equal(fn.Result, fn.Params[0]) {
+		c.errorf(e.Args[2].Pos(), "reduce: function result type must equal accumulator type %s",
+			types.Format(fn.Params[0]))
+	}
+	return fn.Result
+}
+
 // builtins returns the symbol set seeded into the global scope. These do not
 // reference any predeclared user-record types.
 func builtins() []*Symbol {
 	str := types.String
 	num := types.Number
+	flt := types.Float
 	bln := types.Bool
 	void := types.Void
 	stringArr := &types.Array{Elem: types.String}
@@ -1176,6 +1456,59 @@ func builtins() []*Symbol {
 		mk("basename", []types.Type{str}, str),
 		mk("dirname", []types.Type{str}, str),
 		mk("extname", []types.Type{str}, str),
+
+		// Process / time.
+		mk("args", nil, stringArr),
+		mk("now", nil, num),
+		mk("sleep", []types.Type{num}, void),
+		mk("formatTime", []types.Type{num, str}, str),
+
+		// execTimeout depends on the predeclared Process record below; see
+		// builtinsWithTypes.
+
+		// JSON. Implementation shells out to jq, which the v0 stdlib treats
+		// as a hard runtime dependency (must be on PATH at script-run time).
+		mk("jsonGet", []types.Type{str, str}, &types.Optional{Elem: str}),
+		mk("jsonHas", []types.Type{str, str}, bln),
+		mk("jsonArray", []types.Type{str, str}, stringArr),
+		mk("jsonEscape", []types.Type{str}, str),
+
+		// Regex (POSIX ERE via awk).
+		mk("regexMatch", []types.Type{str, str}, bln),
+		mk("regexFind", []types.Type{str, str}, &types.Optional{Elem: str}),
+		mk("regexFindAll", []types.Type{str, str}, stringArr),
+		mk("regexReplace", []types.Type{str, str, str}, str),
+
+		// Float helpers. `floatOf` widens an int; `intOf` truncates toward
+		// zero. The `floor`/`ceil`/`round` family produces ints from floats,
+		// matching the common ergonomic shape.
+		mk("floatOf", []types.Type{num}, flt),
+		mk("intOf", []types.Type{flt}, num),
+		mk("parseFloat", []types.Type{str}, &types.Optional{Elem: flt}),
+		mk("formatFloat", []types.Type{flt, num}, str),
+		mk("floor", []types.Type{flt}, num),
+		mk("ceil", []types.Type{flt}, num),
+		mk("round", []types.Type{flt}, num),
+
+		// Higher-order builtins. The signatures registered here are
+		// placeholders — the actual type checking is done by the
+		// checkMapCall / checkFilterCall / checkReduceCall handlers above,
+		// which need to dispatch on the array element type.
+		mk("map", []types.Type{stringArr, str}, stringArr),
+		mk("filter", []types.Type{stringArr, str}, stringArr),
+		mk("reduce", []types.Type{stringArr, str, str}, str),
+
+		// Testing builtins. assertEq/assertNe are polymorphic over the
+		// scalar primitives (string, number, bool, float); the placeholder
+		// signature here is overridden by checkAssertEqCall. The remaining
+		// three (check, fail, skip) are mono-typed and use this signature
+		// directly. All five require the call to appear inside a test
+		// body — enforced by the checker.
+		mk("assertEq", []types.Type{str, str}, void),
+		mk("assertNe", []types.Type{str, str}, void),
+		mk("check", []types.Type{bln}, void),
+		mk("fail", []types.Type{str}, void),
+		mk("skip", []types.Type{str}, void),
 	}
 }
 
@@ -1200,6 +1533,26 @@ func builtinTypes() []*types.Record {
 				{Name: "stderr", Type: types.String},
 			},
 		},
+		{
+			Name: "FileInfo",
+			Fields: []types.Field{
+				{Name: "exists", Type: types.Bool},
+				{Name: "isFile", Type: types.Bool},
+				{Name: "isDir", Type: types.Bool},
+				{Name: "size", Type: types.Number},
+				{Name: "mtime", Type: types.Number},
+				{Name: "mode", Type: types.String},
+			},
+		},
+		{
+			Name: "PathParts",
+			Fields: []types.Field{
+				{Name: "dir", Type: types.String},
+				{Name: "base", Type: types.String},
+				{Name: "name", Type: types.String},
+				{Name: "ext", Type: types.String},
+			},
+		},
 	}
 }
 
@@ -1207,8 +1560,13 @@ func builtinTypes() []*types.Record {
 func builtinsWithTypes(typeNames map[string]types.Type) []*Symbol {
 	response := typeNames["Response"]
 	process := typeNames["Process"]
+	fileInfo := typeNames["FileInfo"]
+	pathParts := typeNames["PathParts"]
 	return []*Symbol{
 		{Name: "fetch", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: response}},
 		{Name: "exec", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: process}},
+		{Name: "execTimeout", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, types.Number}, Result: process}},
+		{Name: "stat", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: fileInfo}},
+		{Name: "parsePath", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: pathParts}},
 	}
 }

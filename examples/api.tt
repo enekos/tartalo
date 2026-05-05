@@ -1,0 +1,34 @@
+// api.tt — fetch a public JSON API, time the request, and pretty-print
+// fields the user picks via positional args.
+//
+// Usage:
+//   tartalo run examples/api.tt -- name html_url description
+
+func main(): void {
+  let fields = args()
+  if len(fields) == 0 {
+    echo("usage: tartalo run examples/api.tt -- <field1> [field2] ...")
+    echo("   pass jq paths like .name or .owner.login")
+    exit(1)
+  }
+
+  let url = "https://api.github.com/repos/microsoft/typescript-go"
+  echo("GET " + url)
+  let started = now()
+  let r = fetch(url)
+  let elapsed = now() - started
+
+  if !r.ok {
+    eprint("request failed (status " + str(r.status) + ")")
+    exit(1)
+  }
+
+  echo("status: " + str(r.status) + "  (" + str(elapsed) + "s)")
+  echo("at: " + formatTime(now(), "%Y-%m-%d %H:%M:%S"))
+
+  for path in fields {
+    let p = path
+    if !startsWith(p, ".") { p = "." + p }
+    echo(p + " = " + (jsonGet(r.body, p) ?? "<missing>"))
+  }
+}

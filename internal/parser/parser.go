@@ -9,6 +9,7 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
 	"github.com/enekos/tartalo/internal/token"
@@ -151,7 +152,7 @@ func (p *Parser) recoverToStmt() {
 	for !p.atEnd() {
 		switch p.peek().Kind {
 		case token.Let, token.Const, token.Func, token.If, token.For, token.Return,
-			token.Match, token.Type, token.Export, token.RBrace, token.Semicolon:
+			token.Match, token.Type, token.Export, token.Test, token.RBrace, token.Semicolon:
 			return
 		}
 		p.advance()
@@ -186,15 +187,69 @@ func (p *Parser) parseDecl() ast.Decl {
 			td.IsExported = exported
 		}
 		return td
+	case token.Test:
+		if exported {
+			p.errorf(p.peek().Pos, "test declarations cannot be exported")
+		}
+		return p.parseTest()
 	}
 	t := p.peek()
 	if exported {
-		p.errorf(t.Pos, "`export` must be followed by func/type/let/const, got %s", t.Kind)
+		p.errorf(t.Pos, "`export` must be followed by func/type/let/const (test cannot be exported), got %s", t.Kind)
 	} else {
-		p.errorf(t.Pos, "expected declaration (let/const/func/type/export/import), got %s", t.Kind)
+		p.errorf(t.Pos, "expected declaration (let/const/func/type/test/export/import), got %s", t.Kind)
 	}
 	p.recoverToStmt()
 	return nil
+}
+
+// parseTest parses `test "name" { body }`. The name must be a plain string
+// literal — interpolation is rejected so test names are stable identifiers
+// that don't depend on runtime state.
+func (p *Parser) parseTest() *ast.TestDecl {
+	kw := p.advance() // test
+	td := &ast.TestDecl{KwPos: kw.Pos}
+	if p.peek().Kind != token.StringStart {
+		p.errorf(p.peek().Pos, `expected string literal after "test", got %s`, p.peek().Kind)
+		// Best-effort recovery: try to parse a block anyway so we don't lose
+		// nested errors inside an unnamed test body.
+		if p.peek().Kind == token.LBrace {
+			td.Body = p.parseBlock()
+		}
+		return td
+	}
+	start := p.advance() // StringStart
+	td.NamePos = start.Pos
+	var nameParts []string
+	hadInterp := false
+	for {
+		t := p.peek()
+		switch t.Kind {
+		case token.StringPart:
+			p.advance()
+			nameParts = append(nameParts, t.Value)
+		case token.InterpStart:
+			hadInterp = true
+			// consume the interpolation so we can keep parsing
+			p.advance()
+			_ = p.parseExpr()
+			p.expect(token.InterpEnd, "test name")
+		case token.StringEnd:
+			p.advance()
+			td.Name = strings.Join(nameParts, "")
+			if hadInterp {
+				p.errorf(start.Pos, "test names cannot contain interpolations")
+			}
+			td.Body = p.parseBlock()
+			return td
+		case token.EOF:
+			p.errorf(t.Pos, "unexpected end of file in test name")
+			return td
+		default:
+			p.errorf(t.Pos, "unexpected %s in test name", t.Kind)
+			p.advance()
+		}
+	}
 }
 
 func (p *Parser) parseTypeDecl() *ast.TypeDecl {
@@ -266,7 +321,7 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 	var ty ast.TypeExpr
 	t := p.peek()
 	switch t.Kind {
-	case token.TyString, token.TyNumber, token.TyBool, token.TyVoid:
+	case token.TyString, token.TyNumber, token.TyFloat, token.TyBool, token.TyVoid:
 		p.advance()
 		ty = &ast.TypeName{NamePos: t.Pos, Name: t.Value}
 	case token.Ident:
@@ -275,6 +330,8 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		ty = &ast.TypeName{NamePos: t.Pos, Name: t.Value}
 	case token.LBrace:
 		ty = p.parseRecordType()
+	case token.Func:
+		ty = p.parseFuncType()
 	default:
 		p.errorf(t.Pos, "expected type, got %s", t.Kind)
 		return &ast.TypeName{NamePos: t.Pos, Name: "<error>"}
@@ -297,6 +354,24 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			return ty
 		}
 	}
+}
+
+func (p *Parser) parseFuncType() *ast.FuncType {
+	kw := p.advance() // func
+	p.expect(token.LParen, "func type")
+	ft := &ast.FuncType{KwPos: kw.Pos}
+	if p.peek().Kind != token.RParen {
+		for {
+			ft.Params = append(ft.Params, p.parseTypeExpr())
+			if _, ok := p.accept(token.Comma); !ok {
+				break
+			}
+		}
+	}
+	p.expect(token.RParen, "func type")
+	p.expect(token.Colon, "func type")
+	ft.Result = p.parseTypeExpr()
+	return ft
 }
 
 func (p *Parser) parseRecordType() *ast.RecordType {
@@ -637,6 +712,14 @@ func (p *Parser) parsePrimary() ast.Expr {
 			p.errorf(t.Pos, "invalid integer literal %q", t.Value)
 		}
 		return &ast.IntLit{LitPos: t.Pos, Value: v}
+	case token.Float:
+		p.advance()
+		// Validate format eagerly so a malformed lexer-generated token surfaces
+		// a clean parse error rather than failing later in awk at runtime.
+		if _, err := strconv.ParseFloat(t.Value, 64); err != nil {
+			p.errorf(t.Pos, "invalid float literal %q", t.Value)
+		}
+		return &ast.FloatLit{LitPos: t.Pos, Text: t.Value}
 	case token.True, token.False:
 		p.advance()
 		return &ast.BoolLit{LitPos: t.Pos, Value: t.Kind == token.True}

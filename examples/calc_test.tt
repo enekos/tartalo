@@ -1,0 +1,39 @@
+// Example test suite. Run with: `tartalo test examples/calc_test.tt`.
+
+func double(n: number): number {
+  return n * 2
+}
+
+test "addition adds" {
+  assertEq(1 + 1, 2)
+  assertEq(double(21), 42)
+}
+
+test "string concatenation" {
+  let greet: string = "hello, " + "world"
+  assertEq(greet, "hello, world")
+  assertEq(upper(greet), "HELLO, WORLD")
+}
+
+test "len works on strings and arrays" {
+  let xs: number[] = [10, 20, 30, 40]
+  assertEq(len(xs), 4)
+  assertEq(len("tartalo"), 7)
+}
+
+test "boolean predicates" {
+  check(contains("hello world", "world"))
+  check(!startsWith("readme.md", "."))
+  check(endsWith("foo.tt", ".tt"))
+}
+
+test "assertNe distinguishes" {
+  assertNe("a", "b")
+  assertNe(1, 2)
+}
+
+test "skipped on purpose" {
+  skip("not implemented yet")
+  // anything below skip() is unreachable in the running shell
+  assertEq(1, 2)
+}

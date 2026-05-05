@@ -47,7 +47,7 @@ func wantOk(t *testing.T, src string) {
 
 func TestRejectStringPlusNumber(t *testing.T) {
 	wantError(t, `let x: string = "a" + 1`,
-		"+ requires both operands to be number or both to be string")
+		"+ requires both operands to be numeric or both to be string")
 }
 
 func TestRejectAnnotationMismatch(t *testing.T) {
@@ -139,5 +139,5 @@ func TestRejectMixedComparison(t *testing.T) {
 			let n: number = 1
 			if a < n { echo("nope") }
 		}
-	`, `requires number or string operands`)
+	`, `requires numeric or string operands`)
 }

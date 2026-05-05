@@ -78,6 +78,19 @@ type FuncDecl struct {
 func (d *FuncDecl) Pos() token.Pos { return d.NamePos }
 func (d *FuncDecl) declNode()      {}
 
+// TestDecl: `test "name" { body }`. A top-level test declaration. The body
+// runs as a void function in module scope; the harness emitted by codegen
+// invokes it from a subshell so failed assertions can exit early.
+type TestDecl struct {
+	KwPos   token.Pos
+	NamePos token.Pos
+	Name    string // the literal test name; no interpolation
+	Body    *Block
+}
+
+func (d *TestDecl) Pos() token.Pos { return d.KwPos }
+func (d *TestDecl) declNode()      {}
+
 // TypeDecl: `type Name = TypeExpr`. v0 only allows record types on the RHS.
 type TypeDecl struct {
 	NamePos    token.Pos
@@ -129,6 +142,17 @@ type OptionalType struct {
 
 func (t *OptionalType) Pos() token.Pos { return t.Elem.Pos() }
 func (t *OptionalType) typeExprNode()  {}
+
+// FuncType: `func(T1, T2, ...): R`. Used as a type annotation when a value
+// of function type is being passed around.
+type FuncType struct {
+	KwPos  token.Pos
+	Params []TypeExpr
+	Result TypeExpr
+}
+
+func (t *FuncType) Pos() token.Pos { return t.KwPos }
+func (t *FuncType) typeExprNode()  {}
 
 // RecordType: `{ f1: T1, f2: T2, ... }`. Used as the RHS of a `type` decl.
 type RecordType struct {
@@ -298,6 +322,17 @@ type IntLit struct {
 
 func (e *IntLit) Pos() token.Pos { return e.LitPos }
 func (e *IntLit) exprNode()      {}
+
+// FloatLit holds the source text of a floating-point literal verbatim. We
+// keep the textual form so the codegen can pass it straight to awk without
+// worrying about Go's float formatting differing from the user's input.
+type FloatLit struct {
+	LitPos token.Pos
+	Text   string
+}
+
+func (e *FloatLit) Pos() token.Pos { return e.LitPos }
+func (e *FloatLit) exprNode()      {}
 
 type BoolLit struct {
 	LitPos token.Pos

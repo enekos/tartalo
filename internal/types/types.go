@@ -18,6 +18,7 @@ func (p *Primitive) typeNode()      {}
 var (
 	String  = &Primitive{Name: "string"}
 	Number  = &Primitive{Name: "number"}
+	Float   = &Primitive{Name: "float"}
 	Bool    = &Primitive{Name: "bool"}
 	Void    = &Primitive{Name: "void"}
 	Null    = &Primitive{Name: "null"} // type of the null literal; assignable to any Optional
@@ -59,6 +60,7 @@ func IsOptional(t Type) bool {
 // value of type `target` is expected. It is more permissive than Equal:
 //   - null is assignable to any Optional.
 //   - T is assignable to T? (auto-wrap on assignment).
+//   - number is assignable to float (numeric widening).
 func IsAssignable(value, target Type) bool {
 	if Equal(value, target) {
 		return true
@@ -67,9 +69,17 @@ func IsAssignable(value, target Type) bool {
 		_, ok := target.(*Optional)
 		return ok
 	}
+	if value == Number && target == Float {
+		return true
+	}
 	if to, ok := target.(*Optional); ok {
-		// T → T? auto-wrap
-		return Equal(value, to.Elem)
+		if Equal(value, to.Elem) {
+			return true
+		}
+		// number → float? widening through an optional is also fine.
+		if value == Number && to.Elem == Float {
+			return true
+		}
 	}
 	return false
 }
@@ -172,6 +182,8 @@ func Lookup(name string) Type {
 		return String
 	case "number":
 		return Number
+	case "float":
+		return Float
 	case "bool":
 		return Bool
 	case "void":

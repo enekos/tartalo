@@ -44,6 +44,8 @@ func TestExamplesCompileAndRun(t *testing.T) {
 		{entry: "files.tt", env: []string{"DIR=" + examplesDir}, substr: "total:"},
 		{entry: "config.tt", substr: "host:"},
 		{entry: "fetch.tt", skip: "network-dependent"},
+		{entry: "api.tt", skip: "network-dependent"},
+		{entry: "stats.tt", skip: "needs args/stdin; covered by unit tests"},
 		{entry: "modules/main.tt", substr: "env=prod"},
 	}
 

@@ -76,9 +76,11 @@ Constraints in v0:
 | -------- | ------------------------------------------------------------------------------------------ |
 | `string` | a shell variable holding text                                                              |
 | `number` | a shell variable holding a base-10 int                                                     |
+| `float`  | a shell variable holding a textual float; arithmetic done via awk                          |
 | `bool`   | a shell variable holding `1` (true) or `0` (false) — same encoding as `$(( ))` comparisons |
 | `void`   | functions with no return value                                                             |
 | `T[]`    | a shell variable holding the elements joined by newlines                                   |
+| `func(T...): R` | a shell variable holding the mangled function name (callable via `"$f" args`)       |
 
 There is no implicit conversion. `"foo" + 1` is a type error. Use `str(n)` to convert a number to a string.
 
@@ -318,6 +320,7 @@ A command in statement position runs for side effects:
 - `exists(path: string): bool`
 - `isFile(path: string): bool`
 - `isDir(path: string): bool`
+- `stat(path: string): FileInfo` — one-shot metadata bundle. Falls back to BSD `stat -f` when GNU `stat -c` isn't available, so the same script runs on Linux and macOS. For a missing path, `exists` is false and the numeric fields are 0.
 - `readStdin(): string` — read all of stdin
 
 The "abort on error" behaviour is intentional for v0; if you need to inspect
@@ -332,11 +335,55 @@ the failure, drop down to `exec(...)` which gives you `code`, `stdout`, and
 - `dirname(path: string): string`
 - `extname(path: string): string` — extension *including* the leading dot,
   or `""` when the basename has no dot
+- `parsePath(path: string): PathParts` — split a path into `{ dir, base, name, ext }` in one go. The `ext` rule matches `extname` (includes the leading dot, or `""` when the basename has no dot).
 
 ### Subprocesses and HTTP
 
 - `exec(cmd: string): Process` — run a shell command, capture stdout, stderr, and exit code
+- `execTimeout(cmd: string, secs: number): Process` — like `exec` but kills the command after `secs`. Aborts the script if neither `timeout` (GNU) nor `gtimeout` (macOS coreutils) is on PATH. Process.code is `124` on timeout.
 - `fetch(url: string): Response` — HTTP GET (via `curl -sS -L`)
+
+### Regex (POSIX ERE via awk)
+
+- `regexMatch(s, pat: string): bool` — `s ~ pat`
+- `regexFind(s, pat): string?` — first match, or null
+- `regexFindAll(s, pat): string[]` — all non-overlapping matches
+- `regexReplace(s, pat, repl: string): string` — `gsub(pat, repl, s)`. Backslashes and `&` in `repl` are escaped before substitution so the replacement is treated as literal text.
+
+### Higher-order
+
+- `map(arr: T[], f: func(T): U): U[]`
+- `filter(arr: T[], pred: func(T): bool): T[]`
+- `reduce(arr: T[], init: U, f: func(U, T): U): U`
+
+These are typed by hand in the checker (no generics yet). The function
+argument is a reference to a top-level user-declared function — pass the
+function's name as a value: `map(xs, double)`. Builtins cannot be passed by
+reference. Functions are values — you can store them in variables with type
+`func(...): R`:
+
+```tartalo
+func square(n: number): number { return n * n }
+let f: func(number): number = square
+echo(str(f(7)))
+```
+
+### Process / time
+
+- `args(): string[]` — positional args passed to the script (stable from any call site)
+- `now(): number` — current Unix timestamp in seconds (`date +%s`)
+- `sleep(seconds: number): void` — POSIX `sleep` (no fractional seconds guarantee)
+- `formatTime(secs: number, fmt: string): string` — format a Unix time using `date`. Tries BSD `-r` then GNU `-d @`, so the same script runs on macOS and Linux.
+
+### JSON
+
+The JSON helpers shell out to **`jq`** at runtime, so any host running a
+script that uses them must have `jq` on `PATH`.
+
+- `jsonGet(json: string, path: string): string?` — extract a value at a jq path. Both "missing path" and "path → null" surface as `null` on the tartalo side; use `jsonHas` to disambiguate.
+- `jsonHas(json: string, path: string): bool` — true iff the path exists *and* its value is non-null.
+- `jsonArray(json: string, path: string): string[]` — array elements as a string[]; each element is jq's stringified form (raw for scalars, JSON for objects/arrays).
+- `jsonEscape(s: string): string` — encode a string as a JSON string literal *with* surrounding quotes. Convenient when hand-building a request body.
 
 ### Predeclared types
 
@@ -353,6 +400,22 @@ type Process = {
   ok: bool,          // true iff code == 0
   stdout: string,    // captured stdout
   stderr: string,    // captured stderr
+}
+
+type FileInfo = {
+  exists: bool,      // false if the path doesn't exist
+  isFile: bool,
+  isDir: bool,
+  size: number,      // bytes; 0 if missing
+  mtime: number,     // Unix seconds; 0 if missing
+  mode: string,      // octal permission bits, e.g. "644"; "" if missing
+}
+
+type PathParts = {
+  dir: string,       // dirname(path)
+  base: string,      // basename(path) — final component, with extension
+  name: string,      // basename minus the last `.ext` (same rule as extname)
+  ext: string,       // extension including leading dot, or ""
 }
 ```
 

@@ -10,6 +10,7 @@ const (
 
 	Ident
 	Int
+	Float
 
 	// strings are always emitted as: StringStart StringPart [InterpStart ...expr... InterpEnd StringPart]* StringEnd
 	StringStart
@@ -34,11 +35,13 @@ const (
 	Type
 	Import
 	Export
+	Test
 	Null
 	True
 	False
 	TyString
 	TyNumber
+	TyFloat
 	TyBool
 	TyVoid
 
@@ -81,14 +84,14 @@ const (
 
 var kindNames = map[Kind]string{
 	Illegal: "ILLEGAL", EOF: "EOF",
-	Ident: "IDENT", Int: "INT",
+	Ident: "IDENT", Int: "INT", Float: "FLOAT",
 	StringStart: "STR_START", StringPart: "STR_PART", StringEnd: "STR_END",
 	CmdStart: "CMD_START", CmdPart: "CMD_PART", CmdEnd: "CMD_END",
 	Let: "let", Const: "const", Func: "func", Return: "return",
 	If: "if", Else: "else", For: "for", In: "in", Match: "match", Type: "type",
-	Import: "import", Export: "export",
+	Import: "import", Export: "export", Test: "test",
 	Null: "null", True: "true", False: "false",
-	TyString: "string", TyNumber: "number", TyBool: "bool", TyVoid: "void",
+	TyString: "string", TyNumber: "number", TyFloat: "float", TyBool: "bool", TyVoid: "void",
 	Assign: "=", Plus: "+", Minus: "-", Star: "*", Slash: "/", Percent: "%",
 	Eq: "==", Neq: "!=", Lt: "<", Lte: "<=", Gt: ">", Gte: ">=",
 	AndAnd: "&&", OrOr: "||", Coalesce: "??", Question: "?",
@@ -143,11 +146,13 @@ var Keywords = map[string]Kind{
 	"type":   Type,
 	"import": Import,
 	"export": Export,
+	"test":   Test,
 	"null":   Null,
 	"true":   True,
 	"false":  False,
 	"string": TyString,
 	"number": TyNumber,
+	"float":  TyFloat,
 	"bool":   TyBool,
 	"void":   TyVoid,
 }

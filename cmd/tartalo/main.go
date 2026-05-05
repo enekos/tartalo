@@ -39,6 +39,8 @@ func run(args []string) error {
 		return cmdRun(rest)
 	case "check":
 		return cmdCheck(rest)
+	case "test":
+		return cmdTest(rest)
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return nil
@@ -52,6 +54,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
   tartalo build <file.tt> [-o <out.sh>]
   tartalo run   <file.tt> [-- args...]
+  tartalo test  <file.tt>             # run all `+"`test \"...\" { ... }`"+` declarations
   tartalo check <file.tt>             # type-check without emitting sh
   tartalo help`)
 }
@@ -89,6 +92,16 @@ func compileFile(path string) (string, error) {
 		return "", err
 	}
 	return codegen.New(info).EmitModules(modules), nil
+}
+
+// compileFileForTest compiles in test mode: the resulting script runs every
+// `test "..."` declaration in the entry module instead of invoking main.
+func compileFileForTest(path string) (string, error) {
+	modules, info, err := frontEnd(path)
+	if err != nil {
+		return "", err
+	}
+	return codegen.New(info).EmitModulesTest(modules), nil
 }
 
 func cmdBuild(args []string) error {
@@ -163,6 +176,56 @@ func cmdCheck(args []string) error {
 	}
 	if len(combined) > 0 {
 		return &compileErrors{errs: combined}
+	}
+	return nil
+}
+
+func cmdTest(args []string) error {
+	var input string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-h" || a == "--help":
+			fmt.Println("usage: tartalo test <file.tt>")
+			return nil
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("test: unknown flag %q", a)
+		default:
+			if input != "" {
+				return fmt.Errorf("test: expected exactly one input file")
+			}
+			input = a
+		}
+	}
+	if input == "" {
+		return fmt.Errorf("test: expected an input file")
+	}
+	sh, err := compileFileForTest(input)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp("", "tartalo-test-*.sh")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(sh); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	cmd := exec.Command("/bin/sh", tmp.Name())
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.ExitCode())
+		}
+		return err
 	}
 	return nil
 }
