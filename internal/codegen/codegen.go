@@ -26,6 +26,15 @@ import (
 	"github.com/enekos/tartalo/internal/types"
 )
 
+// concatPrologues merges two prologue slices without the double-allocation
+// of concatPrologues(a, b).
+func concatPrologues(a, b []string) []string {
+	out := make([]string, 0, len(a)+len(b))
+	out = append(out, a...)
+	out = append(out, b...)
+	return out
+}
+
 type Generator struct {
 	info   *checker.TypeInfo
 	out    strings.Builder
@@ -312,7 +321,8 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 
 func (g *Generator) writeLine(s string) {
 	for i := 0; i < g.indent; i++ {
-		g.out.WriteString("  ")
+		g.out.WriteByte(' ')
+		g.out.WriteByte(' ')
 	}
 	g.out.WriteString(s)
 	g.out.WriteByte('\n')
@@ -326,7 +336,22 @@ func (g *Generator) writeLines(lines []string) {
 
 func (g *Generator) tmp(prefix string) string {
 	g.tmpSeq++
-	return fmt.Sprintf("__%s%d", prefix, g.tmpSeq)
+	return "__" + prefix + itoa(g.tmpSeq)
+}
+
+// itoa is a fast non-allocating int-to-string for small positive ints.
+func itoa(n int) string {
+	if n < 10 {
+		return string(byte('0' + n))
+	}
+	var buf [16]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 // --- function declarations --------------------------------------------------
@@ -923,7 +948,7 @@ func (g *Generator) compileArrayLit(a *ast.ArrayLit) exprValue {
 func (g *Generator) compileCoalesce(e *ast.CoalesceExpr) exprValue {
 	lv := g.compileExpr(e.Lhs)
 	rv := g.compileExpr(e.Rhs)
-	prologue := append(append([]string{}, lv.prologue...), rv.prologue...)
+	prologue := concatPrologues(lv.prologue, rv.prologue)
 	tmp := g.tmp("co")
 	// `lv.nullCheck` is set since the checker requires lhs to be optional.
 	prologue = append(prologue, fmt.Sprintf(
@@ -1048,7 +1073,7 @@ func (g *Generator) compileIndex(e *ast.IndexExpr) exprValue {
 	tv := g.compileExpr(e.Target)
 	iv := g.compileExpr(e.Index)
 	out := g.tmp("idx")
-	prologue := append(append([]string{}, tv.prologue...), iv.prologue...)
+	prologue := concatPrologues(tv.prologue, iv.prologue)
 	// awk uses 1-based NR; tartalo uses 0-based indexing, so add 1.
 	prologue = append(prologue,
 		fmt.Sprintf("%s=$(printf '%%s' \"%s\" | awk -v i=%s 'NR==i+1{print; exit}')",
@@ -1187,7 +1212,7 @@ func (g *Generator) compileBinary(b *ast.BinaryExpr) exprValue {
 			lv := g.compileExpr(b.Lhs)
 			rv := g.compileExpr(b.Rhs)
 			return exprValue{
-				prologue: append(append([]string{}, lv.prologue...), rv.prologue...),
+				prologue: concatPrologues(lv.prologue, rv.prologue),
 				value:    lv.shString() + rv.shString(),
 				form:     formStr,
 			}
@@ -1354,7 +1379,7 @@ func (g *Generator) compileFloatRound(args []exprValue, prologue []string, fn st
 func (g *Generator) floatCompare(b *ast.BinaryExpr) exprValue {
 	lv := g.compileExpr(b.Lhs)
 	rv := g.compileExpr(b.Rhs)
-	prologue := append(append([]string{}, lv.prologue...), rv.prologue...)
+	prologue := concatPrologues(lv.prologue, rv.prologue)
 	t := g.tmp("fc")
 	prologue = append(prologue, fmt.Sprintf(
 		`%s=$(awk -v a=%s -v b=%s 'BEGIN { print (a %s b) ? 1 : 0 }')`,
@@ -1367,7 +1392,7 @@ func (g *Generator) floatCompare(b *ast.BinaryExpr) exprValue {
 func (g *Generator) floatArith(b *ast.BinaryExpr, op string) exprValue {
 	lv := g.compileExpr(b.Lhs)
 	rv := g.compileExpr(b.Rhs)
-	prologue := append(append([]string{}, lv.prologue...), rv.prologue...)
+	prologue := concatPrologues(lv.prologue, rv.prologue)
 	t := g.tmp("fa")
 	prologue = append(prologue, fmt.Sprintf(
 		`%s=$(awk -v a=%s -v b=%s 'BEGIN { printf "%%g", a %s b }')`,
@@ -1380,7 +1405,7 @@ func (g *Generator) arithOp(b *ast.BinaryExpr) exprValue {
 	rv := g.compileExpr(b.Rhs)
 	op := arithSym(b.Op)
 	return exprValue{
-		prologue: append(append([]string{}, lv.prologue...), rv.prologue...),
+		prologue: concatPrologues(lv.prologue, rv.prologue),
 		value:    fmt.Sprintf("%s %s %s", arithGroup(lv, b.Op, true), op, arithGroup(rv, b.Op, false)),
 		form:     formArith,
 	}
@@ -1494,7 +1519,7 @@ func (g *Generator) compareOp(b *ast.BinaryExpr, operandType types.Type) exprVal
 	// Numeric / bool: use sh arithmetic comparisons (returns 1 or 0).
 	op := arithSym(b.Op)
 	return exprValue{
-		prologue: append(append([]string{}, lv.prologue...), rv.prologue...),
+		prologue: concatPrologues(lv.prologue, rv.prologue),
 		value:    fmt.Sprintf("%s %s %s", arithGroup(lv, b.Op, true), op, arithGroup(rv, b.Op, false)),
 		form:     formBool,
 	}
@@ -1508,7 +1533,7 @@ func (g *Generator) logicOp(b *ast.BinaryExpr) exprValue {
 		op = "||"
 	}
 	return exprValue{
-		prologue: append(append([]string{}, lv.prologue...), rv.prologue...),
+		prologue: concatPrologues(lv.prologue, rv.prologue),
 		value:    fmt.Sprintf("%s %s %s", arithGroup(lv, b.Op, true), op, arithGroup(rv, b.Op, false)),
 		form:     formBool,
 	}
@@ -2527,14 +2552,14 @@ func (g *Generator) compileCond(e ast.Expr) condValue {
 			lv := g.compileCond(e.Lhs)
 			rv := g.compileCond(e.Rhs)
 			return condValue{
-				prologue: append(append([]string{}, lv.prologue...), rv.prologue...),
+				prologue: concatPrologues(lv.prologue, rv.prologue),
 				test:     "{ " + lv.test + "; } && { " + rv.test + "; }",
 			}
 		case token.OrOr:
 			lv := g.compileCond(e.Lhs)
 			rv := g.compileCond(e.Rhs)
 			return condValue{
-				prologue: append(append([]string{}, lv.prologue...), rv.prologue...),
+				prologue: concatPrologues(lv.prologue, rv.prologue),
 				test:     "{ " + lv.test + "; } || { " + rv.test + "; }",
 			}
 		case token.Eq, token.Neq, token.Lt, token.Lte, token.Gt, token.Gte:
@@ -2568,7 +2593,7 @@ func (g *Generator) compileCmpCond(b *ast.BinaryExpr) condValue {
 	}
 	lv := g.compileExpr(b.Lhs)
 	rv := g.compileExpr(b.Rhs)
-	prologue := append(append([]string{}, lv.prologue...), rv.prologue...)
+	prologue := concatPrologues(lv.prologue, rv.prologue)
 	if lt == types.String {
 		switch b.Op {
 		case token.Eq, token.Neq:
@@ -2847,13 +2872,14 @@ var shReserved = map[string]bool{
 // shQuoteDouble wraps `body` in double quotes, escaping the four characters
 // that have meaning inside double-quoted strings.
 func shQuoteDouble(body string) string {
-	return "\"" + body + "\""
+	return `"` + body + `"`
 }
 
 // escapeForDoubleQuoted escapes literal text so it can be embedded inside a
 // double-quoted shell string without the shell reinterpreting it.
 func escapeForDoubleQuoted(s string) string {
 	var b strings.Builder
+	b.Grow(len(s) + 8)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch c {
