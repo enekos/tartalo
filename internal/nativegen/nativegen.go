@@ -89,8 +89,14 @@ type Generator struct {
 	usesMockArgs     bool
 	usesMockStdin    bool
 
-	// emitMode selects whether the generated program calls main() (Run) or
-	// invokes the test harness footer (Test).
+	usesAgentLLM      bool
+	usesAgentApproval bool
+	usesAgentTrace    bool
+	usesAgentSpawn    bool
+	usesMockLlm       bool
+	agents            []agentRefNative
+	toolSchemasJSON   string
+
 	emitMode EmitMode
 }
 
@@ -135,6 +141,7 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 	if g.emitMode == EmitTest {
 		g.addImport("regexp")
 	}
+	g.initAgentPlatform(modules)
 
 	// Pass 0: predeclared record types (Response, Process, FileInfo,
 	// PathParts). The checker rejects user-side redeclaration, so emitting
@@ -209,6 +216,8 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 	if g.emitMode == EmitTest {
 		g.emitTestFunctions(entry)
 	}
+
+	g.emitAgentRuntime()
 
 	g.writeLine("func main() {")
 	g.indent++

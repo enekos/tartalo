@@ -88,6 +88,7 @@ func (g *Generator) writeRuntimeTo(out *strings.Builder) {
 		out.WriteString(runtimeMockState)
 		g.writeMockSetters(out)
 	}
+	g.emitAgentRuntimeAppendix(out)
 }
 
 // writeMockableDispatchers emits the public `_tt_<builtin>` function for
@@ -186,7 +187,9 @@ func (g *Generator) anyRuntimeUsed() bool {
 		g.usesRuntimeStat || g.usesRuntimeJSON || g.usesRuntimeRegex ||
 		g.usesRuntimeFormatTime || g.usesRuntimeFloat ||
 		g.usesRuntimeHigherOrder || g.usesRuntimeFetch || g.usesRuntimeTestState ||
-		g.usesRuntimeEnv || g.usesRuntimeNow || g.usesRuntimeTry
+		g.usesRuntimeEnv || g.usesRuntimeNow || g.usesRuntimeTry ||
+		g.usesAgentLLM || g.usesAgentApproval || g.usesAgentTrace ||
+		g.usesAgentSpawn
 }
 
 const runtimeShellOut = `func _tt_shellOut(cmd string) string {

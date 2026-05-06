@@ -40,7 +40,7 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 	}
 	if len(e.Args) == 1 {
 		argExpr := g.compileExpr(e.Args[0])
-		if ft != nil && len(ft.Params) > 0 {
+		if ft != nil && len(ft.Params) > 0 && exprTypes[e.Args[0]] != ft.Params[0] {
 			argExpr = g.coerce(argExpr, exprTypes[e.Args[0]], ft.Params[0])
 		}
 		totalLen := len(fn) + 1 + len(argExpr) + 1
@@ -64,7 +64,7 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 			b.WriteString(", ")
 		}
 		argExpr := g.compileExpr(a)
-		if ft != nil && i < len(ft.Params) {
+		if ft != nil && i < len(ft.Params) && g.info.Types[a] != ft.Params[i] {
 			argExpr = g.coerce(argExpr, g.info.Types[a], ft.Params[i])
 		}
 		b.WriteString(argExpr)
@@ -516,6 +516,47 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("os")
 		g.addImport("strings")
 		return "_tt_mockReadStdin(" + args[0] + ")"
+
+	// --- agent-platform builtins ---
+	case "llm":
+		g.usesAgentLLM = true
+		g.addImport("os")
+		g.addImport("os/exec")
+		g.addImport("strings")
+		g.addImport("fmt")
+		g.addImport("runtime")
+		return "_tt_llm(" + args[0] + ")"
+	case "approval":
+		g.usesAgentApproval = true
+		g.addImport("os")
+		g.addImport("fmt")
+		return "_tt_approval(" + args[0] + ")"
+	case "trace":
+		g.usesAgentTrace = true
+		g.addImport("os")
+		g.addImport("time")
+		g.addImport("encoding/json")
+		return "_tt_trace(" + args[0] + ", " + args[1] + ")"
+	case "spawnAgent":
+		g.usesAgentSpawn = true
+		g.addImport("os")
+		g.addImport("fmt")
+		return "_tt_spawnAgent(" + args[0] + ", " + args[1] + ")"
+	case "toolSchemas":
+		if g.toolSchemasJSON != "" && g.toolSchemasJSON != "[]" {
+			return "_tt_toolSchemas"
+		}
+		return `"[]"`
+	case "mockLlm":
+		g.usesAgentLLM = true
+		g.usesMockLlm = true
+		g.addImport("regexp")
+		return "_tt_mockLlm(" + args[0] + ", " + args[1] + ")"
+	case "mockLlmCalls":
+		g.usesAgentLLM = true
+		g.usesMockLlm = true
+		g.addImport("regexp")
+		return "_tt_mockLlmCalls()"
 	}
 
 	return `func() interface{} { panic("tartalo native: builtin not yet supported: ` + sym.Name + `") }()`

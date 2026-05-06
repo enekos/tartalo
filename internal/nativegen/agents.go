@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
-	"github.com/enekos/tartalo/internal/checker"
 	"github.com/enekos/tartalo/internal/loader"
 )
 
@@ -234,13 +233,6 @@ func typeExprText(t ast.TypeExpr) string {
 		return "<sum>"
 	}
 	return "?"
-}
-
-// goFuncName mirrors checker.MangledName for the top-level functions the
-// nativegen produces. Keeps sh's case dispatch and Go's func-pointer
-// dispatcher symmetric.
-func (g *Generator) goFuncName(m *loader.Module, name string) string {
-	return "tt_" + checker.MangledName(m, name)
 }
 
 // emitAgentRuntime writes the Go-side runtime helpers and constants for the
