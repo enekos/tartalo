@@ -2551,8 +2551,10 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		}
 		calleeName = `"${` + varName + `}"`
 	}
-	args := make([]string, 1, n+1)
-	args[0] = calleeName
+	// Build the call line directly with strings.Builder to avoid the
+	// []string + strings.Join allocation overhead.
+	var callLine strings.Builder
+	callLine.WriteString(calleeName)
 	// The function's declared param types (sym.Type) drive the argument
 	// shape, since callers may pass `T` to a `T?` parameter (auto-wrap).
 	paramTypes := sym.Type.(*types.Func).Params
@@ -2565,9 +2567,11 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		// leaves contribute their __null sidecar after their value.
 		if rec, ok := paramTy.(*types.Record); ok {
 			for _, lf := range recordLeaves(rec) {
-				args = append(args, fmt.Sprintf(`"${%s__%s}"`, av.value, lf.Path))
+				callLine.WriteByte(' ')
+				callLine.WriteString(fmt.Sprintf(`"${%s__%s}"`, av.value, lf.Path))
 				if _, isOpt := lf.Type.(*types.Optional); isOpt {
-					args = append(args, fmt.Sprintf(`"${%s__%s__null}"`, av.value, lf.Path))
+					callLine.WriteByte(' ')
+					callLine.WriteString(fmt.Sprintf(`"${%s__%s__null}"`, av.value, lf.Path))
 				}
 			}
 			continue
@@ -2576,27 +2580,32 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		// variant-field slot, in declared order.
 		if sum, ok := paramTy.(*types.Sum); ok {
 			for _, lf := range sumLeaves(sum) {
-				args = append(args, fmt.Sprintf(`"${%s__%s}"`, av.value, lf.Path))
+				callLine.WriteByte(' ')
+				callLine.WriteString(fmt.Sprintf(`"${%s__%s}"`, av.value, lf.Path))
 				if _, isOpt := lf.Type.(*types.Optional); isOpt {
-					args = append(args, fmt.Sprintf(`"${%s__%s__null}"`, av.value, lf.Path))
+					callLine.WriteByte(' ')
+					callLine.WriteString(fmt.Sprintf(`"${%s__%s__null}"`, av.value, lf.Path))
 				}
 			}
 			continue
 		}
 		// Optional parameter: value then null flag.
 		if _, isOpt := paramTy.(*types.Optional); isOpt {
-			args = append(args, shQuoteDouble(av.shString()))
+			callLine.WriteByte(' ')
+			callLine.WriteString(shQuoteDouble(av.shString()))
 			nullArg := av.nullCheck
 			if nullArg == "" {
 				// Auto-wrapped: the actual value is non-null.
 				nullArg = "0"
 			}
-			args = append(args, fmt.Sprintf(`"$((%s))"`, nullArg))
+			callLine.WriteByte(' ')
+			callLine.WriteString(fmt.Sprintf(`"$((%s))"`, nullArg))
 			continue
 		}
-		args = append(args, shQuoteDouble(av.shString()))
+		callLine.WriteByte(' ')
+		callLine.WriteString(shQuoteDouble(av.shString()))
 	}
-	prologue = append(prologue, strings.Join(args, " "))
+	prologue = append(prologue, callLine.String())
 
 	ft := sym.Type.(*types.Func)
 	if ft.Result == types.Void {

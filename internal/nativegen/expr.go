@@ -18,12 +18,10 @@ import (
 func (g *Generator) compileExpr(e ast.Expr) string {
 	switch e := e.(type) {
 	case *ast.IntLit:
-		// Tartalo `number` is signed 64-bit. Go untyped integer constants
-		// are assignable to int64 in almost every context (arguments,
-		// returns, assignments, array elements, binary expressions). The
-		// only exception is `:=` variable declarations where Go infers
-		// `int` instead of `int64`. That case is handled in emitVarDecl.
-		return strconv.FormatInt(e.Value, 10)
+		// Tartalo `number` is signed 64-bit; emit untyped int constants and
+		// let Go infer where possible, but explicit `int64(...)` makes
+		// type unification easier in mixed contexts.
+		return "int64(" + strconv.FormatInt(e.Value, 10) + ")"
 	case *ast.FloatLit:
 		return e.Text
 	case *ast.BoolLit:

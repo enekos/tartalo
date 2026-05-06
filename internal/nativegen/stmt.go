@@ -287,16 +287,7 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 		}
 	}
 	rhs = g.coerce(rhs, from, to)
-	needsExplicitType := d.TypeAnn != nil && !types.Equal(from, to)
-	// Untyped integer constants in a `:=` declaration infer `int` in Go,
-	// but Tartalo numbers are `int64`. Force an explicit type when the
-	// inferred type is int64 and the declaration uses `:=`.
-	if !needsExplicitType && to == types.Number {
-		if _, ok := d.Value.(*ast.IntLit); ok {
-			needsExplicitType = true
-		}
-	}
-	if needsExplicitType {
+	if d.TypeAnn != nil && !types.Equal(from, to) {
 		g.writeLine("var " + target + " " + g.goType(to) + " = " + rhs)
 	} else {
 		g.writeLine(target + " := " + rhs)
@@ -406,7 +397,7 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 		start := g.compileExpr(iter.Start)
 		end := g.compileExpr(iter.End)
 		v := g.goLocalName(s.Var)
-		g.writeLine("for " + v + " int64 := " + start + "; " + v + " < " + end + "; " + v + "++ {")
+		g.writeLine("for " + v + " := " + start + "; " + v + " < " + end + "; " + v + "++ {")
 		g.indent++
 		for _, st := range s.Body.Stmts {
 			g.emitStmt(st)
