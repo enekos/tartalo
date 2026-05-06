@@ -18,17 +18,7 @@ import (
 func (g *Generator) compileExpr(e ast.Expr) string {
 	switch e := e.(type) {
 	case *ast.IntLit:
-		// Tartalo `number` is signed 64-bit; emit untyped int constants and
-		// let Go infer where possible, but explicit `int64(...)` makes
-		// type unification easier in mixed contexts.
-		v := e.Value
-		if v >= 0 && v < 10 {
-			return []string{
-				"int64(0)", "int64(1)", "int64(2)", "int64(3)", "int64(4)",
-				"int64(5)", "int64(6)", "int64(7)", "int64(8)", "int64(9)",
-			}[v]
-		}
-		return "int64(" + strconv.FormatInt(v, 10) + ")"
+		return int64Lit(e.Value)
 	case *ast.FloatLit:
 		return e.Text
 	case *ast.BoolLit:
@@ -452,4 +442,20 @@ func (g *Generator) coerce(expr string, from, to types.Type) string {
 		return "float64(" + expr + ")"
 	}
 	return expr
+}
+
+// smallInt64Lit caches the emitted form of the most common integer
+// literals so we avoid strconv.FormatInt and its allocation overhead.
+var smallInt64Lit = [20]string{
+	"int64(0)", "int64(1)", "int64(2)", "int64(3)", "int64(4)",
+	"int64(5)", "int64(6)", "int64(7)", "int64(8)", "int64(9)",
+	"int64(10)", "int64(11)", "int64(12)", "int64(13)", "int64(14)",
+	"int64(15)", "int64(16)", "int64(17)", "int64(18)", "int64(19)",
+}
+
+func int64Lit(v int64) string {
+	if v >= 0 && v < int64(len(smallInt64Lit)) {
+		return smallInt64Lit[v]
+	}
+	return "int64(" + strconv.FormatInt(v, 10) + ")"
 }
