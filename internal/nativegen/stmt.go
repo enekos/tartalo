@@ -386,7 +386,8 @@ func (g *Generator) emitIf(s *ast.IfStmt) {
 		}
 		g.indent--
 	}
-	g.writeLine("}")
+	g.writeIndent()
+	g.out.WriteString("}\n")
 }
 
 // emitIfTail writes "if cond { ... } [else ...]" without the leading
@@ -414,7 +415,8 @@ func (g *Generator) emitIfTail(s *ast.IfStmt) {
 		}
 		g.indent--
 	}
-	g.writeLine("}")
+	g.writeIndent()
+	g.out.WriteString("}\n")
 }
 
 func (g *Generator) emitFor(s *ast.ForStmt) {
@@ -471,11 +473,13 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 			g.emitStmt(st)
 		}
 		g.indent--
-		g.writeLine("}")
+		g.writeIndent()
+		g.out.WriteString("}\n")
 		// Close the outer guard for the lines case.
 		if _, ok := t.(*types.Array); !ok {
 			g.indent--
-			g.writeLine("}")
+			g.writeIndent()
+			g.out.WriteString("}\n")
 		}
 	}
 }
