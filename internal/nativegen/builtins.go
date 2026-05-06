@@ -17,7 +17,9 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 	if id == nil {
 		return "/* unsupported call */ nil"
 	}
-	sym := g.info.Uses[id]
+	uses := g.info.Uses
+	exprTypes := g.info.Types
+	sym := uses[id]
 	if sym != nil && sym.IsBuiltin {
 		return g.compileBuiltin(sym, e)
 	}
@@ -39,7 +41,7 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 	if len(e.Args) == 1 {
 		argExpr := g.compileExpr(e.Args[0])
 		if ft != nil && len(ft.Params) > 0 {
-			argExpr = g.coerce(argExpr, g.info.Types[e.Args[0]], ft.Params[0])
+			argExpr = g.coerce(argExpr, exprTypes[e.Args[0]], ft.Params[0])
 		}
 		totalLen := len(fn) + 1 + len(argExpr) + 1
 		if totalLen <= 64 {

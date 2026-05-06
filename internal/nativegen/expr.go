@@ -103,7 +103,8 @@ func (g *Generator) compileTry(e *ast.TryExpr) string {
 }
 
 func (g *Generator) compileIdent(e *ast.Ident) string {
-	if sym := g.info.Uses[e]; sym != nil {
+	uses := g.info.Uses
+	if sym := uses[e]; sym != nil {
 		// Unit-variant constructor: synthesise a fresh value of the parent
 		// sum type with the matching tag set; payload slots stay zero.
 		if sym.IsVariant {
