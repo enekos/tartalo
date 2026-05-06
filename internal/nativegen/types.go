@@ -5,6 +5,19 @@ import (
 	"github.com/enekos/tartalo/internal/types"
 )
 
+// Pre-allocated strings for common array/optional types to avoid allocation
+// from string concatenation in goType.
+var (
+	_goTypeInt64Arr  = "[]int64"
+	_goTypeStringArr = "[]string"
+	_goTypeFloatArr  = "[]float64"
+	_goTypeBoolArr   = "[]bool"
+	_goTypeInt64Opt  = "*int64"
+	_goTypeStringOpt = "*string"
+	_goTypeFloatOpt  = "*float64"
+	_goTypeBoolOpt   = "*bool"
+)
+
 // goType returns the Go type expression for a Tartalo type. The receiver is a
 // no-op for primitives and arrays; records resolve to their generated
 // `Tt_<name>` struct; optionals to `*<elem>`.
@@ -29,8 +42,28 @@ func (g *Generator) goType(t types.Type) string {
 			return "interface{}"
 		}
 	case *types.Array:
+		switch t.Elem {
+		case types.Number:
+			return _goTypeInt64Arr
+		case types.String:
+			return _goTypeStringArr
+		case types.Float:
+			return _goTypeFloatArr
+		case types.Bool:
+			return _goTypeBoolArr
+		}
 		return "[]" + g.goType(t.Elem)
 	case *types.Optional:
+		switch t.Elem {
+		case types.Number:
+			return _goTypeInt64Opt
+		case types.String:
+			return _goTypeStringOpt
+		case types.Float:
+			return _goTypeFloatOpt
+		case types.Bool:
+			return _goTypeBoolOpt
+		}
 		return "*" + g.goType(t.Elem)
 	case *types.Record:
 		return goTypeName(t.Name)

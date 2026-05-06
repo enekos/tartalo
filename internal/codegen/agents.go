@@ -12,10 +12,14 @@ import (
 
 // collectAgentsAndSchemas walks every loaded module's declarations and (a)
 // records each agent in declaration order so __tt_spawn_agent can dispatch on
-// names, and (b) serialises all tool/agent schemas into a single JSON string
-// consumed by toolSchemas(). Both are precomputed at compile time so callers
-// pay zero runtime overhead.
+// names, (b) serialises all tool/agent schemas into a single JSON string
+// consumed by toolSchemas(), and (c) pre-scans every body for calls to the
+// agent-platform builtins (llm/approval/trace/spawnAgent) so the
+// usesXxx flags are set before emit order matters. The pre-scan is a
+// purely syntactic name match — false positives only cost an unused helper
+// definition, never correctness.
 func (g *Generator) collectAgentsAndSchemas(modules []*loader.Module) {
+	g.preScanBuiltinUsage(modules)
 	var entries []map[string]any
 	for _, m := range modules {
 		for _, d := range m.File.Decls {
@@ -256,4 +260,129 @@ func (g *Generator) compileMockLlmCalls(prologue []string) exprValue {
 	prologue = append(prologue, fmt.Sprintf(
 		`%s=$(printf '%%s' "${__tt_mock_llm_calls:-}" | awk 'NF{print}')`, out))
 	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// preScanBuiltinUsage walks every declaration body in every module and sets
+// the agent-platform feature flags whenever it sees a call to one of the
+// agent-platform builtins. We resolve the call site through TypeInfo.Uses so
+// a user-declared function called e.g. "trace" doesn't trigger us.
+func (g *Generator) preScanBuiltinUsage(modules []*loader.Module) {
+	for _, m := range modules {
+		for _, d := range m.File.Decls {
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				g.scanBlock(d.Body)
+			case *ast.TestDecl:
+				g.scanBlock(d.Body)
+			case *ast.VarDecl:
+				g.scanExpr(d.Value)
+			}
+		}
+	}
+}
+
+func (g *Generator) scanBlock(b *ast.Block) {
+	if b == nil {
+		return
+	}
+	for _, st := range b.Stmts {
+		g.scanStmt(st)
+	}
+}
+
+func (g *Generator) scanStmt(s ast.Stmt) {
+	switch s := s.(type) {
+	case *ast.DeclStmt:
+		if s.Decl != nil {
+			g.scanExpr(s.Decl.Value)
+		}
+	case *ast.ExprStmt:
+		g.scanExpr(s.X)
+	case *ast.AssignStmt:
+		g.scanExpr(s.Value)
+	case *ast.FieldAssignStmt:
+		g.scanExpr(s.Target)
+		g.scanExpr(s.Value)
+	case *ast.ReturnStmt:
+		g.scanExpr(s.Value)
+	case *ast.IfStmt:
+		g.scanExpr(s.Cond)
+		g.scanBlock(s.Then)
+		g.scanBlock(s.Else)
+	case *ast.ForStmt:
+		g.scanExpr(s.Iter)
+		g.scanBlock(s.Body)
+	case *ast.MatchStmt:
+		g.scanExpr(s.Subject)
+		for _, c := range s.Cases {
+			g.scanBlock(c.Body)
+		}
+	case *ast.DeferStmt:
+		g.scanBlock(s.Body)
+	case *ast.Block:
+		g.scanBlock(s)
+	}
+}
+
+func (g *Generator) scanExpr(e ast.Expr) {
+	if e == nil {
+		return
+	}
+	switch e := e.(type) {
+	case *ast.CallExpr:
+		if id, ok := e.Callee.(*ast.Ident); ok {
+			if sym := g.info.Uses[id]; sym != nil && sym.IsBuiltin {
+				switch id.Name {
+				case "llm", "mockLlm", "mockLlmCalls":
+					g.usesLLM = true
+				case "approval":
+					g.usesApproval = true
+				case "trace":
+					g.usesTrace = true
+				case "spawnAgent":
+					g.usesSpawnAgent = true
+				}
+			}
+		}
+		g.scanExpr(e.Callee)
+		for _, a := range e.Args {
+			g.scanExpr(a)
+		}
+	case *ast.BinaryExpr:
+		g.scanExpr(e.Lhs)
+		g.scanExpr(e.Rhs)
+	case *ast.UnaryExpr:
+		g.scanExpr(e.Operand)
+	case *ast.IndexExpr:
+		g.scanExpr(e.Target)
+		g.scanExpr(e.Index)
+	case *ast.FieldExpr:
+		g.scanExpr(e.Target)
+	case *ast.RangeExpr:
+		g.scanExpr(e.Start)
+		g.scanExpr(e.End)
+	case *ast.ArrayLit:
+		for _, x := range e.Elems {
+			g.scanExpr(x)
+		}
+	case *ast.StringLit:
+		for _, p := range e.Parts {
+			g.scanExpr(p)
+		}
+	case *ast.CmdLit:
+		for _, p := range e.Parts {
+			g.scanExpr(p)
+		}
+	case *ast.CoalesceExpr:
+		g.scanExpr(e.Lhs)
+		g.scanExpr(e.Rhs)
+	case *ast.UnwrapExpr:
+		g.scanExpr(e.Operand)
+	case *ast.TryExpr:
+		g.scanExpr(e.Operand)
+	case *ast.RecordLit:
+		for _, f := range e.Fields {
+			g.scanExpr(f.Value)
+		}
+	}
 }

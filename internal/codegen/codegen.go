@@ -297,10 +297,6 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		})
 	}
 
-	// Agent-platform: emit the static tool schema constant and any runtime
-	// helpers (llm/approval/trace/spawnAgent) used by this program.
-	g.emitAgentRuntime()
-
 	// Pass 1: function definitions, in topological order (a function may call
 	// any other function declared in any loaded module).
 	for _, m := range modules {
@@ -332,6 +328,12 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		}
 	}
 	g.currentModule = entry
+
+	// Agent-platform: emit static tool schema constant and runtime helpers
+	// (llm/approval/trace/spawnAgent) used anywhere in the program. We emit
+	// after Pass 1 + Pass 2 so the usesXxx flags reflect every actual use
+	// site, including globals and main's own body.
+	g.emitAgentRuntime()
 
 	switch mode {
 	case EmitRun:
