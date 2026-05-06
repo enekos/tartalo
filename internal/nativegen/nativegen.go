@@ -107,7 +107,8 @@ const (
 // New returns a Generator ready to emit a Go program for the given type info.
 func New(info *checker.TypeInfo) *Generator {
 	return &Generator{
-		info: info,
+		info:    info,
+		imports: make([]string, 0, 8),
 	}
 }
 
