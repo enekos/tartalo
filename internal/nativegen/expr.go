@@ -116,6 +116,15 @@ func (g *Generator) compileIdent(e *ast.Ident) string {
 			return "tt_" + checker.MangledName(sym.Module, sym.Name)
 		}
 	}
+	// Flow narrowing: if checker recorded a non-optional type for this ident,
+	// the pointer is known non-nil — dereference it.
+	if sym := g.info.Uses[e]; sym != nil {
+		if _, isOpt := sym.Type.(*types.Optional); isOpt {
+			if narrowed := g.info.Types[e]; narrowed != nil && !types.IsOptional(narrowed) {
+				return "(*tt_" + e.Name + ")"
+			}
+		}
+	}
 	// Locals and params keep the bare name with a `tt_` prefix.
 	var buf [32]byte
 	n := copy(buf[:], "tt_")

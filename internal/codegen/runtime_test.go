@@ -240,7 +240,7 @@ func TestJsonGetReturnsNullForJsonNull(t *testing.T) {
 		func main(): void {
 			let body = "{\"a\":null}"
 			let v = jsonGet(body, ".a")
-			if v == null { echo("null") } else { echo("got: " + v!) }
+			if v == null { echo("null") } else { echo("got: " + v) }
 		}
 	`)
 	out := runShell(t, sh)

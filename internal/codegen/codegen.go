@@ -2149,8 +2149,16 @@ func (g *Generator) compileIdent(id *ast.Ident) exprValue {
 	case types.Number, types.Bool:
 		return exprValue{value: name, form: formArith}
 	}
-	if opt, isOpt := sym.Type.(*types.Optional); isOpt {
-		// Optional locals/globals live as `name` + `name__null` sidecar.
+	if _, isOpt := sym.Type.(*types.Optional); isOpt {
+		if narrowed := g.info.Types[id]; narrowed != nil && !types.IsOptional(narrowed) {
+			switch narrowed {
+			case types.Number, types.Bool:
+				return exprValue{value: name, form: formArith}
+			default:
+				return exprValue{value: "${" + name + "}", form: formStr}
+			}
+		}
+		opt := sym.Type.(*types.Optional)
 		nullCheck := name + "__null"
 		switch opt.Elem {
 		case types.Number, types.Bool:
@@ -2959,6 +2967,35 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		return g.compileContains(args, prologue, "*\"$%s\"")
 	case "slice":
 		return g.compileSlice(args, prologue)
+	case "trimStart":
+		return g.compileTrimEdge(args, prologue, "start")
+	case "trimEnd":
+		return g.compileTrimEdge(args, prologue, "end")
+	case "repeat":
+		return g.compileRepeat(args, prologue)
+	case "indexOf":
+		return g.compileIndexOfStr(args, prologue)
+	case "parseInt":
+		return g.compileParseInt(args, prologue)
+	case "abs":
+		v0 := args[0]
+		prl := concatPrologues(prologue, v0.prologue)
+		a := asArith(v0)
+		return exprValue{prologue: prl, value: fmt.Sprintf("((%s<0)?-(%s):(%s))", a, a, a), form: formArith}
+	case "max":
+		la, ra := args[0], args[1]
+		prl := concatPrologues(concatPrologues(prologue, la.prologue), ra.prologue)
+		a, b := asArith(la), asArith(ra)
+		return exprValue{prologue: prl, value: fmt.Sprintf("((%s>%s)?%s:%s)", a, b, a, b), form: formArith}
+	case "min":
+		la, ra := args[0], args[1]
+		prl := concatPrologues(concatPrologues(prologue, la.prologue), ra.prologue)
+		a, b := asArith(la), asArith(ra)
+		return exprValue{prologue: prl, value: fmt.Sprintf("((%s<%s)?%s:%s)", a, b, a, b), form: formArith}
+	case "sorted":
+		return g.compileSorted(args, prologue)
+	case "reversed":
+		return g.compileReversed(args, prologue)
 
 	// --- file I/O ---
 	case "readFile":
@@ -3394,6 +3431,74 @@ func (g *Generator) compileSplit(args []exprValue, prologue []string) exprValue 
 		t,
 		sVar, sVar, dVar, dVar,
 		sVar, dVar))
+	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
+}
+
+// --- string edge-trim / repeat / indexOf / parseInt / sorted / reversed ---
+
+func (g *Generator) compileTrimEdge(args []exprValue, prologue []string, edge string) exprValue {
+	t := g.tmp("te")
+	srcVar := g.tmp("te_s")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", srcVar, args[0].assignmentRHS()))
+	var awkProg string
+	if edge == "start" {
+		awkProg = fmt.Sprintf(`%s=$(%s="$%s" awk 'BEGIN { s = ENVIRON["%s"]; sub(/^[ \t\r\n]+/, "", s); printf "%%s", s }')`, t, srcVar, srcVar, srcVar)
+	} else {
+		awkProg = fmt.Sprintf(`%s=$(%s="$%s" awk 'BEGIN { s = ENVIRON["%s"]; sub(/[ \t\r\n]+$/, "", s); printf "%%s", s }')`, t, srcVar, srcVar, srcVar)
+	}
+	prologue = append(prologue, awkProg)
+	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
+}
+
+func (g *Generator) compileRepeat(args []exprValue, prologue []string) exprValue {
+	t := g.tmp("rpt")
+	sVar := g.tmp("rpt_s")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", sVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`%s=$(%s="$%s" awk -v n=%s 'BEGIN { s=ENVIRON["%s"]; r=""; for(i=0;i<n;i++) r=r s; printf "%%s", r }')`,
+		t, sVar, sVar, asArithExpansion(args[1]), sVar))
+	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
+}
+
+func (g *Generator) compileIndexOfStr(args []exprValue, prologue []string) exprValue {
+	t := g.tmp("iof")
+	sVar := g.tmp("iof_s")
+	pVar := g.tmp("iof_p")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", sVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", pVar, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`%s=$(%s="$%s" %s="$%s" awk 'BEGIN { s=ENVIRON["%s"]; p=ENVIRON["%s"]; i=index(s,p); printf "%%d", (i==0)?-1:i-1 }')`,
+		t, sVar, sVar, pVar, pVar, sVar, pVar))
+	return exprValue{prologue: prologue, value: t, form: formArith}
+}
+
+func (g *Generator) compileParseInt(args []exprValue, prologue []string) exprValue {
+	t := g.tmp("pi")
+	nullFlag := t + "__null"
+	sVar := g.tmp("pi_s")
+	rawVar := g.tmp("pi_r")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", sVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`%s=$(%s="$%s" awk 'BEGIN { s=ENVIRON["%s"]; if (s ~ /^-?[0-9]+$/) printf "%%s", s; else printf "" }')`,
+		rawVar, sVar, sVar, sVar))
+	prologue = append(prologue, fmt.Sprintf(`if [ -z "$%s" ]; then %s=0; %s=1; else %s="$%s"; %s=0; fi`,
+		rawVar, t, nullFlag, t, rawVar, nullFlag))
+	return exprValue{prologue: prologue, value: t, nullCheck: nullFlag, form: formArith}
+}
+
+func (g *Generator) compileSorted(args []exprValue, prologue []string) exprValue {
+	t := g.tmp("srt")
+	sVar := g.tmp("srt_s")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", sVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=$(printf '%%s\n' "$%s" | sort)`, t, sVar))
+	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
+}
+
+func (g *Generator) compileReversed(args []exprValue, prologue []string) exprValue {
+	t := g.tmp("rev")
+	sVar := g.tmp("rev_s")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", sVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=$(printf '%%s\n' "$%s" | awk '{lines[NR]=$0} END{for(i=NR;i>=1;i--) print lines[i]}')`, t, sVar))
 	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
 }
 

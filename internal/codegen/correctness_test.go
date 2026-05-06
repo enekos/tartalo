@@ -237,7 +237,7 @@ func TestFallthroughOptionalReturn(t *testing.T) {
 		}
 		func main(): void {
 			let r = first(false)
-			if r == null { echo("null") } else { echo("got: " + r!) }
+			if r == null { echo("null") } else { echo("got: " + r) }
 			echo(first(true) ?? "<none>")
 		}
 	`)

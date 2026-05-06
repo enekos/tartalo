@@ -155,11 +155,11 @@ func TestParseFloat(t *testing.T) {
 	sh := compile(t, `
 		func main(): void {
 			let a = parseFloat("3.14")
-			if a == null { echo("null") } else { echo(formatFloat(a!, 2)) }
+			if a == null { echo("null") } else { echo(formatFloat(a, 2)) }
 			let b = parseFloat("not a number")
 			if b == null { echo("b-null") } else { echo("b-bad") }
 			let c = parseFloat("1e3")
-			if c == null { echo("c-null") } else { echo(formatFloat(c!, 0)) }
+			if c == null { echo("c-null") } else { echo(formatFloat(c, 0)) }
 		}
 	`)
 	out := runShell(t, sh)

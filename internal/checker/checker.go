@@ -143,6 +143,8 @@ type Checker struct {
 	// Helpers called from tests cannot use them directly — pass a bool back
 	// and use `check(...)` at the call site.
 	inTest bool
+
+	narrows []map[string]types.Type
 }
 
 // sharedPredeclTypes and sharedBuiltinScope are built once at package init.
@@ -974,9 +976,15 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 		if ct != types.Invalid && ct != types.Bool {
 			c.errorf(s.Cond.Pos(), "if condition must be bool, got %s", types.Format(ct))
 		}
+		thenNarrow := c.extractNarrowings(s.Cond, false)
+		c.pushNarrow(thenNarrow)
 		c.checkBlock(s.Then)
+		c.popNarrow()
 		if s.Else != nil {
+			elseNarrow := c.extractNarrowings(s.Cond, true)
+			c.pushNarrow(elseNarrow)
 			c.checkBlock(s.Else)
+			c.popNarrow()
 		}
 	case *ast.ForStmt:
 		var elemTy types.Type
@@ -1220,6 +1228,12 @@ func (c *Checker) inferExpr(e ast.Expr) types.Type {
 		c.info.Uses[e] = sym
 		if sym.IsFunc {
 			return sym.Type
+		}
+		for i := len(c.narrows) - 1; i >= 0; i-- {
+			if narrowed, ok := c.narrows[i][e.Name]; ok {
+				c.info.Types[e] = narrowed
+				return narrowed
+			}
 		}
 		return sym.Type
 	case *ast.CallExpr:
@@ -1915,6 +1929,60 @@ func (c *Checker) checkReduceCall(e *ast.CallExpr) types.Type {
 
 // builtins returns the symbol set seeded into the global scope. These do not
 // reference any predeclared user-record types.
+
+func isNullLit(e ast.Expr) bool {
+	_, ok := e.(*ast.NullLit)
+	return ok
+}
+
+func (c *Checker) extractNarrowings(cond ast.Expr, invert bool) map[string]types.Type {
+	bin, ok := cond.(*ast.BinaryExpr)
+	if !ok {
+		return nil
+	}
+	if bin.Op != token.Eq && bin.Op != token.Neq {
+		return nil
+	}
+	notNull := bin.Op == token.Neq
+	if invert {
+		notNull = !notNull
+	}
+	if !notNull {
+		return nil
+	}
+	var ident *ast.Ident
+	if isNullLit(bin.Rhs) {
+		ident, _ = bin.Lhs.(*ast.Ident)
+	} else if isNullLit(bin.Lhs) {
+		ident, _ = bin.Rhs.(*ast.Ident)
+	}
+	if ident == nil {
+		return nil
+	}
+	sym := c.current.resolve(ident.Name)
+	if sym == nil {
+		return nil
+	}
+	opt, isOpt := sym.Type.(*types.Optional)
+	if !isOpt {
+		return nil
+	}
+	return map[string]types.Type{ident.Name: opt.Elem}
+}
+
+func (c *Checker) pushNarrow(m map[string]types.Type) {
+	if m == nil {
+		m = map[string]types.Type{}
+	}
+	c.narrows = append(c.narrows, m)
+}
+
+func (c *Checker) popNarrow() {
+	if len(c.narrows) > 0 {
+		c.narrows = c.narrows[:len(c.narrows)-1]
+	}
+}
+
 func builtins() []*Symbol {
 	str := types.String
 	num := types.Number
@@ -1944,6 +2012,16 @@ func builtins() []*Symbol {
 		mk("startsWith", []types.Type{str, str}, bln),
 		mk("endsWith", []types.Type{str, str}, bln),
 		mk("slice", []types.Type{str, num, num}, str),
+		mk("trimStart", []types.Type{str}, str),
+		mk("trimEnd", []types.Type{str}, str),
+		mk("repeat", []types.Type{str, num}, str),
+		mk("indexOf", []types.Type{str, str}, num),
+		mk("parseInt", []types.Type{str}, &types.Optional{Elem: num}),
+		mk("abs", []types.Type{num}, num),
+		mk("max", []types.Type{num, num}, num),
+		mk("min", []types.Type{num, num}, num),
+		mk("sorted", []types.Type{stringArr}, stringArr),
+		mk("reversed", []types.Type{stringArr}, stringArr),
 
 		// File I/O.
 		mk("readFile", []types.Type{str}, str),

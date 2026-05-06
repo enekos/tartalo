@@ -163,6 +163,32 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 	case "slice":
 		return "func() string { _s := " + args[0] + "; _i := int(" + args[1] + "); _j := int(" + args[2] +
 			"); if _i < 0 { _i = 0 }; if _j > len(_s) { _j = len(_s) }; if _i > _j { _i = _j }; return _s[_i:_j] }()"
+	case "trimStart":
+		g.addImport("strings")
+		return "strings.TrimLeft(" + args[0] + ", \" \\t\\r\\n\")"
+	case "trimEnd":
+		g.addImport("strings")
+		return "strings.TrimRight(" + args[0] + ", \" \\t\\r\\n\")"
+	case "repeat":
+		g.addImport("strings")
+		return "strings.Repeat(" + args[0] + ", int(" + args[1] + "))"
+	case "indexOf":
+		g.addImport("strings")
+		return "int64(strings.Index(" + args[0] + ", " + args[1] + "))"
+	case "parseInt":
+		g.addImport("strconv")
+		return "func() *int64 { _v, _err := strconv.ParseInt(" + args[0] + ", 10, 64); if _err != nil { return nil }; return &_v }()"
+	case "abs":
+		return "func() int64 { _v := " + args[0] + "; if _v < 0 { return -_v }; return _v }()"
+	case "max":
+		return "func() int64 { _a, _b := " + args[0] + ", " + args[1] + "; if _a > _b { return _a }; return _b }()"
+	case "min":
+		return "func() int64 { _a, _b := " + args[0] + ", " + args[1] + "; if _a < _b { return _a }; return _b }()"
+	case "sorted":
+		g.addImport("sort")
+		return "func() []string { _cp := append([]string(nil), " + args[0] + "...); sort.Strings(_cp); return _cp }()"
+	case "reversed":
+		return "func() []string { _s := " + args[0] + "; _cp := make([]string, len(_s)); for _i, _v := range _s { _cp[len(_s)-1-_i] = _v }; return _cp }()"
 
 	// --- subprocess ---
 	case "exec":

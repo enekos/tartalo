@@ -159,7 +159,7 @@ func TestNativeOptionalNullCheck(t *testing.T) {
 			if key == null {
 				echo("absent")
 			} else {
-				echo("present:" + key!)
+				echo("present:" + key)
 			}
 		}
 	`)
