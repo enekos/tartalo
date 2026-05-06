@@ -21,7 +21,14 @@ func (g *Generator) compileExpr(e ast.Expr) string {
 		// Tartalo `number` is signed 64-bit; emit untyped int constants and
 		// let Go infer where possible, but explicit `int64(...)` makes
 		// type unification easier in mixed contexts.
-		return "int64(" + strconv.FormatInt(e.Value, 10) + ")"
+		v := e.Value
+		if v >= 0 && v < 10 {
+			return []string{
+				"int64(0)", "int64(1)", "int64(2)", "int64(3)", "int64(4)",
+				"int64(5)", "int64(6)", "int64(7)", "int64(8)", "int64(9)",
+			}[v]
+		}
+		return "int64(" + strconv.FormatInt(v, 10) + ")"
 	case *ast.FloatLit:
 		return e.Text
 	case *ast.BoolLit:

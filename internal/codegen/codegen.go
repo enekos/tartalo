@@ -2599,7 +2599,9 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		// Optional parameter: value then null flag.
 		if _, isOpt := paramTy.(*types.Optional); isOpt {
 			callLine.WriteByte(' ')
-			callLine.WriteString(shQuoteDouble(av.shString()))
+			callLine.WriteByte('"')
+			callLine.WriteString(av.shString())
+			callLine.WriteByte('"')
 			nullArg := av.nullCheck
 			if nullArg == "" {
 				// Auto-wrapped: the actual value is non-null.
@@ -2610,7 +2612,9 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 			continue
 		}
 		callLine.WriteByte(' ')
-		callLine.WriteString(shQuoteDouble(av.shString()))
+		callLine.WriteByte('"')
+		callLine.WriteString(av.shString())
+		callLine.WriteByte('"')
 	}
 	prologue = append(prologue, callLine.String())
 
