@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/enekos/tartalo/internal/format"
 	"github.com/enekos/tartalo/internal/loader"
 	"github.com/enekos/tartalo/internal/lsp"
+	"github.com/enekos/tartalo/internal/nativegen"
 	"github.com/enekos/tartalo/internal/verify"
 )
 
@@ -63,14 +65,19 @@ func run(args []string) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
-  tartalo build <file.tt> [-o <out.sh>] [--no-verify] [--trace]
-  tartalo run   [--no-verify] [--trace] <file.tt> [-- args...]
-  tartalo test  <file.tt> [--no-verify]   # run all `+"`test \"...\" { ... }`"+` declarations
+  tartalo build <file.tt> [-o <out>] [--target=sh|native] [--goos=<os>] [--goarch=<arch>] [--no-verify] [--trace]
+  tartalo run   [--target=sh|native] [--no-verify] [--trace] <file.tt> [-- args...]
+  tartalo test  [--target=sh|native] [--no-verify] <file.tt>   # run all `+"`test \"...\" { ... }`"+` declarations
   tartalo check <file.tt>             # type-check without emitting sh
   tartalo fmt   [-l|-d|-w] <file.tt>...   # format source (default: rewrite in place)
   tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]   # time compile phases (and run) over N iterations
   tartalo lsp                             # speak Language Server Protocol over stdio (syntax diagnostics)
   tartalo help
+
+build defaults to --target=sh which produces a portable POSIX shell script;
+use --target=native to compile to a self-contained binary via the Go toolchain
+(requires `+"`go`"+` on PATH). --goos and --goarch enable cross-compilation for
+the native target.
 
 By default, build/run/test pipe the emitted sh through shellcheck before
 writing or executing it. Pass --no-verify (or set TARTALO_NO_VERIFY=1) to
@@ -122,6 +129,39 @@ func compileFileForTest(path string) (string, error) {
 	return codegen.New(info).EmitModulesTest(modules), nil
 }
 
+// nativeBuildToTemp emits a native binary into a temp dir for run/test. The
+// returned path is the binary; cleanup is the caller's responsibility.
+func nativeBuildToTemp(input string, mode nativegen.EmitMode, opts nativegen.BuildOptions) (string, func(), error) {
+	modules, info, err := frontEnd(input)
+	if err != nil {
+		return "", nil, err
+	}
+	dir, mkerr := os.MkdirTemp("", "tartalo-native-bin-*")
+	if mkerr != nil {
+		return "", nil, mkerr
+	}
+	binName := strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))
+	if binName == "" {
+		binName = "tartalo_program"
+	}
+	binPath := filepath.Join(dir, binName)
+	opts.Output = binPath
+	cleanup := func() { os.RemoveAll(dir) }
+	switch mode {
+	case nativegen.EmitTest:
+		if err := nativegen.BuildTest(modules, info, opts); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	default:
+		if err := nativegen.Build(modules, info, opts); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
+	return binPath, cleanup, nil
+}
+
 // verifySh is the compile-output guardrail: it pipes the emitted script
 // through shellcheck (POSIX sh mode) and aborts the command if anything
 // survives the suppression list. Skipped when noVerify is true or when the
@@ -155,6 +195,10 @@ func cmdBuild(args []string) error {
 		hadFlag  bool
 		noVerify bool
 		trace    bool
+		target   = "sh"
+		goos     string
+		goarch   string
+		keepTemp bool
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -172,12 +216,26 @@ func cmdBuild(args []string) error {
 		case strings.HasPrefix(a, "--output="):
 			out = strings.TrimPrefix(a, "--output=")
 			hadFlag = true
+		case strings.HasPrefix(a, "--target="):
+			target = strings.TrimPrefix(a, "--target=")
+		case a == "--target":
+			if i+1 >= len(args) {
+				return fmt.Errorf("build: --target requires a value")
+			}
+			target = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--goos="):
+			goos = strings.TrimPrefix(a, "--goos=")
+		case strings.HasPrefix(a, "--goarch="):
+			goarch = strings.TrimPrefix(a, "--goarch=")
+		case a == "--keep-temp":
+			keepTemp = true
 		case a == "--no-verify":
 			noVerify = true
 		case a == "--trace":
 			trace = true
 		case a == "-h" || a == "--help":
-			fmt.Println("usage: tartalo build <file.tt> [-o <out.sh>] [--no-verify] [--trace]")
+			fmt.Println("usage: tartalo build <file.tt> [-o <out>] [--target=sh|native] [--goos=<os>] [--goarch=<arch>] [--no-verify] [--trace]")
 			return nil
 		case strings.HasPrefix(a, "-"):
 			return fmt.Errorf("build: unknown flag %q", a)
@@ -192,21 +250,44 @@ func cmdBuild(args []string) error {
 	if input == "" {
 		return fmt.Errorf("build: expected an input file")
 	}
-	sh, err := compileFile(input, trace)
-	if err != nil {
-		return err
+	switch target {
+	case "sh":
+		sh, err := compileFile(input, trace)
+		if err != nil {
+			return err
+		}
+		if err := verifySh("build", sh, noVerify); err != nil {
+			return err
+		}
+		dst := out
+		if dst == "" {
+			dst = strings.TrimSuffix(input, filepath.Ext(input)) + ".sh"
+		}
+		if err := os.WriteFile(dst, []byte(sh), 0o755); err != nil {
+			return err
+		}
+		return nil
+	case "native":
+		modules, info, err := frontEnd(input)
+		if err != nil {
+			return err
+		}
+		dst := out
+		if dst == "" {
+			dst = strings.TrimSuffix(input, filepath.Ext(input))
+			if goos == "windows" && !strings.HasSuffix(dst, ".exe") {
+				dst += ".exe"
+			}
+		}
+		return nativegen.Build(modules, info, nativegen.BuildOptions{
+			Output:   dst,
+			GOOS:     goos,
+			GOARCH:   goarch,
+			KeepTemp: keepTemp,
+		})
+	default:
+		return fmt.Errorf("build: unknown --target %q (expected sh or native)", target)
 	}
-	if err := verifySh("build", sh, noVerify); err != nil {
-		return err
-	}
-	target := out
-	if target == "" {
-		target = strings.TrimSuffix(input, filepath.Ext(input)) + ".sh"
-	}
-	if err := os.WriteFile(target, []byte(sh), 0o755); err != nil {
-		return err
-	}
-	return nil
 }
 
 func cmdCheck(args []string) error {
@@ -237,76 +318,246 @@ func cmdTest(args []string) error {
 	var (
 		input    string
 		noVerify bool
+		target   = "sh"
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "-h" || a == "--help":
-			fmt.Println("usage: tartalo test <file.tt> [--no-verify]")
+			fmt.Println("usage: tartalo test <file-or-dir> [--target=sh|native] [--no-verify]")
 			return nil
 		case a == "--no-verify":
 			noVerify = true
+		case strings.HasPrefix(a, "--target="):
+			target = strings.TrimPrefix(a, "--target=")
+		case a == "--target":
+			if i+1 >= len(args) {
+				return fmt.Errorf("test: --target requires a value")
+			}
+			target = args[i+1]
+			i++
 		case strings.HasPrefix(a, "-"):
 			return fmt.Errorf("test: unknown flag %q", a)
 		default:
 			if input != "" {
-				return fmt.Errorf("test: expected exactly one input file")
+				return fmt.Errorf("test: expected exactly one input file or directory")
 			}
 			input = a
 		}
 	}
 	if input == "" {
-		return fmt.Errorf("test: expected an input file")
+		return fmt.Errorf("test: expected an input file or directory")
 	}
-	sh, err := compileFileForTest(input)
-	if err != nil {
-		return err
+	// Directory input: walk it, collect every .tt with at least one `test`
+	// declaration, run them in lexicographic order, aggregate the result.
+	if info, err := os.Stat(input); err == nil && info.IsDir() {
+		return runTestDir(input, target, noVerify)
 	}
-	if err := verifySh("test", sh, noVerify); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp("", "tartalo-test-*.sh")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(sh); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	cmd := exec.Command("/bin/sh", tmp.Name())
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			os.Exit(ee.ExitCode())
+	switch target {
+	case "sh":
+		sh, err := compileFileForTest(input)
+		if err != nil {
+			return err
 		}
+		if err := verifySh("test", sh, noVerify); err != nil {
+			return err
+		}
+		tmp, err := os.CreateTemp("", "tartalo-test-*.sh")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.WriteString(sh); err != nil {
+			tmp.Close()
+			return err
+		}
+		if err := tmp.Close(); err != nil {
+			return err
+		}
+		cmd := exec.Command("/bin/sh", tmp.Name())
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				os.Exit(ee.ExitCode())
+			}
+			return err
+		}
+		return nil
+	case "native":
+		bin, cleanup, err := nativeBuildToTemp(input, nativegen.EmitTest, nativegen.BuildOptions{})
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		cmd := exec.Command(bin)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				os.Exit(ee.ExitCode())
+			}
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("test: unknown --target %q (expected sh or native)", target)
+	}
+}
+
+// runTestDir walks dir, finds every `.tt` file containing at least one `test`
+// declaration, runs them sequentially, and prints a per-file header plus an
+// aggregate summary. Exit status is non-zero iff any file's tests failed.
+//
+// Each file is run as its own entry — imports are still resolved per file —
+// so two unrelated test files in the same directory don't have to know about
+// each other. Files inside `node_modules`, `.git`, or any directory starting
+// with `.` are skipped.
+func runTestDir(dir, target string, noVerify bool) error {
+	files, err := discoverTestFiles(dir)
+	if err != nil {
 		return err
 	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "no .tt files with `test \"...\"` declarations under "+dir)
+		return nil
+	}
+	totalFails := 0
+	for _, f := range files {
+		fmt.Println("=== " + f)
+		if err := runOneTestFile(f, target, noVerify); err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				totalFails++
+				continue
+			}
+			return err
+		}
+	}
+	fmt.Println()
+	if totalFails > 0 {
+		fmt.Printf("%d file(s) failed out of %d\n", totalFails, len(files))
+		os.Exit(1)
+	}
+	fmt.Printf("all %d file(s) passed\n", len(files))
 	return nil
+}
+
+// discoverTestFiles returns every `.tt` file under dir whose source contains
+// at least one top-level `test "..."` declaration. The check is deliberately
+// shallow (a regex over the source text) to avoid running the full frontend
+// against every file just to filter — collisions with `test` inside strings
+// or comments are rare and the worst outcome is a file with no actual tests
+// being run, which is harmless.
+func discoverTestFiles(dir string) ([]string, error) {
+	testDecl := regexp.MustCompile(`(?m)^\s*test\s+"`)
+	var found []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			name := filepath.Base(path)
+			if path != dir && (strings.HasPrefix(name, ".") || name == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(info.Name(), ".tt") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if testDecl.Match(src) {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(found)
+	return found, nil
+}
+
+// runOneTestFile compiles + executes a single test file and returns the
+// child process's error verbatim (so the caller can detect non-zero exits
+// and keep aggregating).
+func runOneTestFile(input, target string, noVerify bool) error {
+	switch target {
+	case "sh":
+		sh, err := compileFileForTest(input)
+		if err != nil {
+			return err
+		}
+		if err := verifySh("test", sh, noVerify); err != nil {
+			return err
+		}
+		tmp, err := os.CreateTemp("", "tartalo-test-*.sh")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.WriteString(sh); err != nil {
+			tmp.Close()
+			return err
+		}
+		if err := tmp.Close(); err != nil {
+			return err
+		}
+		cmd := exec.Command("/bin/sh", tmp.Name())
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	case "native":
+		bin, cleanup, err := nativeBuildToTemp(input, nativegen.EmitTest, nativegen.BuildOptions{})
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		cmd := exec.Command(bin)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	default:
+		return fmt.Errorf("test: unknown --target %q (expected sh or native)", target)
+	}
 }
 
 func cmdRun(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("run: expected an input file")
 	}
-	// Strip leading run-only flags (--no-verify, --trace). Anything after the
-	// input file is forwarded to the script.
+	// Strip leading run-only flags (--no-verify, --trace, --target). Anything
+	// after the input file is forwarded to the script.
 	noVerify := false
 	trace := false
+	target := "sh"
 	for len(args) > 0 {
-		switch args[0] {
-		case "--no-verify":
+		switch {
+		case args[0] == "--no-verify":
 			noVerify = true
 			args = args[1:]
-		case "--trace":
+		case args[0] == "--trace":
 			trace = true
 			args = args[1:]
+		case strings.HasPrefix(args[0], "--target="):
+			target = strings.TrimPrefix(args[0], "--target=")
+			args = args[1:]
+		case args[0] == "--target":
+			if len(args) < 2 {
+				return fmt.Errorf("run: --target requires a value")
+			}
+			target = args[1]
+			args = args[2:]
 		default:
 			goto doneFlags
 		}
@@ -320,39 +571,62 @@ doneFlags:
 	if len(scriptArgs) > 0 && scriptArgs[0] == "--" {
 		scriptArgs = scriptArgs[1:]
 	}
-	sh, err := compileFile(in, trace)
-	if err != nil {
-		return err
-	}
-	if err := verifySh("run", sh, noVerify); err != nil {
-		return err
-	}
-
-	tmp, err := os.CreateTemp("", "tartalo-*.sh")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(sh); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	cmd := exec.Command("/bin/sh", append([]string{tmp.Name()}, scriptArgs...)...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			os.Exit(ee.ExitCode())
+	switch target {
+	case "sh":
+		sh, err := compileFile(in, trace)
+		if err != nil {
+			return err
 		}
-		return err
+		if err := verifySh("run", sh, noVerify); err != nil {
+			return err
+		}
+
+		tmp, err := os.CreateTemp("", "tartalo-*.sh")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.WriteString(sh); err != nil {
+			tmp.Close()
+			return err
+		}
+		if err := tmp.Close(); err != nil {
+			return err
+		}
+
+		cmd := exec.Command("/bin/sh", append([]string{tmp.Name()}, scriptArgs...)...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				os.Exit(ee.ExitCode())
+			}
+			return err
+		}
+		return nil
+	case "native":
+		bin, cleanup, err := nativeBuildToTemp(in, nativegen.EmitRun, nativegen.BuildOptions{})
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		cmd := exec.Command(bin, scriptArgs...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				os.Exit(ee.ExitCode())
+			}
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("run: unknown --target %q (expected sh or native)", target)
 	}
-	return nil
 }
 
 // cmdFmt implements `tartalo fmt`. The default action is in-place rewrite,

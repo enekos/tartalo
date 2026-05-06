@@ -171,6 +171,26 @@ type FieldDecl struct {
 	TypeAnn TypeExpr
 }
 
+// SumType: `A{...} | B | C{...}`. Used as the RHS of a `type` decl. Each
+// variant either has a list of named fields (`Foo{x:T,y:U}`) or is a unit
+// (`Foo` — Fields is nil and HasBraces is false).
+type SumType struct {
+	KwPos    token.Pos
+	Variants []SumVariant
+}
+
+func (t *SumType) Pos() token.Pos { return t.KwPos }
+func (t *SumType) typeExprNode()  {}
+
+// SumVariant is one alternative in a sum type. Fields is nil when the
+// variant is a bare tag with no payload (`Empty`).
+type SumVariant struct {
+	NamePos   token.Pos
+	Name      string
+	HasBraces bool
+	Fields    []FieldDecl
+}
+
 // --- Statements -------------------------------------------------------------
 
 type Stmt interface {
@@ -251,6 +271,17 @@ type ForStmt struct {
 func (s *ForStmt) Pos() token.Pos { return s.KwPos }
 func (s *ForStmt) stmtNode()      {}
 
+// DeferStmt: `defer { ... }`. Registers a block to run when the enclosing
+// function exits, in last-registered-first-run order. The body cannot
+// contain `return`; the checker enforces that.
+type DeferStmt struct {
+	KwPos token.Pos
+	Body  *Block
+}
+
+func (s *DeferStmt) Pos() token.Pos { return s.KwPos }
+func (s *DeferStmt) stmtNode()      {}
+
 // Block: `{ stmts... }`. RBrace is captured so source-position-based passes
 // (formatter, IDE tools) know where the block ends without re-scanning.
 type Block struct {
@@ -302,6 +333,27 @@ type WildcardPattern struct {
 
 func (p *WildcardPattern) Pos() token.Pos { return p.NamePos }
 func (p *WildcardPattern) patternNode()   {}
+
+// VariantPattern: `Name{ field1, field2 }` or bare `Name`. Each binding
+// names a field of the variant; the local introduced shadows the field
+// name within the arm's body.
+type VariantPattern struct {
+	NamePos   token.Pos
+	Name      string
+	HasBraces bool
+	Bindings  []VariantBinding
+}
+
+func (p *VariantPattern) Pos() token.Pos { return p.NamePos }
+func (p *VariantPattern) patternNode()   {}
+
+// VariantBinding identifies a field of a variant to extract, plus the local
+// name to bind it to inside the match arm. In v0 these are always equal
+// (`Foo{x}` binds the field `x` to the local `x`).
+type VariantBinding struct {
+	NamePos token.Pos
+	Name    string
+}
 
 // --- Expressions ------------------------------------------------------------
 
@@ -475,6 +527,19 @@ type UnwrapExpr struct {
 
 func (e *UnwrapExpr) Pos() token.Pos { return e.Operand.Pos() }
 func (e *UnwrapExpr) exprNode()      {}
+
+// TryExpr: `expr?`. Operand must be a Result-shaped sum (variants `Ok{value:
+// T}` and `Err{error: E}`) inside a function whose return type is a Result-
+// shaped sum sharing the same Err type. On Err the enclosing function
+// returns immediately propagating the same Err; otherwise the value is the
+// Ok variant's payload (T).
+type TryExpr struct {
+	OpPos   token.Pos
+	Operand Expr
+}
+
+func (e *TryExpr) Pos() token.Pos { return e.Operand.Pos() }
+func (e *TryExpr) exprNode()      {}
 
 // RecordLit: `Name{ f1: e1, f2: e2 }`. We use the Go-style typed-literal form
 // rather than bare `{...}` because it avoids ambiguity with statement blocks

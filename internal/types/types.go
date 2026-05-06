@@ -111,6 +111,33 @@ func (r *Record) Lookup(name string) *Field {
 	return nil
 }
 
+// Variant is one alternative inside a sum type. An empty Fields list means
+// the variant carries no payload (a bare tag like `Empty`).
+type Variant struct {
+	Name   string
+	Fields []Field
+}
+
+// Sum is a tagged union type. Equality is nominal — two sum types with the
+// same Name from different declarations are still distinct.
+type Sum struct {
+	Name     string
+	Variants []Variant
+}
+
+func (s *Sum) String() string { return s.Name }
+func (s *Sum) typeNode()      {}
+
+// LookupVariant returns the variant with the given name, or nil.
+func (s *Sum) LookupVariant(name string) *Variant {
+	for i := range s.Variants {
+		if s.Variants[i].Name == name {
+			return &s.Variants[i]
+		}
+	}
+	return nil
+}
+
 // Func describes a function signature.
 type Func struct {
 	Params []Type
@@ -141,6 +168,12 @@ func Equal(a, b Type) bool {
 	if ra, ok := a.(*Record); ok {
 		if rb, ok := b.(*Record); ok {
 			return ra.Name == rb.Name
+		}
+		return false
+	}
+	if sa, ok := a.(*Sum); ok {
+		if sb, ok := b.(*Sum); ok {
+			return sa.Name == sb.Name
 		}
 		return false
 	}

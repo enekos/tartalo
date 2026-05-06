@@ -177,16 +177,239 @@ func TestRejectFieldOnNonRecord(t *testing.T) {
 	}
 }
 
-func TestRejectArrayOfRecords(t *testing.T) {
-	src := `
+func TestAcceptArrayOfRecordsEmpty(t *testing.T) {
+	sh := compile(t, `
 		type P = { a: string }
 		func main(): void {
 			let xs: P[] = []
+			echo(str(len(xs)))
 		}
-	`
-	errs := checkOnly(t, src)
-	if len(errs) == 0 || !containsErr(errs, "arrays of records") {
-		t.Fatalf("expected 'arrays of records' error, got: %v", errs)
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "0" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestArrayOfRecordsLitAndIndex(t *testing.T) {
+	sh := compile(t, `
+		type Person = { name: string, age: number }
+		func main(): void {
+			let people: Person[] = [
+				Person{name: "Alice", age: 30},
+				Person{name: "Bob", age: 25},
+				Person{name: "Carol", age: 41},
+			]
+			echo(str(len(people)))
+			echo(people[0].name + ":" + str(people[0].age))
+			echo(people[2].name + ":" + str(people[2].age))
+		}
+	`)
+	out := runShell(t, sh)
+	want := "3\nAlice:30\nCarol:41\n"
+	if out != want {
+		t.Errorf("got %q want %q", out, want)
+	}
+}
+
+func TestArrayOfRecordsForIn(t *testing.T) {
+	sh := compile(t, `
+		type Person = { name: string, age: number }
+		func main(): void {
+			let people: Person[] = [
+				Person{name: "Alice", age: 30},
+				Person{name: "Bob", age: 25},
+			]
+			for p in people {
+				echo(p.name + "/" + str(p.age))
+			}
+		}
+	`)
+	out := runShell(t, sh)
+	want := "Alice/30\nBob/25\n"
+	if out != want {
+		t.Errorf("got %q want %q", out, want)
+	}
+}
+
+func TestArrayOfRecordsPassAndReturn(t *testing.T) {
+	sh := compile(t, `
+		type Person = { name: string, age: number }
+		func first(xs: Person[]): Person {
+			return xs[0]
+		}
+		func make(): Person[] {
+			return [Person{name: "X", age: 1}, Person{name: "Y", age: 2}]
+		}
+		func main(): void {
+			let xs: Person[] = make()
+			let p: Person = first(xs)
+			echo(p.name + ":" + str(p.age))
+			echo(str(len(xs)))
+		}
+	`)
+	out := runShell(t, sh)
+	want := "X:1\n2\n"
+	if out != want {
+		t.Errorf("got %q want %q", out, want)
+	}
+}
+
+func TestArrayOfRecordsNested(t *testing.T) {
+	sh := compile(t, `
+		type Addr = { city: string, zip: number }
+		type Person = { name: string, addr: Addr }
+		func main(): void {
+			let xs: Person[] = [
+				Person{name: "Alice", addr: Addr{city: "Madrid", zip: 28001}},
+				Person{name: "Bob", addr: Addr{city: "Bilbao", zip: 48000}},
+			]
+			echo(xs[0].name + "/" + xs[0].addr.city + "/" + str(xs[0].addr.zip))
+			echo(xs[1].name + "/" + xs[1].addr.city + "/" + str(xs[1].addr.zip))
+		}
+	`)
+	out := runShell(t, sh)
+	want := "Alice/Madrid/28001\nBob/Bilbao/48000\n"
+	if out != want {
+		t.Errorf("got %q want %q", out, want)
+	}
+}
+
+func TestNestedRecordConstructAndAccess(t *testing.T) {
+	sh := compile(t, `
+		type Addr = { city: string, zip: number }
+		type Person = { name: string, addr: Addr }
+		func main(): void {
+			let p: Person = Person{name: "Alice", addr: Addr{city: "Madrid", zip: 28001}}
+			echo(p.name + " in " + p.addr.city + " (" + str(p.addr.zip) + ")")
+		}
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "Alice in Madrid (28001)" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestNestedRecordFieldAssignment(t *testing.T) {
+	sh := compile(t, `
+		type Addr = { city: string, zip: number }
+		type Person = { name: string, addr: Addr }
+		func main(): void {
+			let p: Person = Person{name: "Bob", addr: Addr{city: "Bilbao", zip: 48000}}
+			p.addr.zip = p.addr.zip + 1
+			p.addr.city = "Donostia"
+			echo(p.addr.city + ":" + str(p.addr.zip))
+		}
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "Donostia:48001" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestNestedRecordReplaceWholeSubrecord(t *testing.T) {
+	sh := compile(t, `
+		type Addr = { city: string, zip: number }
+		type Person = { name: string, addr: Addr }
+		func main(): void {
+			let p: Person = Person{name: "Bob", addr: Addr{city: "x", zip: 1}}
+			p.addr = Addr{city: "y", zip: 2}
+			echo(p.addr.city + ":" + str(p.addr.zip))
+		}
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "y:2" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestNestedRecordPassedToFunction(t *testing.T) {
+	sh := compile(t, `
+		type Addr = { city: string, zip: number }
+		type Person = { name: string, addr: Addr }
+		func describe(p: Person): string {
+			return p.name + "@" + p.addr.city + "/" + str(p.addr.zip)
+		}
+		func main(): void {
+			let p: Person = Person{name: "Carol", addr: Addr{city: "NYC", zip: 10001}}
+			echo(describe(p))
+		}
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "Carol@NYC/10001" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestNestedRecordReturnedFromFunction(t *testing.T) {
+	sh := compile(t, `
+		type Addr = { city: string, zip: number }
+		type Person = { name: string, addr: Addr }
+		func make(): Person {
+			return Person{name: "Dan", addr: Addr{city: "Tokyo", zip: 100}}
+		}
+		func main(): void {
+			let p: Person = make()
+			echo(p.name + "/" + p.addr.city + "/" + str(p.addr.zip))
+		}
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "Dan/Tokyo/100" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestNestedRecordCopyOnAssign(t *testing.T) {
+	// Aliasing a nested record must copy every leaf, including the inner ones.
+	sh := compile(t, `
+		type Addr = { city: string, zip: number }
+		type Person = { name: string, addr: Addr }
+		func main(): void {
+			let a: Person = Person{name: "A", addr: Addr{city: "x", zip: 1}}
+			let b: Person = a
+			b.addr.city = "y"
+			b.addr.zip = 99
+			echo(a.addr.city + "/" + str(a.addr.zip) + "," + b.addr.city + "/" + str(b.addr.zip))
+		}
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "x/1,y/99" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestRecordWithStringArrayField(t *testing.T) {
+	sh := compile(t, `
+		type Tagged = { name: string, tags: string[] }
+		func main(): void {
+			let t: Tagged = Tagged{name: "post", tags: ["a", "b", "c"]}
+			echo(t.name + ":" + str(len(t.tags)) + ":" + t.tags[1])
+		}
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "post:3:b" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestRecordWithNumberArrayField(t *testing.T) {
+	sh := compile(t, `
+		type Hist = { name: string, counts: number[] }
+		func sum(h: Hist): number {
+			let total: number = 0
+			for c in h.counts {
+				total = total + c
+			}
+			return total
+		}
+		func main(): void {
+			let h: Hist = Hist{name: "h", counts: [1, 2, 3, 4]}
+			echo(str(sum(h)))
+		}
+	`)
+	out := runShell(t, sh)
+	if got := strings.TrimRight(out, "\n"); got != "10" {
+		t.Errorf("got %q", got)
 	}
 }
 

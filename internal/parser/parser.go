@@ -256,9 +256,70 @@ func (p *Parser) parseTypeDecl() *ast.TypeDecl {
 	p.advance() // type
 	name := p.expect(token.Ident, "type declaration")
 	p.expect(token.Assign, "type declaration")
-	spec := p.parseTypeExpr()
+	spec := p.parseTypeDeclRHS()
 	_, _ = p.accept(token.Semicolon)
 	return &ast.TypeDecl{NamePos: name.Pos, Name: name.Value, Spec: spec}
+}
+
+// parseTypeDeclRHS parses the right-hand side of a `type Name = ...` decl.
+// In addition to plain types it accepts a sum/union form:
+//
+//	A{...} | B | C{...}    (or with an optional leading `|`)
+//
+// Detection rule: a leading `|`, or `Ident {` / `Ident |` at the top level
+// signals a sum. Anything else is a regular type expression so we don't
+// regress aliases or array/optional shapes.
+func (p *Parser) parseTypeDeclRHS() ast.TypeExpr {
+	if p.peek().Kind == token.Pipe {
+		p.advance()
+		return p.parseSumType()
+	}
+	if p.peek().Kind == token.Ident {
+		next := p.peekAhead(1).Kind
+		if next == token.LBrace || next == token.Pipe {
+			return p.parseSumType()
+		}
+	}
+	return p.parseTypeExpr()
+}
+
+func (p *Parser) parseSumType() *ast.SumType {
+	s := &ast.SumType{KwPos: p.peek().Pos}
+	s.Variants = append(s.Variants, p.parseSumVariant())
+	for {
+		if _, ok := p.accept(token.Pipe); !ok {
+			break
+		}
+		s.Variants = append(s.Variants, p.parseSumVariant())
+	}
+	return s
+}
+
+func (p *Parser) parseSumVariant() ast.SumVariant {
+	name := p.expect(token.Ident, "sum variant")
+	v := ast.SumVariant{NamePos: name.Pos, Name: name.Value}
+	if _, ok := p.accept(token.LBrace); ok {
+		v.HasBraces = true
+		for p.peek().Kind != token.RBrace && !p.atEnd() {
+			fname := p.expect(token.Ident, "variant field")
+			p.expect(token.Colon, "variant field")
+			ft := p.parseTypeExpr()
+			v.Fields = append(v.Fields, ast.FieldDecl{
+				NamePos: fname.Pos,
+				Name:    fname.Value,
+				TypeAnn: ft,
+			})
+			if _, ok := p.accept(token.Comma); ok {
+				continue
+			}
+			if _, ok := p.accept(token.Semicolon); ok {
+				continue
+			}
+			break
+		}
+		p.expect(token.RBrace, "variant fields")
+	}
+	return v
 }
 
 func (p *Parser) parseVarDecl() *ast.VarDecl {
@@ -430,6 +491,8 @@ func (p *Parser) parseStmt() ast.Stmt {
 		return p.parseReturn()
 	case token.Match:
 		return p.parseMatch()
+	case token.Defer:
+		return p.parseDefer()
 	case token.LBrace:
 		return p.parseBlock()
 	}
@@ -481,6 +544,12 @@ func (p *Parser) parseIf() *ast.IfStmt {
 		}
 	}
 	return &ast.IfStmt{KwPos: kw.Pos, Cond: cond, Then: then, Else: elseBlock}
+}
+
+func (p *Parser) parseDefer() *ast.DeferStmt {
+	kw := p.advance() // defer
+	body := p.parseBlock()
+	return &ast.DeferStmt{KwPos: kw.Pos, Body: body}
 }
 
 func (p *Parser) parseFor() *ast.ForStmt {
@@ -558,9 +627,28 @@ func (p *Parser) parseMatchPattern() ast.Pattern {
 			p.advance()
 			return &ast.WildcardPattern{NamePos: t.Pos}
 		}
-		p.errorf(t.Pos, "match pattern must be a literal or `_`, got identifier %q", t.Value)
-		p.advance()
-		return nil
+		// Variant pattern: `Name` (unit) or `Name{ a, b }` (binding form).
+		name := p.advance()
+		v := &ast.VariantPattern{NamePos: name.Pos, Name: name.Value}
+		if _, ok := p.accept(token.LBrace); ok {
+			v.HasBraces = true
+			for p.peek().Kind != token.RBrace && !p.atEnd() {
+				b := p.expect(token.Ident, "variant binding")
+				if b.Value == "" {
+					return nil
+				}
+				v.Bindings = append(v.Bindings, ast.VariantBinding{
+					NamePos: b.Pos,
+					Name:    b.Value,
+				})
+				if _, ok := p.accept(token.Comma); ok {
+					continue
+				}
+				break
+			}
+			p.expect(token.RBrace, "variant pattern")
+		}
+		return v
 	case token.Int, token.True, token.False, token.StringStart:
 		expr := p.parsePrimary()
 		switch expr.(type) {
@@ -594,6 +682,7 @@ func (p *Parser) parseReturn() *ast.ReturnStmt {
 // Precedence levels — higher binds tighter.
 const (
 	precLowest   = iota
+	precPipe     // |> (pipeline)
 	precCoalesce // ??
 	precOr       // ||
 	precAnd      // &&
@@ -608,6 +697,8 @@ const (
 
 func opPrec(k token.Kind) int {
 	switch k {
+	case token.Pipeline:
+		return precPipe
 	case token.Coalesce:
 		return precCoalesce
 	case token.OrOr:
@@ -647,10 +738,31 @@ func (p *Parser) parseBinary(min int) ast.Expr {
 			lhs = &ast.RangeExpr{OpPos: op.Pos, Start: lhs, End: rhs}
 		case token.Coalesce:
 			lhs = &ast.CoalesceExpr{OpPos: op.Pos, Lhs: lhs, Rhs: rhs}
+		case token.Pipeline:
+			lhs = p.desugarPipeline(op.Pos, lhs, rhs)
 		default:
 			lhs = &ast.BinaryExpr{OpPos: op.Pos, Op: op.Kind, Lhs: lhs, Rhs: rhs}
 		}
 	}
+}
+
+// desugarPipeline rewrites `lhs |> rhs` at parse time. The right-hand side
+// must be a function call or a bare identifier (treated as a zero-arg call);
+// the operator prepends `lhs` to the call's argument list. The output is a
+// CallExpr identical to what the user would have written by hand, so no
+// downstream pass needs to know about pipelines.
+func (p *Parser) desugarPipeline(opPos token.Pos, lhs, rhs ast.Expr) ast.Expr {
+	switch r := rhs.(type) {
+	case *ast.CallExpr:
+		args := make([]ast.Expr, 0, len(r.Args)+1)
+		args = append(args, lhs)
+		args = append(args, r.Args...)
+		return &ast.CallExpr{LParenPos: r.LParenPos, Callee: r.Callee, Args: args}
+	case *ast.Ident:
+		return &ast.CallExpr{LParenPos: r.NamePos, Callee: r, Args: []ast.Expr{lhs}}
+	}
+	p.errorf(opPos, "right-hand side of |> must be a function call or identifier")
+	return rhs
 }
 
 func (p *Parser) parseUnary() ast.Expr {
@@ -699,6 +811,12 @@ func (p *Parser) parseCall() ast.Expr {
 			// `!` here always means postfix.
 			bang := p.advance()
 			expr = &ast.UnwrapExpr{OpPos: bang.Pos, Operand: expr}
+		case token.Question:
+			// Postfix `?` is the Result-style propagation operator. The lexer
+			// emits Question only when the next char is not also `?` (which
+			// would be the Coalesce token), so reaching here is unambiguous.
+			q := p.advance()
+			expr = &ast.TryExpr{OpPos: q.Pos, Operand: expr}
 		default:
 			return expr
 		}

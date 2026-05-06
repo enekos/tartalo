@@ -36,6 +36,7 @@ const (
 	Import
 	Export
 	Test
+	Defer
 	Null
 	True
 	False
@@ -63,6 +64,7 @@ const (
 	Coalesce // ?? (null-coalesce)
 	Question // ? (postfix T?)
 	Pipe     // | (single, used by match patterns)
+	Pipeline // |> (pipeline)
 	Arrow    // => (match arm)
 	Bang     // !
 	LParen
@@ -89,13 +91,13 @@ var kindNames = map[Kind]string{
 	CmdStart: "CMD_START", CmdPart: "CMD_PART", CmdEnd: "CMD_END",
 	Let: "let", Const: "const", Func: "func", Return: "return",
 	If: "if", Else: "else", For: "for", In: "in", Match: "match", Type: "type",
-	Import: "import", Export: "export", Test: "test",
+	Import: "import", Export: "export", Test: "test", Defer: "defer",
 	Null: "null", True: "true", False: "false",
 	TyString: "string", TyNumber: "number", TyFloat: "float", TyBool: "bool", TyVoid: "void",
 	Assign: "=", Plus: "+", Minus: "-", Star: "*", Slash: "/", Percent: "%",
 	Eq: "==", Neq: "!=", Lt: "<", Lte: "<=", Gt: ">", Gte: ">=",
 	AndAnd: "&&", OrOr: "||", Coalesce: "??", Question: "?",
-	Pipe: "|", Arrow: "=>", Bang: "!",
+	Pipe: "|", Pipeline: "|>", Arrow: "=>", Bang: "!",
 	LParen: "(", RParen: ")", LBrace: "{", RBrace: "}",
 	LBracket: "[", RBracket: "]",
 	Comma: ",", Colon: ":", Semicolon: ";", Dot: ".", DotDot: "..",
@@ -154,6 +156,7 @@ var Keywords = map[string]Kind{
 	"import": Import,
 	"export": Export,
 	"test":   Test,
+	"defer":  Defer,
 	"null":   Null,
 	"true":   True,
 	"false":  False,

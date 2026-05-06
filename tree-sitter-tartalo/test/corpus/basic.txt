@@ -1,0 +1,389 @@
+==================
+hello world
+==================
+
+func main(): void {
+  echo("hello")
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (expression_statement
+        (call_expression
+          callee: (identifier)
+          (string
+            (string_content)))))))
+
+==================
+import declaration
+==================
+
+import { foo, bar } from "./lib.tt"
+
+func main(): void { foo() }
+
+---
+
+(source_file
+  (import_declaration
+    (identifier)
+    (identifier)
+    path: (string
+      (string_content)))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (expression_statement
+        (call_expression
+          callee: (identifier))))))
+
+==================
+record type and literal
+==================
+
+type Person = { name: string, age: number }
+
+func main(): void {
+  let p: Person = Person{name: "alice", age: 30}
+}
+
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    value: (record_type
+      (record_field name: (identifier) type: (primitive_type))
+      (record_field name: (identifier) type: (primitive_type))))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (variable_declaration
+        name: (identifier)
+        type: (type_identifier (identifier))
+        value: (record_literal
+          type_name: (identifier)
+          (field_initializer
+            name: (identifier)
+            value: (string (string_content)))
+          (field_initializer
+            name: (identifier)
+            value: (int_literal)))))))
+
+==================
+operator precedence
+==================
+
+func main(): void {
+  let x = 1 + 2 * 3 == 7 && !false
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (variable_declaration
+        name: (identifier)
+        value: (binary_expression
+          left: (binary_expression
+            left: (binary_expression
+              left: (int_literal)
+              right: (binary_expression
+                left: (int_literal)
+                right: (int_literal)))
+            right: (int_literal))
+          right: (unary_expression
+            operand: (bool_literal)))))))
+
+==================
+match statement with patterns
+==================
+
+func main(): void {
+  match action {
+    "build" | "compile" => echo("compiling")
+    "run" => echo("running")
+    _ => echo("unknown")
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (match_statement
+        subject: (identifier)
+        (match_case
+          (string (string_content))
+          (string (string_content))
+          body: (expression_statement
+            (call_expression
+              callee: (identifier)
+              (string (string_content)))))
+        (match_case
+          (string (string_content))
+          body: (expression_statement
+            (call_expression
+              callee: (identifier)
+              (string (string_content)))))
+        (match_case
+          (wildcard_pattern)
+          body: (expression_statement
+            (call_expression
+              callee: (identifier)
+              (string (string_content)))))))))
+
+==================
+string interpolation
+==================
+
+func main(): void {
+  let who = "world"
+  echo("Hello, ${who}!")
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (variable_declaration
+        name: (identifier)
+        value: (string (string_content)))
+      (expression_statement
+        (call_expression
+          callee: (identifier)
+          (string
+            (string_content)
+            (interpolation
+              (identifier))
+            (string_content)))))))
+
+==================
+optional and coalesce
+==================
+
+func main(): void {
+  let x: string? = env("HOME")
+  let y: string = x ?? "/tmp"
+  let z: string = x!
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (variable_declaration
+        name: (identifier)
+        type: (optional_type element: (primitive_type))
+        value: (call_expression
+          callee: (identifier)
+          (string (string_content))))
+      (variable_declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (coalesce_expression
+          left: (identifier)
+          right: (string (string_content))))
+      (variable_declaration
+        name: (identifier)
+        type: (primitive_type)
+        value: (unwrap_expression
+          operand: (identifier))))))
+
+==================
+for over range
+==================
+
+func main(): void {
+  for i in 0..10 {
+    echo(str(i))
+  }
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (for_statement
+        var: (identifier)
+        iter: (range_expression
+          start: (int_literal)
+          end: (int_literal))
+        body: (block
+          (expression_statement
+            (call_expression
+              callee: (identifier)
+              (call_expression
+                callee: (identifier)
+                (identifier)))))))))
+
+==================
+test declaration
+==================
+
+test "addition" {
+  assertEq(1 + 1, 2)
+}
+
+---
+
+(source_file
+  (test_declaration
+    name: (string (string_content))
+    body: (block
+      (expression_statement
+        (call_expression
+          callee: (identifier)
+          (binary_expression
+            left: (int_literal)
+            right: (int_literal))
+          (int_literal))))))
+
+==================
+field assignment
+==================
+
+type P = { x: number, y: number }
+
+func main(): void {
+  let p: P = P{x: 1, y: 2}
+  p.x = p.x + 1
+}
+
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    value: (record_type
+      (record_field name: (identifier) type: (primitive_type))
+      (record_field name: (identifier) type: (primitive_type))))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (variable_declaration
+        name: (identifier)
+        type: (type_identifier (identifier))
+        value: (record_literal
+          type_name: (identifier)
+          (field_initializer
+            name: (identifier)
+            value: (int_literal))
+          (field_initializer
+            name: (identifier)
+            value: (int_literal))))
+      (assignment_statement
+        left: (field_expression
+          target: (identifier)
+          name: (identifier))
+        right: (binary_expression
+          left: (field_expression
+            target: (identifier)
+            name: (identifier))
+          right: (int_literal))))))
+
+==================
+command literal with interpolation
+==================
+
+func main(): void {
+  let dir = "build"
+  let out = `ls -1 ${dir}/*.o`
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (variable_declaration
+        name: (identifier)
+        value: (string (string_content)))
+      (variable_declaration
+        name: (identifier)
+        value: (command_literal
+          (cmd_content)
+          (interpolation
+            (identifier))
+          (cmd_content))))))
+
+==================
+function type
+==================
+
+func square(n: number): number { return n * n }
+
+func main(): void {
+  let f: func(number): number = square
+  echo(str(f(7)))
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (primitive_type)))
+    return_type: (primitive_type)
+    body: (block
+      (return_statement
+        (binary_expression
+          left: (identifier)
+          right: (identifier)))))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list)
+    return_type: (primitive_type)
+    body: (block
+      (variable_declaration
+        name: (identifier)
+        type: (function_type
+          (primitive_type)
+          return_type: (primitive_type))
+        value: (identifier))
+      (expression_statement
+        (call_expression
+          callee: (identifier)
+          (call_expression
+            callee: (identifier)
+            (call_expression
+              callee: (identifier)
+              (int_literal))))))))

@@ -68,7 +68,7 @@ Constraints in v0:
 - Numbers: integer literals only in v0 (`42`, `-3`).
 - Strings: double-quoted, with `\n \t \\ \" \$` escapes and `${expr}` interpolation.
 - Command literals: backticks, e.g. `` `ls -1` ``. Substitutes to a `string` (stdout, trailing newline trimmed).
-- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `true`, `false`, `string`, `number`, `bool`, `void`.
+- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `match`, `type`, `import`, `export`, `test`, `defer`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
 
 ## Types (v0)
 
@@ -189,21 +189,77 @@ parameter, or the value of a `return` whose function returns a record.
 Records are passed and returned by **value**: assigning one record to another
 copies every field, and mutations on the copy do not affect the original.
 
+Field types may be:
+
+- a primitive (`string`, `number`, `bool`),
+- an optional primitive (`string?`, `number?`, `bool?`),
+- another record (nested arbitrarily deep, as long as the type graph is
+  acyclic — `type Loop = { next: Loop }` is rejected), or
+- an array of primitives (`string[]`, `number[]`, `bool[]`, `float[]`).
+
+```tartalo
+type Addr   = { city: string, zip: number }
+type Person = { name: string, addr: Addr, tags: string[] }
+
+let p: Person = Person{
+  name: "Alice",
+  addr: Addr{city: "Madrid", zip: 28001},
+  tags: ["admin", "ops"],
+}
+echo(p.addr.city + " #" + str(len(p.tags)))
+```
+
 ### v0 limitations
 
-- Field types must be primitives (`string`, `number`, `bool`). Records-of-records
-  and arrays as fields are not yet supported.
-- No arrays of records (`Person[]`) yet.
+- No optional records (`Addr?`) as fields or values.
+- Scalar `float` is not allowed as a record field (use `float[]` if you need
+  float storage in a record).
 - No structural typing — record types are always referred to by name.
 - No equality between records yet — compare individual fields.
+- Array elements may be records, but those records cannot themselves contain
+  array fields. The row-based encoding uses newlines to separate elements,
+  which collides with the newline-joined array representation.
+
+## Arrays of records
+
+`Person[]` is supported when each leaf of the element record is a primitive
+or optional primitive (no array leaves):
+
+```tartalo
+type Person = { name: string, age: number }
+
+func main(): void {
+  let people: Person[] = [
+    Person{name: "Alice", age: 30},
+    Person{name: "Bob",   age: 25},
+  ]
+  echo(str(len(people)))
+  echo(people[0].name)
+  for p in people {
+    echo(p.name + "/" + str(p.age))
+  }
+}
+```
+
+### Codegen sketch
+
+The array lives in one shell variable, with rows separated by newlines and
+leaf fields within a row separated by ASCII Unit Separator (`\037`,
+materialised at script startup as `${__tt_us}`). `xs[i]` extracts a row with
+`awk` and splits it back into a fresh record prefix using POSIX parameter
+expansion. `for p in xs { ... }` walks each row and binds the loop variable's
+leaves the same way. Mutating an element field in place (`xs[i].a = 5`) is
+not yet supported.
 
 ### Codegen
 
 Each record value is represented as a **name prefix**: a record-typed variable
 named `p` lives as the set of shell variables `p__name`, `p__age`, etc. There
-is no top-level `p` variable. Function calls expand record arguments into one
-positional parameter per field; record returns write into `__ret__<field>` and
-the caller copies them into the destination prefix.
+is no top-level `p` variable. Nested records flatten by extending the prefix
+(`p.addr.city` lives at `p__addr__city`); array fields are a single
+newline-joined slot (`p__tags`). Function calls expand record arguments into
+one positional parameter per leaf field; record returns write into
+`__ret__<leaf>` and the caller copies them into the destination prefix.
 
 ## Functions
 
@@ -260,6 +316,141 @@ Patterns are literal `string`, `number`, or `bool` values, with `|` for
 alternatives and `_` for the wildcard. Arms compile to a sh `case`. String and
 numeric patterns are single-quoted, so glob metacharacters in the pattern
 match literally.
+
+`match` also dispatches on a sum-typed subject (see "Tagged unions" below)
+using variant patterns:
+
+```tartalo
+match shape {
+  Circle{r}        => echo("circle r=" + str(r))
+  Rectangle{w, h}  => echo("rect " + str(w * h))
+  Empty            => echo("nothing")
+}
+```
+
+## Tagged unions (sum types)
+
+A `type` declaration may list `|`-separated variants. Each variant is either
+a unit tag or carries a record-style payload:
+
+```tartalo
+type Shape =
+  Circle{r: number}
+  | Rectangle{w: number, h: number}
+  | Empty
+```
+
+Construction uses the variant name. Unit variants are bare identifiers;
+data-carrying variants use the record-literal form:
+
+```tartalo
+let s: Shape = Circle{r: 4}
+let e: Shape = Empty
+```
+
+Destructuring is via `match`. A variant pattern names the variant and lists
+the fields to bind into local variables of the arm:
+
+```tartalo
+match s {
+  Circle{r}       => echo("c " + str(r))
+  Rectangle{w, h} => echo("r " + str(w * h))
+  Empty           => echo("e")
+}
+```
+
+### v0 limitations
+
+- Variant fields must be primitives or optional primitives. No nested
+  records, arrays, or sums in payloads.
+- `match` is a statement, not an expression.
+- No exhaustiveness check beyond requiring `_` when a variant is missing.
+
+### Codegen sketch
+
+A sum value at prefix `s` is the set of shell variables `s__tag` (the
+variant name as a string), plus `s__<Variant>__<field>` for every variant's
+fields. Only the active variant's slots are meaningful at runtime; the
+others are zero-initialised so they are safe to read under `set -u`. `match`
+on a sum compiles to a `case` over `${s__tag}`, and bindings inside an arm
+are copied from the variant's slots into plain locals.
+
+## Defer
+
+`defer { ... }` registers a block to run when the enclosing function exits.
+Multiple defers in a single function run in last-registered-first-run
+(LIFO) order:
+
+```tartalo
+func work(): void {
+  defer { echo("a") }
+  defer { echo("b") }
+  echo("body")     // prints body, then b, then a
+}
+```
+
+A defer body may not contain `return`, but other side effects are fine.
+Defer fires on every explicit `return`, on fall-through end-of-body, and on
+the early-return path of the `?` operator. It does **not** fire when the
+script is aborted with `exit()`.
+
+### Codegen sketch
+
+Each defer block becomes a generated sh function whose name is pushed onto
+a per-function `__tt_defstack` (colon-separated). Before each return the
+runtime helper `__tt_run_defers` pops names from the head of the stack and
+invokes them. Sh's dynamic-scoped locals make the defer body see the
+enclosing function's variables transparently, matching Go's semantics for
+the native target where defer maps to `defer func() { ... }()`.
+
+## Result and the `?` operator
+
+There is no built-in `Result` type — the user defines their own sum that
+matches the Result shape:
+
+```tartalo
+type IntResult = Ok{value: number} | Err{error: string}
+```
+
+A "Result-shaped sum" is any sum with exactly two variants named `Ok` and
+`Err`, where `Ok` has a single field named `value` and `Err` has a single
+field named `error`. The `?` postfix operator on a Result-shaped value
+short-circuits to the enclosing function's matching `Err`:
+
+```tartalo
+func parseInt(s: string): IntResult {
+  if s == "bad" { return Err{error: "bad input"} }
+  return Ok{value: 1}
+}
+
+func double(s: string): IntResult {
+  let n: number = parseInt(s)?   // on Err, double returns Err{error: ...}
+  return Ok{value: n + n}
+}
+```
+
+Constraints enforced at type-check time:
+
+- The operand must be Result-shaped.
+- The enclosing function's return type must be Result-shaped with the same
+  `Err` payload type.
+- Defer blocks registered before `?` still run on the early-return path.
+
+## Pipelines
+
+The `|>` operator threads its left-hand side as the first argument of a
+function call:
+
+```tartalo
+let n: number = 5 |> double()       // double(5)
+echo(str(7 |> add(3)))              // add(7, 3)
+echo("HELLO" |> lower)              // lower("HELLO") — bare name OK
+echo(str(3 |> double() |> plus(1))) // plus(double(3), 1)
+```
+
+Pipelines desugar to nested calls at parse time, so they cost nothing at
+runtime and play with every other feature (records, sums, optionals,
+`?`, defer) by default.
 
 ## String interpolation
 
@@ -397,13 +588,52 @@ script that uses them must have `jq` on `PATH`.
 
 ### Test framework
 
+`test "name" { ... }` declares a test. Tests can live in the same `.tt` file
+as the implementation they exercise — Rust-style — and they're stripped
+from non-test builds, so production binaries stay clean.
+
+Run the tests for a single file with `tartalo test foo.tt`. Pass a
+directory and `tartalo test ./` walks it, runs every `.tt` file containing
+at least one `test` declaration, and aggregates per-file results. Hidden
+directories and `node_modules` are skipped.
+
+#### Assertions
+
 These builtins may only be called inside a `test "..." { ... }` block.
 
-- `assertEq(a: string, b: string): void` — abort with a diagnostic if `a != b`
-- `assertNe(a: string, b: string): void` — abort with a diagnostic if `a == b`
+- `assertEq(a, b): void` — abort with a diagnostic if `a != b` (polymorphic over scalar primitives)
+- `assertNe(a, b): void` — abort with a diagnostic if `a == b`
 - `check(cond: bool): void` — abort with a diagnostic if `cond` is false
 - `fail(msg: string): void` — unconditionally abort the test with `msg`
 - `skip(msg: string): void` — mark the test as skipped and exit cleanly
+
+#### Mocks
+
+Mocks intercept calls to the side-effecting builtins so tests can run
+hermetically. Each mock setter is test-only (the checker rejects calls
+outside a `test` body) and per-test: each test starts with a clean slate.
+
+| Setter | Strict? | Behaviour |
+|---|---|---|
+| `mockExec(pat, resp: Process)` | yes | when `pat` (regex) matches the cmd, return `resp`; with mocks set, an unmatched call fails the test |
+| `mockExecCalls(): string[]` | — | cmds the SUT passed to `exec`/`execTimeout` during this test |
+| `mockFetch(pat, resp: Response)` | yes | regex over the URL, same shape as `mockExec` |
+| `mockFetchCalls(): string[]` | — | URLs the SUT passed to `fetch` during this test |
+| `mockReadFile(pat, content: string)` | yes | regex over the path; matched call returns `content` |
+| `mockReadFileCalls(): string[]` | — | paths the SUT passed to `readFile` during this test |
+| `mockEnv(name, value: string?)` | no | replaces the value for `name` only; `null` simulates "unset"; other names fall through |
+| `mockNow(secs: number)` | no | freezes the clock so `now()` returns `secs` |
+| `mockArgs(xs: string[])` | no | replaces the result of `args()` for this test |
+| `mockReadStdin(s: string)` | no | replaces the result of `readStdin()` for this test |
+
+Strict-mode builtins (exec / fetch / readFile) fail the test on an
+unmatched real call once any rule has been registered for that builtin —
+preventing accidental network or filesystem hits.
+
+The native backend implements every mock listed above. The sh backend
+ships with the four name/value-style mocks (env, now, args, readStdin);
+exec, fetch, and readFile mocks abort at runtime with a clear "use
+--target=native" message when reached.
 
 ### Predeclared types
 
@@ -457,7 +687,57 @@ Grouping: `( ... )`
 ## Compilation model
 
 ```
-source.tt  →  lexer  →  parser  →  type checker  →  sh emitter  →  source.sh
+                                          ┌─→  sh emitter   →  source.sh
+source.tt  →  lexer  →  parser  →  checker┤
+                                          └─→  Go emitter   →  go build  →  binary
 ```
 
-The emitter targets `#!/bin/sh` with `set -eu` by default. `bool` follows POSIX exit-code convention (0 = true) so that boolean tests can pass through to native shell when useful.
+Two backends share the same frontend (lexer, parser, checker). The default
+`--target=sh` produces `#!/bin/sh` with `set -eu`; `--target=native` emits
+a self-contained Go program and compiles it with the host's `go build`,
+producing a statically-linked native executable.
+
+`bool` in the sh backend follows POSIX exit-code convention (0 = true) so
+boolean tests can pass through to native shell when useful. The native
+backend uses Go's native `bool`; only `str(true)` / `str(false)` deliberately
+produce `"1"` / `"0"` to keep cross-backend output identical.
+
+### Native target
+
+```
+tartalo build foo.tt --target=native -o foo
+tartalo build foo.tt --target=native --goos=linux --goarch=arm64 -o foo
+tartalo run   --target=native foo.tt -- args...
+tartalo test  --target=native foo.tt
+```
+
+Requirements: a `go` toolchain on `PATH` at compile time. The resulting
+binary has no runtime dependency on Go (or on a shell). Cross-compilation
+uses Go's `GOOS` / `GOARCH` machinery: every (os, arch) pair Go supports
+works, including `darwin/arm64`, `linux/amd64`, `linux/arm64`, and
+`windows/amd64`.
+
+Type mapping:
+
+| Tartalo | Go |
+|---|---|
+| `string` / `number` / `float` / `bool` | `string` / `int64` / `float64` / `bool` |
+| `T[]` | `[]T` |
+| `T?` | `*T` (nil = none) |
+| record `type Foo = {...}` | `type Tt_Foo struct {...}` |
+| `func(a: T): R` | `func(a T) R` |
+
+Both backends produce byte-identical stdout for the supplied test fixtures
+and example programs. Documented divergences:
+
+- **Regex.** The sh backend runs POSIX ERE through awk; the native backend
+  uses Go's `regexp` (RE2). For the patterns Tartalo programs actually use
+  (character classes, `+`, `?`, `|`, groups) the two agree, but RE2 has no
+  backreferences, so a pattern that uses `\1` is rejected at runtime by
+  the native backend with a clear panic.
+- **JSON.** The sh backend shells out to `jq`; the native backend implements
+  the subset of jq paths Tartalo programs use (`.`, `.field`, `.field.nested`,
+  `.field[N]`) without depending on `jq` being on `PATH`.
+- **Backtick command literals.** Both backends route through a shell —
+  `/bin/sh -c` on POSIX, `cmd /c` on Windows. Pipelines that depend on
+  POSIX-only utilities will not survive on a Windows target.

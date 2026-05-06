@@ -12,7 +12,7 @@
         <div class="ref-meta mono">
           <span>file extension <strong>.tt</strong></span>
           <span>·</span>
-          <span>target <strong>#!/bin/sh</strong></span>
+          <span>targets <strong>sh · native</strong></span>
           <span>·</span>
           <span>flags <strong>set -eu</strong></span>
         </div>
@@ -209,12 +209,23 @@
             affect the original.
           </p>
 
+          <p>
+            Field types may be primitives (<code>string</code>, <code>number</code>,
+            <code>bool</code>), optional primitives (<code>string?</code>,
+            <code>number?</code>, <code>bool?</code>), other records (nested arbitrarily
+            deep, as long as the type graph is acyclic), or arrays of primitives
+            (<code>string[]</code>, <code>number[]</code>, <code>bool[]</code>,
+            <code>float[]</code>):
+          </p>
+          <CodeBlock :code="codeNestedRecords" />
+
           <h3>v0 limitations</h3>
           <ul class="bullets">
-            <li>Field types must be primitives (<code>string</code>, <code>number</code>, <code>bool</code>). Records-of-records and arrays as fields are not yet supported.</li>
-            <li>No arrays of records (<code>Person[]</code>) yet.</li>
+            <li>No optional records (<code>Addr?</code>) as fields or values.</li>
+            <li>Scalar <code>float</code> is not allowed as a record field (use <code>float[]</code> if you need float storage in a record).</li>
             <li>No structural typing — record types are always referred to by name.</li>
             <li>No equality between records yet — compare individual fields.</li>
+            <li>Arrays of records are supported (<code>Person[]</code>), but the element record's leaves must all be primitives — no array fields inside.</li>
           </ul>
 
           <h3>Codegen</h3>
@@ -222,10 +233,101 @@
             Each record value is represented as a <strong>name prefix</strong>:
             a record-typed variable named <code>p</code> lives as the set of shell
             variables <code>p__name</code>, <code>p__age</code>, etc. There is no
-            top-level <code>p</code> variable. Function calls expand record arguments
-            into one positional parameter per field; record returns write into
-            <code>__ret__&lt;field&gt;</code> and the caller copies them into the
-            destination prefix.
+            top-level <code>p</code> variable. Nested records flatten by extending
+            the prefix (<code>p.addr.city</code> lives at <code>p__addr__city</code>);
+            array fields are a single newline-joined slot (<code>p__tags</code>).
+            Function calls expand record arguments into one positional parameter per
+            leaf field; record returns write into <code>__ret__&lt;leaf&gt;</code>
+            and the caller copies them into the destination prefix.
+          </p>
+
+          <h3>Arrays of records</h3>
+          <p>
+            <code>Person[]</code> is supported when each leaf of the element
+            record is a primitive or optional primitive (no array leaves).
+            Indexing, iteration, and <code>len()</code> all work; mutating
+            element fields in place is not yet supported.
+          </p>
+          <CodeBlock :code="codeArrayOfRecords" />
+          <p>
+            The array lives in one shell variable: rows separated by newlines,
+            leaf fields within a row separated by ASCII Unit Separator
+            (<code>\037</code>, exposed at runtime as <code>${'$'}{__tt_us}</code>).
+          </p>
+        </section>
+
+        <!-- Tagged unions -->
+        <section :id="ids.sums" ref="secRefs">
+          <h2>Tagged unions</h2>
+          <p>
+            A <code>type</code> declaration may list <code>|</code>-separated
+            variants. Each variant is either a unit tag or carries a record-
+            style payload. <code>match</code> destructures by name.
+          </p>
+          <CodeBlock :code="codeSum" />
+          <p>
+            Construction uses the variant name. Unit variants are bare
+            identifiers (<code>let s: Shape = Empty</code>); data-carrying
+            variants use the record-literal form
+            (<code>Circle{r: 4}</code>).
+          </p>
+          <h3>v0 limitations</h3>
+          <ul class="bullets">
+            <li>Variant fields must be primitives or optional primitives.</li>
+            <li><code>match</code> is a statement, not an expression.</li>
+            <li>No exhaustiveness check beyond the wildcard requirement.</li>
+          </ul>
+        </section>
+
+        <!-- Defer -->
+        <section :id="ids.defer" ref="secRefs">
+          <h2>Defer</h2>
+          <p>
+            <code>defer { ... }</code> registers a block to run when the
+            enclosing function exits. Multiple defers run last-registered-
+            first-run.
+          </p>
+          <CodeBlock :code="codeDefer" />
+          <p>
+            Defer fires on every explicit <code>return</code>, on fall-through
+            end-of-body, and on the early-return path of the <code>?</code>
+            operator. It does <strong>not</strong> fire when the script is
+            aborted via <code>exit()</code>. <code>return</code> is rejected
+            inside a defer body.
+          </p>
+        </section>
+
+        <!-- Result and ? -->
+        <section :id="ids.result" ref="secRefs">
+          <h2>Result and the <code>?</code> operator</h2>
+          <p>
+            There is no built-in <code>Result</code> type — define your own
+            sum that matches the Result shape: variants
+            <code>Ok{value: T}</code> and <code>Err{error: E}</code>. The
+            <code>?</code> postfix operator on a Result-shaped value short-
+            circuits to the enclosing function's matching <code>Err</code>.
+          </p>
+          <CodeBlock :code="codeResult" />
+          <p>
+            Constraints: the operand must be Result-shaped; the enclosing
+            function's return type must be Result-shaped with the same
+            <code>Err</code> payload type; defer blocks registered before
+            <code>?</code> still run on the early-return path.
+          </p>
+        </section>
+
+        <!-- Pipelines -->
+        <section :id="ids.pipelines" ref="secRefs">
+          <h2>Pipelines</h2>
+          <p>
+            <code>|&gt;</code> threads its left-hand side as the first
+            argument of a function call.
+          </p>
+          <CodeBlock :code="codePipeline" />
+          <p>
+            Pipelines desugar to nested calls at parse time, so they cost
+            nothing at runtime and play with every other feature (records,
+            sums, optionals, <code>?</code>, defer) by default.
           </p>
         </section>
 
@@ -326,11 +428,54 @@
           <h2>Compilation model</h2>
           <CodeBlock lang="text" :code="codeModel" />
           <p>
-            The emitter targets <code>#!/bin/sh</code> with <code>set -eu</code> by
-            default. <code>bool</code> follows POSIX exit-code convention
-            (0 = true) so that boolean tests can pass through to native shell when
-            useful.
+            Two backends share the same frontend (lexer, parser, checker).
+            The default <code>--target=sh</code> produces <code>#!/bin/sh</code>
+            with <code>set -eu</code>; <code>--target=native</code> emits a
+            self-contained Go program and compiles it with the host's
+            <code>go build</code> into a statically-linked native executable.
           </p>
+          <p>
+            <code>bool</code> in the sh backend follows POSIX exit-code
+            convention (0 = true) so boolean tests can pass through to native
+            shell when useful. The native backend uses Go's native
+            <code>bool</code>; only <code>str(true)</code> /
+            <code>str(false)</code> deliberately produce <code>"1"</code> /
+            <code>"0"</code> so that program output is identical across
+            backends.
+          </p>
+
+          <h3>Native target</h3>
+          <CodeBlock lang="text" :code="codeNativeUsage" />
+          <p>
+            Requires a <code>go</code> toolchain on <code>PATH</code> at
+            compile time. The resulting binary has no runtime dependency on
+            Go (or on a shell). Cross-compilation uses Go's
+            <code>GOOS</code> / <code>GOARCH</code> machinery: every (os,
+            arch) pair Go supports works, including <code>darwin/arm64</code>,
+            <code>linux/amd64</code>, <code>linux/arm64</code>, and
+            <code>windows/amd64</code>.
+          </p>
+
+          <h3>Type mapping (Tartalo → Go)</h3>
+          <table class="spec-table">
+            <thead>
+              <tr><th>Tartalo</th><th>Go</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>string</code> / <code>number</code> / <code>float</code> / <code>bool</code></td><td><code>string</code> / <code>int64</code> / <code>float64</code> / <code>bool</code></td></tr>
+              <tr><td><code>T[]</code></td><td><code>[]T</code></td></tr>
+              <tr><td><code>T?</code></td><td><code>*T</code> (<code>nil</code> = none)</td></tr>
+              <tr><td>record <code>type Foo = {...}</code></td><td><code>type Tt_Foo struct {...}</code></td></tr>
+              <tr><td><code>func(a: T): R</code></td><td><code>func(a T) R</code></td></tr>
+            </tbody>
+          </table>
+
+          <h3>Documented divergences</h3>
+          <ul class="bullets">
+            <li><strong>Regex.</strong> Sh runs POSIX ERE through awk; native uses Go's <code>regexp</code> (RE2). For the patterns Tartalo programs actually use the two agree, but RE2 has no backreferences, so a pattern that uses <code>\1</code> is rejected at runtime by the native backend.</li>
+            <li><strong>JSON.</strong> Sh shells out to <code>jq</code>; the native backend implements the subset of jq paths Tartalo programs use (<code>.</code>, <code>.field</code>, <code>.field.nested</code>, <code>.field[N]</code>) without depending on <code>jq</code> being on <code>PATH</code>.</li>
+            <li><strong>Backtick command literals.</strong> Both backends route through a shell — <code>/bin/sh -c</code> on POSIX, <code>cmd /c</code> on Windows. Pipelines that depend on POSIX-only utilities will not survive on a Windows target.</li>
+          </ul>
         </section>
 
         <div class="ref-end">
@@ -361,6 +506,10 @@ const ids = {
   declarations: "declarations",
   optionals: "optionals",
   records: "records",
+  sums: "sums",
+  defer: "defer",
+  result: "result",
+  pipelines: "pipelines",
   functions: "functions",
   controlflow: "control-flow",
   interpolation: "interpolation",
@@ -378,6 +527,10 @@ const toc = [
   { id: ids.declarations, label: "Declarations" },
   { id: ids.optionals, label: "Optional types" },
   { id: ids.records, label: "Records" },
+  { id: ids.sums, label: "Tagged unions" },
+  { id: ids.defer, label: "Defer" },
+  { id: ids.result, label: "Result & ?" },
+  { id: ids.pipelines, label: "Pipelines" },
   { id: ids.functions, label: "Functions" },
   { id: ids.controlflow, label: "Control flow" },
   { id: ids.interpolation, label: "String interpolation" },
@@ -394,6 +547,7 @@ const toc = [
   { id: "process", label: "process / time", sub: true },
   { id: "json", label: "json", sub: true },
   { id: "test", label: "test framework", sub: true },
+  { id: "mocks", label: "mocks", sub: true },
   { id: ids.operators, label: "Operators" },
   { id: ids.model, label: "Compilation model" },
 ];
@@ -526,13 +680,32 @@ const builtins = [
   {
     id: "test",
     title: "Test framework",
-    intro: "These builtins may only be called inside a <code>test \"...\" { ... }</code> block.",
+    intro:
+      "Tests live next to the implementation, Rust-style: a <code>test \"...\" { ... }</code> block can sit anywhere in any <code>.tt</code> file and is stripped from non-test builds. Run a single file with <code>tartalo test foo.tt</code>; pass a directory and the runner walks it, executing every <code>.tt</code> that contains at least one test declaration. Hidden directories and <code>node_modules</code> are skipped.",
     items: [
-      { sig: "assertEq(a: string, b: string): void", desc: "abort with a diagnostic if <code>a != b</code>" },
-      { sig: "assertNe(a: string, b: string): void", desc: "abort with a diagnostic if <code>a == b</code>" },
+      { sig: "assertEq(a, b): void", desc: "abort with a diagnostic if <code>a != b</code> (polymorphic over scalar primitives)" },
+      { sig: "assertNe(a, b): void", desc: "abort with a diagnostic if <code>a == b</code>" },
       { sig: "check(cond: bool): void", desc: "abort with a diagnostic if <code>cond</code> is false" },
       { sig: "fail(msg: string): void", desc: "unconditionally abort the test with <code>msg</code>" },
       { sig: "skip(msg: string): void", desc: "mark the test as skipped and exit cleanly" },
+    ],
+  },
+  {
+    id: "mocks",
+    title: "Mocks",
+    intro:
+      "Mocks intercept calls to side-effecting builtins so tests can run hermetically. Each setter is test-only and per-test (state resets between tests automatically). Strict-mode setters (<code>mockExec</code>, <code>mockFetch</code>, <code>mockReadFile</code>) fail the test on an unmatched real call once any rule has been registered. Native supports the full set; the sh backend supports the four name/value-style mocks (env / now / args / readStdin).",
+    items: [
+      { sig: "mockExec(pat: string, resp: Process): void", desc: "regex over the cmd; matched call returns <code>resp</code>; <em>strict</em>" },
+      { sig: "mockExecCalls(): string[]", desc: "every cmd the SUT passed to <code>exec</code>/<code>execTimeout</code> during this test" },
+      { sig: "mockFetch(pat: string, resp: Response): void", desc: "regex over the URL; matched call returns <code>resp</code>; <em>strict</em>" },
+      { sig: "mockFetchCalls(): string[]", desc: "every URL the SUT passed to <code>fetch</code> during this test" },
+      { sig: "mockReadFile(pat: string, content: string): void", desc: "regex over the path; matched call returns <code>content</code>; <em>strict</em>" },
+      { sig: "mockReadFileCalls(): string[]", desc: "every path the SUT passed to <code>readFile</code> during this test" },
+      { sig: "mockEnv(name: string, value: string?): void", desc: "override a single env name; <code>null</code> simulates &quot;unset&quot;; other names fall through" },
+      { sig: "mockNow(secs: number): void", desc: "freeze the clock so <code>now()</code> returns <code>secs</code>" },
+      { sig: "mockArgs(xs: string[]): void", desc: "replace the result of <code>args()</code> for this test" },
+      { sig: "mockReadStdin(s: string): void", desc: "replace the result of <code>readStdin()</code> for this test" },
     ],
   },
 ];
@@ -593,6 +766,18 @@ func main(): void {
   echo(str(p.age))
 }`;
 
+const codeNestedRecords = `type Addr   = { city: string, zip: number }
+type Person = { name: string, addr: Addr, tags: string[] }
+
+func main(): void {
+  let p: Person = Person{
+    name: "Alice",
+    addr: Addr{city: "Madrid", zip: 28001},
+    tags: ["admin", "ops"],
+  }
+  echo(p.addr.city + " #" + str(len(p.tags)))
+}`;
+
 const codeFuncs = `func greet(name: string): string {
   return "Hello, " + name
 }
@@ -626,6 +811,54 @@ const codeMatch = `match action {
   "run"               => echo("running")
   ""                  => echo("usage: ACTION=...")
   _                   => echo("unknown: " + action)
+}`;
+
+const codeSum = `type Shape =
+  Circle{r: number}
+  | Rectangle{w: number, h: number}
+  | Empty
+
+func area(s: Shape): number {
+  match s {
+    Circle{r}        => return r * r * 3
+    Rectangle{w, h}  => return w * h
+    Empty            => return 0
+  }
+  return -1
+}`;
+
+const codeDefer = `func work(): void {
+  defer { echo("a") }
+  defer { echo("b") }
+  echo("body")     // body, then b, then a
+}`;
+
+const codeResult = `type IntResult = Ok{value: number} | Err{error: string}
+
+func parseInt(s: string): IntResult {
+  if s == "bad" { return Err{error: "bad input"} }
+  return Ok{value: 1}
+}
+
+func double(s: string): IntResult {
+  let n: number = parseInt(s)?  // on Err, propagates
+  return Ok{value: n + n}
+}`;
+
+const codePipeline = `let n: number = 5 |> double()           // double(5)
+echo(str(7 |> add(3)))                  // add(7, 3)
+echo("HELLO" |> lower)                  // lower("HELLO")
+echo(str(3 |> double() |> plus(1)))     // plus(double(3), 1)`;
+
+const codeArrayOfRecords = `type Person = { name: string, age: number }
+
+func main(): void {
+  let people: Person[] = [
+    Person{name: "Alice", age: 30},
+    Person{name: "Bob",   age: 25},
+  ]
+  echo(str(len(people)))
+  for p in people { echo(p.name + "/" + str(p.age)) }
 }`;
 
 const codeInterp = `let who: string = "world"
@@ -664,7 +897,14 @@ type PathParts = {
   ext: string,       // extension including leading dot, or ""
 }`;
 
-const codeModel = `source.tt  →  lexer  →  parser  →  type checker  →  sh emitter  →  source.sh`;
+const codeModel = `                                          ┌─→  sh emitter   →  source.sh
+source.tt  →  lexer  →  parser  →  checker┤
+                                          └─→  Go emitter   →  go build  →  binary`;
+
+const codeNativeUsage = `tartalo build foo.tt --target=native -o foo
+tartalo build foo.tt --target=native --goos=linux --goarch=arm64 -o foo
+tartalo run   --target=native foo.tt -- args...
+tartalo test  --target=native foo.tt`;
 
 // ---- TOC active section tracking ----
 const active = ref(toc[0]!.id);

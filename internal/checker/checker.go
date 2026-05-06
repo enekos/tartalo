@@ -10,6 +10,7 @@ package checker
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
 	"github.com/enekos/tartalo/internal/loader"
@@ -30,6 +31,11 @@ type Symbol struct {
 	IsFunc    bool
 	IsBuiltin bool
 	IsExport  bool
+	// IsVariant flags symbols that exist solely as unit-variant constructors
+	// of a sum type. The type-checker registers one per unit variant; the
+	// codegen consults the flag to materialise the value (set tag, init the
+	// other variants' slots) instead of emitting a plain identifier.
+	IsVariant bool
 	Module    *loader.Module
 	DeclPos   token.Pos
 }
@@ -94,6 +100,11 @@ type moduleEnv struct {
 	module    *loader.Module
 	scope     *scope
 	typeNames map[string]types.Type
+	// variantOf maps a sum-variant's bare name (e.g. "Circle") to its parent
+	// Sum. Built during type-decl resolution; used by checkRecordLit to route
+	// `Circle{r:5}` to variant construction and by the codegen to look up the
+	// owning sum by variant name.
+	variantOf map[string]*types.Sum
 }
 
 // Checker is the type-checker driver.
@@ -160,6 +171,7 @@ func (c *Checker) Check(modules []*loader.Module) (*TypeInfo, []error) {
 			module:    m,
 			scope:     newScope(c.builtinScope),
 			typeNames: map[string]types.Type{},
+			variantOf: map[string]*types.Sum{},
 		}
 		c.envs[m] = env
 	}
@@ -181,7 +193,12 @@ func (c *Checker) Check(modules []*loader.Module) (*TypeInfo, []error) {
 				c.errorf(td.NamePos, "redeclaration of type %q in %s", td.Name, moduleLabel(m))
 				continue
 			}
-			env.typeNames[td.Name] = &types.Record{Name: td.Name}
+			switch td.Spec.(type) {
+			case *ast.SumType:
+				env.typeNames[td.Name] = &types.Sum{Name: td.Name}
+			default:
+				env.typeNames[td.Name] = &types.Record{Name: td.Name}
+			}
 		}
 	}
 
@@ -201,6 +218,9 @@ func (c *Checker) Check(modules []*loader.Module) (*TypeInfo, []error) {
 			}
 		}
 	}
+
+	// Pass 1c.5: reject record types that would expand infinitely at codegen.
+	c.detectRecordCycles(modules)
 
 	// Pass 1d: declare functions in their owning module's scope. Signatures
 	// reference fully-resolved types from pass 1c.
@@ -399,13 +419,19 @@ func (c *Checker) resolveTypeName(name string) types.Type {
 	return nil
 }
 
-// resolveTypeDecl fills in the previously-registered placeholder Record.
+// resolveTypeDecl fills in the previously-registered placeholder Record or
+// Sum type.
 func (c *Checker) resolveTypeDecl(td *ast.TypeDecl) {
 	env := c.envs[c.currentMod]
-	target, ok := env.typeNames[td.Name].(*types.Record)
-	if !ok {
-		return
+	switch existing := env.typeNames[td.Name].(type) {
+	case *types.Record:
+		c.resolveRecordDecl(td, existing)
+	case *types.Sum:
+		c.resolveSumDecl(td, existing)
 	}
+}
+
+func (c *Checker) resolveRecordDecl(td *ast.TypeDecl, target *types.Record) {
 	rt, ok := td.Spec.(*ast.RecordType)
 	if !ok {
 		c.errorf(td.NamePos, "type %q must be a record (e.g. `{ a: T, b: U }`)", td.Name)
@@ -420,7 +446,7 @@ func (c *Checker) resolveTypeDecl(td *ast.TypeDecl) {
 		seen[f.Name] = true
 		ft := c.resolveTypeExpr(f.TypeAnn)
 		if !c.isAllowedRecordFieldType(ft) {
-			c.errorf(f.NamePos, "field %q has unsupported type %s; v0 records only support primitive fields",
+			c.errorf(f.NamePos, "field %q has unsupported type %s; allowed: primitive, record, primitive[], or T?",
 				f.Name, types.Format(ft))
 			ft = types.Invalid
 		}
@@ -428,6 +454,100 @@ func (c *Checker) resolveTypeDecl(td *ast.TypeDecl) {
 	}
 }
 
+func (c *Checker) resolveSumDecl(td *ast.TypeDecl, target *types.Sum) {
+	st, ok := td.Spec.(*ast.SumType)
+	if !ok {
+		c.errorf(td.NamePos, "type %q must be a sum (e.g. `A{...} | B`)", td.Name)
+		return
+	}
+	if len(st.Variants) == 0 {
+		c.errorf(td.NamePos, "sum type %q must have at least one variant", td.Name)
+		return
+	}
+	env := c.envs[c.currentMod]
+	seenVariants := map[string]bool{}
+	for _, v := range st.Variants {
+		if seenVariants[v.Name] {
+			c.errorf(v.NamePos, "duplicate variant %q in sum %q", v.Name, td.Name)
+			continue
+		}
+		seenVariants[v.Name] = true
+		// Cross-sum collisions are an error: variant names are looked up
+		// directly in record/variant construction so they must be unique
+		// within a module.
+		if existing := env.variantOf[v.Name]; existing != nil && existing != target {
+			c.errorf(v.NamePos,
+				"variant %q is already declared in sum %q",
+				v.Name, existing.Name)
+		}
+		env.variantOf[v.Name] = target
+		variant := types.Variant{Name: v.Name}
+		seenFields := map[string]bool{}
+		for _, f := range v.Fields {
+			if seenFields[f.Name] {
+				c.errorf(f.NamePos, "duplicate field %q in variant %q", f.Name, v.Name)
+				continue
+			}
+			seenFields[f.Name] = true
+			ft := c.resolveTypeExpr(f.TypeAnn)
+			if !c.isAllowedVariantFieldType(ft) {
+				c.errorf(f.NamePos,
+					"variant field %q has unsupported type %s; allowed: primitive or optional primitive",
+					f.Name, types.Format(ft))
+				ft = types.Invalid
+			}
+			variant.Fields = append(variant.Fields, types.Field{Name: f.Name, Type: ft})
+		}
+		target.Variants = append(target.Variants, variant)
+	}
+	// Unit variants double as value-level constants of the sum's type so the
+	// user can write `let s: Shape = Empty`. Non-unit variants stay on the
+	// type-level — they are constructed via the record-literal path.
+	for _, v := range target.Variants {
+		if len(v.Fields) > 0 {
+			continue
+		}
+		sym := &Symbol{
+			Name:      v.Name,
+			Type:      target,
+			IsConst:   true,
+			IsVariant: true,
+			DeclPos:   td.NamePos,
+			Module:    c.currentMod,
+		}
+		if !c.envs[c.currentMod].scope.define(sym) {
+			c.errorf(td.NamePos, "unit variant %q collides with an existing name", v.Name)
+		}
+	}
+}
+
+// isAllowedVariantFieldType is stricter than the record field shape: variant
+// payloads are flattened into the sum's fixed slot layout, so each leaf
+// must be a primitive (or optional primitive). No nested records, arrays, or
+// sums for v0.
+func (c *Checker) isAllowedVariantFieldType(t types.Type) bool {
+	if t == types.Invalid {
+		return true
+	}
+	switch t {
+	case types.String, types.Number, types.Bool, types.Float:
+		return true
+	}
+	if o, ok := t.(*types.Optional); ok {
+		switch o.Elem {
+		case types.String, types.Number, types.Bool, types.Float:
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// isAllowedRecordFieldType decides whether a resolved type may appear as the
+// type of a record field. Allowed: primitives (string/number/bool), optional
+// of those primitives, arrays of primitives, and other records (cycle-free —
+// validated separately). Disallowed: float scalar, optional records, optional
+// arrays, arrays of records.
 func (c *Checker) isAllowedRecordFieldType(t types.Type) bool {
 	if t == types.Invalid {
 		return true // already reported; don't cascade
@@ -436,15 +556,136 @@ func (c *Checker) isAllowedRecordFieldType(t types.Type) bool {
 	case types.String, types.Number, types.Bool:
 		return true
 	}
-	// Optional of a primitive is also OK — `nickname: string?` is exactly the
-	// kind of thing optionals exist for.
 	if o, ok := t.(*types.Optional); ok {
 		switch o.Elem {
 		case types.String, types.Number, types.Bool:
 			return true
 		}
+		return false
+	}
+	if _, ok := t.(*types.Record); ok {
+		return true
+	}
+	if a, ok := t.(*types.Array); ok {
+		switch a.Elem {
+		case types.String, types.Number, types.Bool, types.Float:
+			return true
+		}
+		return false
 	}
 	return false
+}
+
+// firstReturnIn finds the position of the first return statement transitively
+// contained in the given block. Used to reject `return` inside `defer { ... }`.
+func firstReturnIn(b *ast.Block) (token.Pos, bool) {
+	for _, s := range b.Stmts {
+		if pos, ok := firstReturnInStmt(s); ok {
+			return pos, true
+		}
+	}
+	return token.Pos{}, false
+}
+
+func firstReturnInStmt(s ast.Stmt) (token.Pos, bool) {
+	switch s := s.(type) {
+	case *ast.ReturnStmt:
+		return s.KwPos, true
+	case *ast.IfStmt:
+		if pos, ok := firstReturnIn(s.Then); ok {
+			return pos, true
+		}
+		if s.Else != nil {
+			if pos, ok := firstReturnIn(s.Else); ok {
+				return pos, true
+			}
+		}
+	case *ast.ForStmt:
+		return firstReturnIn(s.Body)
+	case *ast.MatchStmt:
+		for _, arm := range s.Cases {
+			if arm.Body != nil {
+				if pos, ok := firstReturnIn(arm.Body); ok {
+					return pos, true
+				}
+			}
+		}
+	case *ast.Block:
+		return firstReturnIn(s)
+	case *ast.DeferStmt:
+		// Nested defer's body is its own scope; its returns are flagged when
+		// we recurse into it via the outer checkStmt. Don't double-report.
+	}
+	return token.Pos{}, false
+}
+
+// firstNonPrimitiveLeaf walks a record's tree and returns the path to the
+// first leaf field whose type is not a primitive (or optional primitive).
+// Used to reject arrays-of-records whose elements would conflict with the
+// row-based codegen encoding (no array leaves; nested records are fine
+// because they flatten to primitive leaves).
+func firstNonPrimitiveLeaf(rec *types.Record, path []string) []string {
+	for _, f := range rec.Fields {
+		next := append(path, f.Name)
+		switch ft := f.Type.(type) {
+		case *types.Primitive:
+			continue
+		case *types.Optional:
+			if _, ok := ft.Elem.(*types.Primitive); !ok {
+				return next
+			}
+		case *types.Record:
+			if found := firstNonPrimitiveLeaf(ft, next); found != nil {
+				return found
+			}
+		default:
+			return next
+		}
+	}
+	return nil
+}
+
+// detectRecordCycles emits an error for each record type that transitively
+// contains itself through record-typed fields. Optionals don't break a cycle
+// in v0 because optional records are not allowed as fields.
+func (c *Checker) detectRecordCycles(modules []*loader.Module) {
+	var reaches func(start, cur *types.Record, seen map[*types.Record]bool, path []string) []string
+	reaches = func(start, cur *types.Record, seen map[*types.Record]bool, path []string) []string {
+		for _, f := range cur.Fields {
+			sub, ok := f.Type.(*types.Record)
+			if !ok {
+				continue
+			}
+			next := append(path, f.Name+":"+sub.Name)
+			if sub == start {
+				return next
+			}
+			if seen[sub] {
+				continue
+			}
+			seen[sub] = true
+			if found := reaches(start, sub, seen, next); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	for _, m := range modules {
+		for _, d := range m.File.Decls {
+			td, ok := d.(*ast.TypeDecl)
+			if !ok {
+				continue
+			}
+			rec, ok := c.envs[m].typeNames[td.Name].(*types.Record)
+			if !ok {
+				continue
+			}
+			if path := reaches(rec, rec, map[*types.Record]bool{rec: true}, nil); path != nil {
+				c.errorf(td.NamePos, "cyclic record type %q (via %s)",
+					td.Name, strings.Join(path, " -> "))
+			}
+		}
+	}
 }
 
 // resolveTypeExpr converts an AST type annotation into a types.Type.
@@ -468,9 +709,17 @@ func (c *Checker) resolveTypeExpr(te ast.TypeExpr) types.Type {
 			c.errorf(t.LBracket, "array element type cannot be void")
 			return types.Invalid
 		}
-		if _, isRec := elem.(*types.Record); isRec {
-			c.errorf(t.LBracket, "v0 does not support arrays of records")
-			return types.Invalid
+		if rec, isRec := elem.(*types.Record); isRec {
+			// Arrays of records use a row-per-element encoding (newline as the
+			// row separator, ASCII Unit Separator between leaf fields). That
+			// requires every leaf to be a primitive — array leaves would
+			// inject newlines and break the row delimiter.
+			if path := firstNonPrimitiveLeaf(rec, nil); path != nil {
+				c.errorf(t.LBracket,
+					"arrays of records require all leaf fields to be primitives; record %q has a non-primitive at .%s",
+					rec.Name, strings.Join(path, "."))
+				return types.Invalid
+			}
 		}
 		if _, isOpt := elem.(*types.Optional); isOpt {
 			c.errorf(t.LBracket, "v0 does not support arrays of optionals")
@@ -745,6 +994,14 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 		c.checkBlock(s)
 	case *ast.MatchStmt:
 		c.checkMatch(s)
+	case *ast.DeferStmt:
+		if c.currentRet == nil {
+			c.errorf(s.KwPos, "defer is only valid inside a function body")
+		}
+		c.checkBlock(s.Body)
+		if pos, has := firstReturnIn(s.Body); has {
+			c.errorf(pos, "return is not allowed inside a defer block")
+		}
 	case *ast.FieldAssignStmt:
 		tt := c.checkExpr(s.Target)
 		rec, ok := tt.(*types.Record)
@@ -774,14 +1031,26 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 
 func (c *Checker) checkMatch(s *ast.MatchStmt) {
 	subj := c.checkExpr(s.Subject)
-	if subj != types.Invalid && subj != types.String && subj != types.Number && subj != types.Bool {
-		c.errorf(s.Subject.Pos(), "match subject must be a primitive (string, number, bool), got %s", types.Format(subj))
+	switch subj {
+	case types.Invalid, types.String, types.Number, types.Bool:
+		// primitive subjects continue to use the literal-pattern path.
+	default:
+		if _, ok := subj.(*types.Sum); !ok {
+			c.errorf(s.Subject.Pos(),
+				"match subject must be a primitive (string, number, bool) or a sum type, got %s",
+				types.Format(subj))
+		}
 	}
 	for _, arm := range s.Cases {
+		// Each arm's bindings live in their own scope so different arms can
+		// rebind the same variant field name without colliding.
+		saved := c.current
+		c.current = newScope(saved)
 		for _, pat := range arm.Patterns {
 			c.checkPattern(pat, subj)
 		}
 		c.checkBlock(arm.Body)
+		c.current = saved
 	}
 }
 
@@ -789,6 +1058,55 @@ func (c *Checker) checkPattern(p ast.Pattern, subjectTy types.Type) {
 	switch p := p.(type) {
 	case *ast.WildcardPattern:
 		return
+	case *ast.VariantPattern:
+		sum, ok := subjectTy.(*types.Sum)
+		if !ok {
+			if subjectTy != types.Invalid {
+				c.errorf(p.NamePos,
+					"variant pattern requires a sum subject, got %s",
+					types.Format(subjectTy))
+			}
+			return
+		}
+		v := sum.LookupVariant(p.Name)
+		if v == nil {
+			c.errorf(p.NamePos, "variant %q is not part of sum %q", p.Name, sum.Name)
+			return
+		}
+		if !p.HasBraces {
+			if len(v.Fields) > 0 {
+				c.errorf(p.NamePos,
+					"variant %q has fields; pattern must list bindings (e.g. `%s{%s}`)",
+					v.Name, v.Name, firstFieldName(v))
+			}
+			return
+		}
+		// Pattern uses braces: bind the listed fields as locals.
+		seen := map[string]bool{}
+		for _, b := range p.Bindings {
+			if seen[b.Name] {
+				c.errorf(b.NamePos, "duplicate binding %q in variant pattern", b.Name)
+				continue
+			}
+			seen[b.Name] = true
+			var fld *types.Field
+			for i := range v.Fields {
+				if v.Fields[i].Name == b.Name {
+					fld = &v.Fields[i]
+					break
+				}
+			}
+			if fld == nil {
+				c.errorf(b.NamePos, "variant %q has no field %q", v.Name, b.Name)
+				continue
+			}
+			c.current.define(&Symbol{
+				Name:    b.Name,
+				Type:    fld.Type,
+				IsConst: true,
+				DeclPos: b.NamePos,
+			})
+		}
 	case *ast.LiteralPattern:
 		var lt types.Type
 		switch lit := p.Lit.(type) {
@@ -813,6 +1131,13 @@ func (c *Checker) checkPattern(p ast.Pattern, subjectTy types.Type) {
 		}
 		c.info.Types[p.Lit] = lt
 	}
+}
+
+func firstFieldName(v *types.Variant) string {
+	if len(v.Fields) == 0 {
+		return ""
+	}
+	return v.Fields[0].Name
 }
 
 func (c *Checker) checkExpr(e ast.Expr) types.Type {
@@ -907,15 +1232,105 @@ func (c *Checker) inferExpr(e ast.Expr) types.Type {
 		return c.checkCoalesce(e)
 	case *ast.UnwrapExpr:
 		return c.checkUnwrap(e)
+	case *ast.TryExpr:
+		return c.checkTry(e)
 	}
 	c.errorf(e.Pos(), "unhandled expression type %T", e)
 	return types.Invalid
 }
 
+// checkTry validates `expr?`. Operand must be a Result-shaped sum (variants
+// `Ok{value: T}` and `Err{error: E}`), inside a function whose return type
+// is also a Result-shaped sum sharing the same Err type. Result is T.
+func (c *Checker) checkTry(e *ast.TryExpr) types.Type {
+	ot := c.checkExpr(e.Operand)
+	if ot == types.Invalid {
+		return types.Invalid
+	}
+	sum, okShape := ot.(*types.Sum)
+	if !okShape {
+		c.errorf(e.OpPos, "? requires a Result-shaped sum, got %s", types.Format(ot))
+		return types.Invalid
+	}
+	okV, errV, why := resultShape(sum)
+	if okV == nil {
+		c.errorf(e.OpPos, "? requires a Result-shaped sum (Ok{value: T} | Err{error: E}); %s is not (%s)",
+			types.Format(ot), why)
+		return types.Invalid
+	}
+	if c.currentRet == nil {
+		c.errorf(e.OpPos, "? is only valid inside a function body")
+		return okV.Fields[0].Type
+	}
+	retSum, ok := c.currentRet.(*types.Sum)
+	if !ok {
+		c.errorf(e.OpPos,
+			"? requires the enclosing function to return a Result-shaped sum, got %s",
+			types.Format(c.currentRet))
+		return okV.Fields[0].Type
+	}
+	_, retErrV, retWhy := resultShape(retSum)
+	if retErrV == nil {
+		c.errorf(e.OpPos,
+			"function's return type %s is not Result-shaped (%s); cannot use ? here",
+			types.Format(retSum), retWhy)
+		return okV.Fields[0].Type
+	}
+	if !types.Equal(errV.Fields[0].Type, retErrV.Fields[0].Type) {
+		c.errorf(e.OpPos,
+			"? Err type mismatch: operand carries %s, function returns %s",
+			types.Format(errV.Fields[0].Type), types.Format(retErrV.Fields[0].Type))
+	}
+	return okV.Fields[0].Type
+}
+
+// resultShape inspects a sum and returns its Ok/Err variants when the sum
+// matches `Ok{value: T} | Err{error: E}` exactly. The third return value is
+// a short reason string suitable for error messages when the shape doesn't
+// match (e.g. "missing variant Err"). When ok and err are both non-nil the
+// reason is empty.
+func resultShape(s *types.Sum) (ok, err *types.Variant, reason string) {
+	if len(s.Variants) != 2 {
+		return nil, nil, "must have exactly two variants"
+	}
+	ok = s.LookupVariant("Ok")
+	err = s.LookupVariant("Err")
+	if ok == nil {
+		return nil, nil, "missing variant Ok"
+	}
+	if err == nil {
+		return nil, nil, "missing variant Err"
+	}
+	if len(ok.Fields) != 1 || ok.Fields[0].Name != "value" {
+		return nil, nil, "Ok variant must have a single field named `value`"
+	}
+	if len(err.Fields) != 1 || err.Fields[0].Name != "error" {
+		return nil, nil, "Err variant must have a single field named `error`"
+	}
+	return ok, err, ""
+}
+
 func (c *Checker) checkRecordLit(e *ast.RecordLit) types.Type {
+	// Variant construction: `Foo{...}` where Foo is a sum-variant in the
+	// current module's namespace. Type-check the fields against the
+	// variant's declared field shape and yield the parent sum's type.
+	if env := c.envs[c.currentMod]; env != nil {
+		if sum := env.variantOf[e.TypeName]; sum != nil {
+			return c.checkVariantLit(e, sum)
+		}
+	}
 	resolved := c.resolveTypeName(e.TypeName)
 	if resolved == nil {
 		c.errorf(e.NamePos, "unknown type %q", e.TypeName)
+		for _, f := range e.Fields {
+			c.checkExpr(f.Value)
+		}
+		return types.Invalid
+	}
+	if _, isSum := resolved.(*types.Sum); isSum {
+		c.errorf(e.NamePos,
+			"cannot construct sum type %q directly; use one of its variants",
+			e.TypeName)
 		for _, f := range e.Fields {
 			c.checkExpr(f.Value)
 		}
@@ -953,6 +1368,60 @@ func (c *Checker) checkRecordLit(e *ast.RecordLit) types.Type {
 		}
 	}
 	return rec
+}
+
+// checkVariantLit type-checks `Foo{a: ..., b: ...}` as the construction of
+// variant `Foo` of the given sum. Fields are matched by name; missing ones
+// are reported. The result is the parent sum type so an assignment to a
+// `: Shape` annotation passes.
+func (c *Checker) checkVariantLit(e *ast.RecordLit, sum *types.Sum) types.Type {
+	v := sum.LookupVariant(e.TypeName)
+	if v == nil {
+		c.errorf(e.NamePos, "variant %q not found in sum %q", e.TypeName, sum.Name)
+		return types.Invalid
+	}
+	if len(v.Fields) == 0 {
+		c.errorf(e.NamePos,
+			"variant %q is a unit variant; use bare `%s` (no braces)",
+			v.Name, v.Name)
+		for _, f := range e.Fields {
+			c.checkExpr(f.Value)
+		}
+		return sum
+	}
+	seen := map[string]bool{}
+	for _, init := range e.Fields {
+		if seen[init.Name] {
+			c.errorf(init.NamePos, "duplicate field %q in variant literal", init.Name)
+			c.checkExpr(init.Value)
+			continue
+		}
+		seen[init.Name] = true
+		var fld *types.Field
+		for i := range v.Fields {
+			if v.Fields[i].Name == init.Name {
+				fld = &v.Fields[i]
+				break
+			}
+		}
+		if fld == nil {
+			c.errorf(init.NamePos, "variant %q has no field %q", v.Name, init.Name)
+			c.checkExpr(init.Value)
+			continue
+		}
+		got := c.checkExpr(init.Value)
+		if got != types.Invalid && fld.Type != types.Invalid && !types.IsAssignable(got, fld.Type) {
+			c.errorf(init.Value.Pos(),
+				"field %q: expected %s, got %s",
+				init.Name, types.Format(fld.Type), types.Format(got))
+		}
+	}
+	for _, f := range v.Fields {
+		if !seen[f.Name] {
+			c.errorf(e.LBrace, "variant %q is missing field %q", v.Name, f.Name)
+		}
+	}
+	return sum
 }
 
 func (c *Checker) checkFieldExpr(e *ast.FieldExpr) types.Type {
@@ -1158,6 +1627,15 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 			return c.checkReduceCall(e)
 		case "assertEq", "assertNe", "check", "fail", "skip":
 			return c.checkTestBuiltinCall(e, sym)
+		case "mockExec", "mockFetch", "mockEnv", "mockReadFile",
+			"mockNow", "mockArgs", "mockReadStdin",
+			"mockExecCalls", "mockFetchCalls", "mockReadFileCalls":
+			// All mock builtins must be invoked from inside a `test`
+			// body. Type-checking falls through to the regular path
+			// once we've enforced the scope rule.
+			if !c.inTest {
+				c.errorf(e.LParenPos, "%s may only be called inside a `test \"...\" { ... }` body", sym.Name)
+			}
 		}
 	}
 	// `str` is polymorphic over the numeric primitives and bool. Optional
@@ -1509,6 +1987,24 @@ func builtins() []*Symbol {
 		mk("check", []types.Type{bln}, void),
 		mk("fail", []types.Type{str}, void),
 		mk("skip", []types.Type{str}, void),
+
+		// Mock builtins — only legal inside `test "..." { ... }` bodies.
+		// Each mockX matches against future calls to the corresponding real
+		// builtin and either returns a canned response or, in strict mode
+		// (the default), fails the test on an unmatched real call.
+		//
+		// `mockEnv` falls through to the real environment when no mock
+		// matches the requested name; it is the only mock that does not
+		// trigger strict mode, since `env()` already has a "missing"
+		// shape.
+		mk("mockEnv", []types.Type{str, &types.Optional{Elem: str}}, void),
+		mk("mockReadFile", []types.Type{str, str}, void),
+		mk("mockReadFileCalls", nil, stringArr),
+		mk("mockNow", []types.Type{num}, void),
+		mk("mockArgs", []types.Type{stringArr}, void),
+		mk("mockReadStdin", []types.Type{str}, void),
+		mk("mockExecCalls", nil, stringArr),
+		mk("mockFetchCalls", nil, stringArr),
 	}
 }
 
@@ -1568,5 +2064,11 @@ func builtinsWithTypes(typeNames map[string]types.Type) []*Symbol {
 		{Name: "execTimeout", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, types.Number}, Result: process}},
 		{Name: "stat", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: fileInfo}},
 		{Name: "parsePath", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: pathParts}},
+
+		// Mock builtins for exec/fetch — pattern is a regex, response is a
+		// pre-built Process / Response. Test-only (checker rejects calls
+		// outside a `test "..." { ... }` body).
+		{Name: "mockExec", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, process}, Result: types.Void}},
+		{Name: "mockFetch", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, response}, Result: types.Void}},
 	}
 }

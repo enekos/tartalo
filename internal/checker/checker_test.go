@@ -341,12 +341,52 @@ func TestRejectAnonymousRecordType(t *testing.T) {
 	`, "anonymous record types are not supported")
 }
 
-func TestRejectRecordOfRecordField(t *testing.T) {
-	wantError(t, `
+func TestAcceptRecordOfRecordField(t *testing.T) {
+	wantOk(t, `
 		type Inner = { v: number }
 		type Outer = { i: Inner }
+		func main(): void {
+			let o: Outer = Outer{i: Inner{v: 7}}
+			echo(str(o.i.v))
+		}
+	`)
+}
+
+func TestAcceptArrayFieldOfPrimitive(t *testing.T) {
+	wantOk(t, `
+		type Tagged = { name: string, tags: string[] }
+		func main(): void {
+			let x: Tagged = Tagged{name: "a", tags: ["x", "y"]}
+			echo(str(len(x.tags)))
+		}
+	`)
+}
+
+func TestRejectArrayOfRecordsField(t *testing.T) {
+	// Arrays-of-records as a record FIELD remain unsupported because nesting
+	// would conflict with the row-encoding used at top level. The shape
+	// validator surfaces this through the field-level "unsupported type"
+	// gate.
+	wantError(t, `
+		type Inner = { v: number }
+		type Bad = { items: Inner[] }
 		func main(): void {}
-	`, "v0 records only support primitive fields")
+	`, "unsupported type")
+}
+
+func TestRejectCyclicRecordSelf(t *testing.T) {
+	wantError(t, `
+		type Loop = { next: Loop }
+		func main(): void {}
+	`, "cyclic record type")
+}
+
+func TestRejectCyclicRecordMutual(t *testing.T) {
+	wantError(t, `
+		type A = { b: B }
+		type B = { a: A }
+		func main(): void {}
+	`, "cyclic record type")
 }
 
 func TestAcceptOptionalPrimitiveField(t *testing.T) {
@@ -457,13 +497,25 @@ func TestRejectIndexNonArray(t *testing.T) {
 	`, "indexing requires an array")
 }
 
-func TestRejectArrayOfRecord(t *testing.T) {
-	wantError(t, `
+func TestAcceptArrayOfRecord(t *testing.T) {
+	wantOk(t, `
 		type P = { x: number }
 		func main(): void {
 			let xs: P[] = []
+			echo(str(len(xs)))
 		}
-	`, "arrays of records")
+	`)
+}
+
+func TestRejectArrayOfRecordWithArrayLeaf(t *testing.T) {
+	// An array element record may not contain an array leaf — the row
+	// encoding used by codegen relies on newlines to separate rows.
+	wantError(t, `
+		type Bad = { tags: string[] }
+		func main(): void {
+			let xs: Bad[] = []
+		}
+	`, "arrays of records require")
 }
 
 // --- For-in ----------------------------------------------------------------

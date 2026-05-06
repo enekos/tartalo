@@ -1,0 +1,117 @@
+name: Release
+
+# Triggered when a tag like v1.2.3 is pushed. Builds the tartalo compiler
+# for every supported (os, arch), packages each one as an archive, and
+# uploads the artifacts to a GitHub Release alongside SHA256 checksums.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # required so softprops/action-gh-release can publish
+
+jobs:
+  build:
+    name: Build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { goos: darwin,  goarch: amd64,  ext: "",      archive: tar.gz }
+          - { goos: darwin,  goarch: arm64,  ext: "",      archive: tar.gz }
+          - { goos: linux,   goarch: amd64,  ext: "",      archive: tar.gz }
+          - { goos: linux,   goarch: arm64,  ext: "",      archive: tar.gz }
+          - { goos: windows, goarch: amd64,  ext: ".exe",  archive: zip    }
+          - { goos: windows, goarch: arm64,  ext: ".exe",  archive: zip    }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build
+        env:
+          GOOS:   ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          # -s -w strips symbol/debug tables for smaller binaries; -trimpath
+          # keeps the output reproducible across build hosts.
+          go build -trimpath -ldflags="-s -w" \
+            -o dist/tartalo${{ matrix.target.ext }} \
+            ./cmd/tartalo
+
+      - name: Stage release files
+        run: |
+          cp README.md SPEC.md LICENSE dist/ 2>/dev/null || true
+
+      - name: Package (tar.gz)
+        if: matrix.target.archive == 'tar.gz'
+        run: |
+          base="tartalo-${GITHUB_REF_NAME}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}"
+          cd dist
+          tar -czf "../${base}.tar.gz" .
+          cd ..
+          sha256sum "${base}.tar.gz" > "${base}.tar.gz.sha256"
+
+      - name: Package (zip)
+        if: matrix.target.archive == 'zip'
+        run: |
+          base="tartalo-${GITHUB_REF_NAME}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}"
+          (cd dist && zip -r "../${base}.zip" .)
+          sha256sum "${base}.zip" > "${base}.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tartalo-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+          path: |
+            tartalo-*.tar.gz
+            tartalo-*.zip
+            tartalo-*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          # Each per-matrix upload is its own subdir; flatten them so the
+          # release page shows just the bare archives + checksum files.
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) \
+            -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Combine checksums
+        run: |
+          cd release
+          # Concatenate per-archive sha256 files into one canonical
+          # SHA256SUMS file. Drop the originals; users can verify with
+          # `sha256sum -c SHA256SUMS`.
+          cat *.sha256 > SHA256SUMS
+          rm -f *.sha256
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.tar.gz
+            release/*.zip
+            release/SHA256SUMS
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

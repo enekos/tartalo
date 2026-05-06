@@ -37,6 +37,9 @@ Thumbs.db
 # Project binary (root only — don't shadow cmd/tartalo/)
 /tartalo
 
+# Autoresearch experiment logs
+autoresearch.jsonl
+
 # Landing page build artifacts
 landing/node_modules/
 landing/dist/

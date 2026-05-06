@@ -328,6 +328,9 @@ func (l *Lexer) lexPunct() {
 		if l.peek() == '|' {
 			l.advance()
 			l.emitAt(token.OrOr, "||", p)
+		} else if l.peek() == '>' {
+			l.advance()
+			l.emitAt(token.Pipeline, "|>", p)
 		} else {
 			l.emitAt(token.Pipe, "|", p)
 		}

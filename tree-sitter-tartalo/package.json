@@ -1,0 +1,24 @@
+{
+  "name": "tree-sitter-tartalo",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Tartalo scripting language",
+  "main": "bindings/node",
+  "keywords": ["tree-sitter", "parser", "tartalo"],
+  "author": "Tartalo authors",
+  "license": "MIT",
+  "dependencies": {
+    "node-addon-api": "^7.1.0",
+    "node-gyp-build": "^4.8.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.8"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.tartalo",
+      "file-types": ["tt"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "tartalo"
+    }
+  ]
+}
