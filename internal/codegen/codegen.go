@@ -543,7 +543,12 @@ func itoa64(n int64) string {
 
 func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	mangled := shName(checker.MangledName(g.currentModule, fd.Name))
-	g.writeLine(mangled + "() {")
+	for i := 0; i < g.indent; i++ {
+		g.out.WriteString("  ")
+	}
+	g.out.WriteString(mangled)
+	g.out.WriteString("() {")
+	g.out.WriteByte('\n')
 	g.indent++
 	// Record the return type so emitReturn knows whether to also write
 	// __ret__null. We restore the previous value on exit so nested emits
