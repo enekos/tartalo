@@ -1,0 +1,11 @@
+id = "tartalo"
+name = "Tartalo"
+version = "0.1.0"
+schema_version = 1
+authors = ["Tartalo Contributors"]
+description = "Tartalo language support for Zed"
+repository = "https://github.com/yourusername/tartalo"
+
+[language_servers.tartalo]
+name = "Tartalo LSP"
+language = "Tartalo"

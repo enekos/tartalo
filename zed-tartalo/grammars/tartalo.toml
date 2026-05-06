@@ -1,0 +1,3 @@
+[grammars.tartalo]
+source = "path"
+path = "../../tree-sitter-tartalo"

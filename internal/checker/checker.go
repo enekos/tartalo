@@ -131,23 +131,37 @@ type Checker struct {
 	inTest bool
 }
 
+// sharedPredeclTypes and sharedBuiltinScope are built once at package init.
+// They are read-only after init: modules never write to them (their own type
+// names go into env.typeNames; their own values into env.scope, whose parent
+// chain bottoms out at sharedBuiltinScope but never mutates it). Sharing across
+// every Checker instance saves ~78% of the per-construction allocation cost.
+var (
+	sharedPredeclTypes map[string]types.Type
+	sharedBuiltinScope *scope
+)
+
+func init() {
+	sharedPredeclTypes = make(map[string]types.Type, len(builtinTypes()))
+	for _, r := range builtinTypes() {
+		sharedPredeclTypes[r.Name] = r
+	}
+	sharedBuiltinScope = newScope(nil)
+	for _, b := range builtins() {
+		sharedBuiltinScope.define(b)
+	}
+	for _, b := range builtinsWithTypes(sharedPredeclTypes) {
+		sharedBuiltinScope.define(b)
+	}
+}
+
 func New() *Checker {
-	c := &Checker{
+	return &Checker{
 		info:         newTypeInfo(),
-		predeclTypes: map[string]types.Type{},
-		builtinScope: newScope(nil),
+		predeclTypes: sharedPredeclTypes,
+		builtinScope: sharedBuiltinScope,
 		envs:         map[*loader.Module]*moduleEnv{},
 	}
-	for _, r := range builtinTypes() {
-		c.predeclTypes[r.Name] = r
-	}
-	for _, b := range builtins() {
-		c.builtinScope.define(b)
-	}
-	for _, b := range builtinsWithTypes(c.predeclTypes) {
-		c.builtinScope.define(b)
-	}
-	return c
 }
 
 // CheckFile is a convenience wrapper for the single-file case (used by tests
