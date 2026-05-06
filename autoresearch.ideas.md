@@ -15,6 +15,17 @@
 - **Skip __ret temp for nested expressions**: When a function call is used inside a larger expression (e.g., `fib(10) + 1`), still avoid the temp by using `__ret` directly in the expression.
 - **Bare $var in emitAssign for simple identifiers**: Same as emitReturn optimization — `x=$y` instead of `x=$((y))` for simple numeric variables.
 
+## Nativegen-Specific Ideas
+
+- **Avoid unnecessary parentheses in compileBinary**: Many binary expressions don't need parens when used in contexts with lower/equal precedence (e.g., `n - 1` as a call arg). Removing them reduces output size and string concat work.
+- **Batch emitVarDecl writes**: Combine `x := rhs` and `_ = x` into a single writeLine to halve the call overhead per variable declaration.
+- **Preallocate strings.Builder in compileArrayLit/compileRecordLit**: Estimate capacity from element count to avoid reallocations for larger literals.
+- **Fast-path 1-arg calls with smarter concat**: The 1-arg compileCall fast-path saved allocations but regressed time; try pre-building the prefix/suffix to avoid intermediate string copies.
+- **Inline writeLine for emitFunc body**: The body loop calls writeLine for every statement; inlining the indent+write+newline sequence could reduce function call overhead.
+- **Cache goType for non-primitive types**: A pointer-keyed map for arrays/optionals/funcs could help programs with repeated type references (previous map attempt failed for small scripts but may help larger ones).
+- **Optimize emitFor range string building**: The range loop header builds a long string via concatenation; a preallocated Builder or slice-append-then-join may be faster.
+- **Remove `_ = target` when variable is definitely used**: Tartalo's checker doesn't prove liveness, but a simple scan of the remaining function body could suppress many `_ =` lines.
+
 ## Low-Impact (easy wins)
 
 - **More fmt.Sprintf -> string concat**: Replace remaining hot-path fmt.Sprintf calls with direct concatenation.
