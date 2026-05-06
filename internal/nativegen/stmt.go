@@ -410,8 +410,7 @@ func (g *Generator) emitIf(s *ast.IfStmt) {
 	g.writeIndent()
 	g.out.WriteString("if ")
 	g.out.WriteString(g.compileExpr(s.Cond))
-	g.out.WriteString(" {")
-	g.out.WriteByte('\n')
+	g.out.WriteString(" {\n")
 	g.indent++
 	for _, st := range s.Then.Stmts {
 		g.emitStmt(st)
@@ -443,7 +442,9 @@ func (g *Generator) emitIf(s *ast.IfStmt) {
 // emitIfTail writes "if cond { ... } [else ...]" without the leading
 // indentation — the caller is responsible for placement (used by `else if`).
 func (g *Generator) emitIfTail(s *ast.IfStmt) {
-	g.out.WriteString("if " + g.compileExpr(s.Cond) + " {\n")
+	g.out.WriteString("if ")
+	g.out.WriteString(g.compileExpr(s.Cond))
+	g.out.WriteString(" {\n")
 	g.indent++
 	for _, st := range s.Then.Stmts {
 		g.emitStmt(st)
@@ -540,8 +541,15 @@ func (g *Generator) emitMatch(s *ast.MatchStmt) {
 		return
 	}
 	subj := g.tmp("subj")
-	g.writeLine(subj + " := " + g.compileExpr(s.Subject))
-	g.writeLine("switch " + subj + " {")
+	g.writeIndent()
+	g.out.WriteString(subj)
+	g.out.WriteString(" := ")
+	g.out.WriteString(g.compileExpr(s.Subject))
+	g.out.WriteByte('\n')
+	g.writeIndent()
+	g.out.WriteString("switch ")
+	g.out.WriteString(subj)
+	g.out.WriteString(" {\n")
 	for _, arm := range s.Cases {
 		// Wildcards collapse into `default:`; explicit literals into `case ...:`.
 		hasWild := false
@@ -558,7 +566,10 @@ func (g *Generator) emitMatch(s *ast.MatchStmt) {
 		if hasWild {
 			g.writeLine("default:")
 		} else {
-			g.writeLine("case " + joinComma(lits) + ":")
+			g.writeIndent()
+			g.out.WriteString("case ")
+			g.out.WriteString(joinComma(lits))
+			g.out.WriteString(":\n")
 		}
 		g.indent++
 		for _, st := range arm.Body.Stmts {
@@ -574,8 +585,15 @@ func (g *Generator) emitMatch(s *ast.MatchStmt) {
 // arm body can reference them by plain name, matching the sh backend.
 func (g *Generator) emitMatchSum(s *ast.MatchStmt, sum *types.Sum) {
 	subj := g.tmp("subj")
-	g.writeLine(subj + " := " + g.compileExpr(s.Subject))
-	g.writeLine("switch " + subj + ".Tag {")
+	g.writeIndent()
+	g.out.WriteString(subj)
+	g.out.WriteString(" := ")
+	g.out.WriteString(g.compileExpr(s.Subject))
+	g.out.WriteByte('\n')
+	g.writeIndent()
+	g.out.WriteString("switch ")
+	g.out.WriteString(subj)
+	g.out.WriteString(".Tag {\n")
 	for _, arm := range s.Cases {
 		hasWild := false
 		var tagNames []string
@@ -596,7 +614,10 @@ func (g *Generator) emitMatchSum(s *ast.MatchStmt, sum *types.Sum) {
 		if hasWild {
 			g.writeLine("default:")
 		} else {
-			g.writeLine("case " + joinComma(tagNames) + ":")
+			g.writeIndent()
+			g.out.WriteString("case ")
+			g.out.WriteString(joinComma(tagNames))
+			g.out.WriteString(":\n")
 		}
 		g.indent++
 		if bindVariant != "" && len(bindings) > 0 {
