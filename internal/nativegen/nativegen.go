@@ -341,14 +341,22 @@ func (g *Generator) addImport(pkg string) {
 }
 
 func (g *Generator) writeImportsTo(out *strings.Builder) {
-	if len(g.imports) == 0 {
+	n := len(g.imports)
+	if n == 0 {
 		return
 	}
-	pkgs := make([]string, 0, len(g.imports))
+	// Most programs use only a handful of stdlib imports. Use a small
+	// stack-allocated array to avoid the slice allocation.
+	var arr [16]string
+	pkgs := arr[:0]
 	for p := range g.imports {
 		pkgs = append(pkgs, p)
 	}
-	sort.Strings(pkgs)
+	if n == 2 && pkgs[0] > pkgs[1] {
+		pkgs[0], pkgs[1] = pkgs[1], pkgs[0]
+	} else {
+		sort.Strings(pkgs)
+	}
 	out.WriteString("import (\n")
 	for _, p := range pkgs {
 		out.WriteString("\t\"")
