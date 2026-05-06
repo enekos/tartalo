@@ -36,6 +36,24 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 	if len(e.Args) == 0 {
 		return fn + "()"
 	}
+	if len(e.Args) == 1 {
+		argExpr := g.compileExpr(e.Args[0])
+		if ft != nil && len(ft.Params) > 0 {
+			argExpr = g.coerce(argExpr, g.info.Types[e.Args[0]], ft.Params[0])
+		}
+		totalLen := len(fn) + 1 + len(argExpr) + 1
+		if totalLen <= 64 {
+			var buf [64]byte
+			n := copy(buf[:], fn)
+			buf[n] = '('
+			n++
+			n += copy(buf[n:], argExpr)
+			buf[n] = ')'
+			n++
+			return string(buf[:n])
+		}
+		return fn + "(" + argExpr + ")"
+	}
 	var b strings.Builder
 	b.WriteString(fn)
 	b.WriteString("(")
