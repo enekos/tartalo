@@ -1620,20 +1620,14 @@ func (g *Generator) compileArrayLit(a *ast.ArrayLit) exprValue {
 	// using `printf` so newlines are preserved exactly.
 	t := g.tmp("arr")
 	var prologue []string
-	parts := make([]string, len(a.Elems))
+	var body strings.Builder
 	for i, el := range a.Elems {
 		v := g.compileExpr(el)
 		prologue = append(prologue, v.prologue...)
-		parts[i] = v.shString()
-	}
-	// Concatenate elements with a literal newline separator. Using a sh
-	// here-doc-style string keeps the codegen one-line per join.
-	var body strings.Builder
-	for i, p := range parts {
 		if i > 0 {
 			body.WriteByte('\n')
 		}
-		body.WriteString(p)
+		body.WriteString(v.shString())
 	}
 	prologue = append(prologue, t+"=\""+body.String()+"\"")
 	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
@@ -1645,21 +1639,17 @@ func (g *Generator) compileArrayLitOfRecord(a *ast.ArrayLit, rec *types.Record) 
 	g.usesRecordArrays = true
 	leaves := recordLeaves(rec)
 	var prologue []string
-	rows := make([]string, len(a.Elems))
+	var body strings.Builder
 	for i, el := range a.Elems {
 		v := g.compileExpr(el)
 		prologue = append(prologue, v.prologue...)
-		rows[i] = recordRowExpr(v.value, leaves)
-	}
-	t := g.tmp("arr")
-	var body strings.Builder
-	for i, r := range rows {
 		if i > 0 {
 			body.WriteByte('\n')
 		}
-		body.WriteString(r)
+		body.WriteString(recordRowExpr(v.value, leaves))
 	}
-	prologue = append(prologue, fmt.Sprintf(`%s="%s"`, t, body.String()))
+	t := g.tmp("arr")
+	prologue = append(prologue, t+`="`+body.String()+`"`)
 	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
 }
 
