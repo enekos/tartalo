@@ -1235,9 +1235,21 @@ func (g *Generator) emitAssign(s *ast.AssignStmt) {
 	v := g.compileExpr(s.Value)
 	g.writeLines(v.prologue)
 	if (v.form == formArith || v.form == formBool) && isSimpleIdent(v.value) {
-		g.writeLine(target + "=$" + v.value)
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteString("  ")
+		}
+		g.out.WriteString(target)
+		g.out.WriteString("=$")
+		g.out.WriteString(v.value)
+		g.out.WriteByte('\n')
 	} else if v.form == formStr && isSimpleVarRef(v.value) {
-		g.writeLine(target + "=" + v.value)
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteString("  ")
+		}
+		g.out.WriteString(target)
+		g.out.WriteByte('=')
+		g.out.WriteString(v.value)
+		g.out.WriteByte('\n')
 	} else {
 		g.writeLine(target + "=" + v.assignmentRHS())
 	}
@@ -1277,9 +1289,19 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 	v := g.compileExpr(s.Value)
 	g.writeLines(v.prologue)
 	if (v.form == formArith || v.form == formBool) && isSimpleIdent(v.value) {
-		g.writeLine("__ret=$" + v.value)
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteString("  ")
+		}
+		g.out.WriteString("__ret=$")
+		g.out.WriteString(v.value)
+		g.out.WriteByte('\n')
 	} else if v.form == formStr && isSimpleVarRef(v.value) {
-		g.writeLine("__ret=" + v.value)
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteString("  ")
+		}
+		g.out.WriteString("__ret=")
+		g.out.WriteString(v.value)
+		g.out.WriteByte('\n')
 	} else {
 		g.writeLine("__ret=" + v.assignmentRHS())
 	}
