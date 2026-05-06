@@ -10,6 +10,7 @@ package checker
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -818,7 +819,7 @@ func mangledName(m *loader.Module, name string) string {
 	if m == nil || m.IsEntry {
 		return name
 	}
-	return fmt.Sprintf("__m%d__%s", m.ID, name)
+	return "__m" + strconv.Itoa(m.ID) + "__" + name
 }
 
 // MangledName is the public form, used by codegen.
