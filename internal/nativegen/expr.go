@@ -257,8 +257,6 @@ func binExpr(lhs, op, rhs string) string {
 func (g *Generator) compileBinary(e *ast.BinaryExpr) string {
 	lhs := g.compileExpr(e.Lhs)
 	rhs := g.compileExpr(e.Rhs)
-	lt := g.info.Types[e.Lhs]
-	rt := g.info.Types[e.Rhs]
 	switch e.Op {
 	case token.Plus:
 		// String concat in Tartalo only; numeric add otherwise.
@@ -272,9 +270,9 @@ func (g *Generator) compileBinary(e *ast.BinaryExpr) string {
 	case token.Percent:
 		return binExpr(lhs, "%", rhs)
 	case token.Eq:
-		return g.compileEq(lhs, rhs, lt, rt, false)
+		return g.compileEq(lhs, rhs, g.info.Types[e.Lhs], g.info.Types[e.Rhs], false)
 	case token.Neq:
-		return g.compileEq(lhs, rhs, lt, rt, true)
+		return g.compileEq(lhs, rhs, g.info.Types[e.Lhs], g.info.Types[e.Rhs], true)
 	case token.Lt:
 		return binExpr(lhs, "<", rhs)
 	case token.Lte:
