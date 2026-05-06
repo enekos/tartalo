@@ -286,7 +286,9 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 			to = at
 		}
 	}
-	rhs = g.coerce(rhs, from, to)
+	if from != to {
+		rhs = g.coerce(rhs, from, to)
+	}
 	g.writeIndent()
 	if d.TypeAnn != nil && !types.Equal(from, to) {
 		g.out.WriteString("var tt_")
@@ -309,7 +311,7 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 func (g *Generator) emitAssign(s *ast.AssignStmt) {
 	sym := g.info.Assigns[s]
 	rhs := g.compileExpr(s.Value)
-	if sym != nil {
+	if sym != nil && g.info.Types[s.Value] != sym.Type {
 		rhs = g.coerce(rhs, g.info.Types[s.Value], sym.Type)
 	}
 	g.writeIndent()
