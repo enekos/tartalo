@@ -81,9 +81,12 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 			args[i] = g.compileExpr(a)
 		}
 	}
-	argTypes := make([]types.Type, len(e.Args))
-	for i, a := range e.Args {
-		argTypes[i] = g.info.Types[a]
+	var argTypes []types.Type
+	if len(e.Args) > 0 {
+		argTypes = make([]types.Type, len(e.Args))
+		for i, a := range e.Args {
+			argTypes[i] = g.info.Types[a]
+		}
 	}
 	switch sym.Name {
 
