@@ -1198,7 +1198,13 @@ func (g *Generator) emitAssign(s *ast.AssignStmt) {
 	}
 	v := g.compileExpr(s.Value)
 	g.writeLines(v.prologue)
-	g.writeLine(target + "=" + v.assignmentRHS())
+	if (v.form == formArith || v.form == formBool) && isSimpleIdent(v.value) {
+		g.writeLine(target + "=$" + v.value)
+	} else if v.form == formStr && isSimpleVarRef(v.value) {
+		g.writeLine(target + "=" + v.value)
+	} else {
+		g.writeLine(target + "=" + v.assignmentRHS())
+	}
 }
 
 func (g *Generator) emitReturn(s *ast.ReturnStmt) {
@@ -1236,6 +1242,8 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 	g.writeLines(v.prologue)
 	if (v.form == formArith || v.form == formBool) && isSimpleIdent(v.value) {
 		g.writeLine("__ret=$" + v.value)
+	} else if v.form == formStr && isSimpleVarRef(v.value) {
+		g.writeLine("__ret=" + v.value)
 	} else {
 		g.writeLine("__ret=" + v.assignmentRHS())
 	}
@@ -3828,6 +3836,16 @@ func isSimpleIdent(s string) bool {
 		}
 	}
 	return true
+}
+
+// isSimpleVarRef reports whether s is a plain variable reference of the
+// form ${name} with no nested braces. When true the value can be used
+// directly without shQuoteDouble wrapping.
+func isSimpleVarRef(s string) bool {
+	if len(s) < 4 || s[0] != '$' || s[1] != '{' || s[len(s)-1] != '}' {
+		return false
+	}
+	return isSimpleIdent(s[2 : len(s)-1])
 }
 
 // awkStringCmpOp returns the awk comparison operator for an ordering token.
