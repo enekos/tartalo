@@ -1,0 +1,52 @@
+// agent_demo.tt — a self-contained agent that uses every piece of the
+// agent-platform surface.
+//
+// Try it:
+//   ./tartalo build examples/agent_demo.tt -o demo.sh
+//   TARTALO_LLM_CMD='cat; printf " (echoed)"' ./demo.sh "what is 2+2?"
+//
+// Or run with tracing:
+//   TARTALO_TRACE=run.ndjson ./demo.sh "hi"
+//   cat run.ndjson
+
+// A `tool` is a typed function the LLM can discover via toolSchemas().
+// desc("...") and budget(N) on the first lines become metadata, not body.
+tool listFiles(): string {
+  desc("list files in the current working directory")
+  return exec("ls").stdout
+}
+
+tool greet(name: string): string {
+  desc("greet someone by name")
+  return "Hello, " + name + "!"
+}
+
+// An `agent` is the same shape as a tool, distinguished only in the schema.
+// Effects on the return type (`!ai !net`) declare what the agent may do —
+// for now they're advisory; future work enforces them via --caps.
+agent assistant(question: string): string !ai {
+  desc("answer a question, possibly using tools")
+  budget(50)
+  trace("agent.start", question)
+  let answer = llm("Answer briefly: " + question)
+  trace("agent.end", answer)
+  return answer
+}
+
+func main(): void {
+  // Self-documenting: print the schemas the LLM would see.
+  echo("== schemas ==")
+  echo(toolSchemas())
+  echo("")
+
+  echo("== greet ==")
+  echo(greet("Tartalo"))
+  echo("")
+
+  // spawnAgent dispatches by name. The compiler enumerated the agents at
+  // build time, so this is a flat case — no eval, no runtime lookup.
+  echo("== assistant ==")
+  let question = "what is 2+2?"
+  let answer = spawnAgent("assistant", question)
+  echo(answer)
+}

@@ -8,6 +8,12 @@ shipping cross-platform tools. Think of it as a thin TypeScript-ish layer over
 shell scripting: catch type errors at compile time, choose the runtime that
 fits.
 
+It also doubles as an **agent platform**: `tool` and `agent` declarations
+expose typed entry points to LLMs via auto-generated JSON schemas, and
+builtins like `llm()`, `approval()`, `trace()`, and `spawnAgent()` give
+you a self-contained agent in a single `.sh` file. See the [agent
+platform](SPEC.md#agent-platform) section of the spec.
+
 ```tartalo
 // hello.tt
 func main(): void {

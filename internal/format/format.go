@@ -255,7 +255,14 @@ func (p *printer) printFunc(fd *ast.FuncDecl) {
 	if fd.IsExported {
 		p.write("export ")
 	}
-	p.write("func ")
+	switch fd.Kind {
+	case ast.FuncKindTool:
+		p.write("tool ")
+	case ast.FuncKindAgent:
+		p.write("agent ")
+	default:
+		p.write("func ")
+	}
 	p.write(fd.Name)
 	p.write("(")
 	for i, par := range fd.Params {
@@ -268,11 +275,50 @@ func (p *printer) printFunc(fd *ast.FuncDecl) {
 	}
 	p.write("): ")
 	p.printType(fd.Result)
+	for _, eff := range fd.Effects {
+		p.write(" !")
+		p.write(eff)
+	}
 	p.write(" ")
-	p.printBlock(fd.Body)
-	// allow trailing comment on the line of the closing brace if one exists
+	// Tool/agent metadata calls (desc/budget) were pulled off the body during
+	// parsing — re-synthesise them at the top of the printed body so format
+	// is round-trippable.
+	if fd.Kind != ast.FuncKindPlain && (fd.Description != "" || fd.Budget > 0) {
+		p.write("{")
+		p.nl()
+		p.indent++
+		if fd.Description != "" {
+			p.writeIndent()
+			p.write("desc(\"")
+			p.write(escString(fd.Description))
+			p.write("\")")
+			p.nl()
+		}
+		if fd.Budget > 0 {
+			p.writeIndent()
+			p.write("budget(")
+			p.write(itoa64(fd.Budget))
+			p.write(")")
+			p.nl()
+		}
+		// Now print the (already-stripped) body's statements with the same
+		// indent, then close the brace ourselves.
+		for _, s := range fd.Body.Stmts {
+			p.writeIndent()
+			p.printStmt(s)
+		}
+		p.indent--
+		p.writeIndent()
+		p.write("}")
+	} else {
+		p.printBlock(fd.Body)
+	}
 	p.trailingOn(p.lastSrcLine)
 	p.nl()
+}
+
+func itoa64(n int64) string {
+	return fmt.Sprintf("%d", n)
 }
 
 func (p *printer) printVarDecl(vd *ast.VarDecl) {

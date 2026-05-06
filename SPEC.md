@@ -635,6 +635,69 @@ ships with the four name/value-style mocks (env, now, args, readStdin);
 exec, fetch, and readFile mocks abort at runtime with a clear "use
 --target=native" message when reached.
 
+## Agent platform
+
+Tartalo doubles as an agent platform. The wedge: agents distributed as a
+single self-contained `.sh` (or native binary) — no `pip install`, no
+`node_modules`, no Docker. The shell is already the universal tool-calling
+protocol; tartalo gives it types, schemas, capability annotations, and
+replayable traces.
+
+### Tool & agent declarations
+
+```tartalo
+tool searchFiles(pattern: string): string {
+  desc("recursively grep the working tree for a pattern")
+  return exec("grep -rIn " + pattern + " .").stdout
+}
+
+agent assistant(question: string): string !ai {
+  desc("answer a question, possibly using tools")
+  budget(50)
+  return llm("Answer briefly: " + question)
+}
+```
+
+`tool` and `agent` parse identically to `func` — same parameter list, same
+return type, same body — but each is tagged in the AST so the codegen knows
+to register them in the schema table. The first lines of a tool/agent body
+may be `desc("...")` and `budget(N)` calls; these are pulled off as
+metadata, not executed.
+
+### Effect annotations
+
+Postfix `!effect` markers on the return type record what a function may do.
+Standard tags: `!ai !net !fs:read !fs:write !exec !io`. Effects are
+currently advisory — they appear in `toolSchemas()` and document intent.
+Future work will enforce them via a compile-time `--caps=` capability set.
+
+### Agent-platform builtins
+
+| Builtin | Type | Effect | Notes |
+|---|---|---|---|
+| `llm(prompt: string): string` | `(string) → string` | `!ai` | Pipes prompt to `$TARTALO_LLM_CMD` (default `claude -p`). In test mode every call must be matched by `mockLlm` or the test fails. |
+| `approval(prompt: string): bool` | `(string) → bool` | `!io` | Prints prompt on stderr, reads y/n from `/dev/tty` (falls back to stdin). Returns true for y/Y/yes, else false. |
+| `trace(label: string, value: string): void` | `(string,string) → void` | `!fs:write` | Appends one NDJSON record `{ts, label, value}` to `$TARTALO_TRACE` if set; no-op otherwise. |
+| `spawnAgent(name: string, input: string): string` | `(string,string) → string` | inherits | Calls a declared agent by name through a compile-time-built `case` dispatcher. No eval, no string-to-function lookup. Aborts with a clear error on unknown names. |
+| `toolSchemas(): string` | `() → string` | none | Returns a static JSON string with one entry per tool/agent: `{name, kind, params:[{name,type}], returns, description?, effects?, budget?}`. Built at compile time, stored as a sh constant / Go `const` — every call is O(1). |
+| `mockLlm(pat, resp: string): void` | `(string,string) → void` | test-only | Registers a regex → response rule for `llm()` during a test. |
+| `mockLlmCalls(): string[]` | `() → string[]` | test-only | Prompts seen this run, in order. |
+
+### Tracing & replay
+
+Setting `TARTALO_TRACE=path` at runtime makes every `trace(...)` call emit
+one NDJSON record to that file. Combined with the existing mock family,
+this gives you reproducible agent runs: capture once, replay deterministically
+under `--target=native` with `mockExec` / `mockFetch` / `mockLlm` rules
+filling in for the recorded calls.
+
+### Capabilities (future)
+
+The annotation half of capabilities ships in v1. Enforcement (`--caps=net`
+refusing to compile a program whose effects exceed the cap set) is on
+deck — the call-graph traversal lives in the checker; what's missing is
+the propagation pass and the CLI hook.
+
 ### Predeclared types
 
 ```tartalo
