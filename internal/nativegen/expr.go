@@ -117,6 +117,30 @@ func (g *Generator) compileIdent(e *ast.Ident) string {
 		return "tt_v"
 	case "k":
 		return "tt_k"
+	case "total":
+		return "tt_total"
+	case "sum":
+		return "tt_sum"
+	case "val":
+		return "tt_val"
+	case "res":
+		return "tt_res"
+	case "err":
+		return "tt_err"
+	case "ok":
+		return "tt_ok"
+	case "idx":
+		return "tt_idx"
+	case "tmp":
+		return "tt_tmp"
+	case "cur":
+		return "tt_cur"
+	case "max":
+		return "tt_max"
+	case "min":
+		return "tt_min"
+	case "xs":
+		return "tt_xs"
 	}
 	uses := g.info.Uses
 	sym := uses[e]
