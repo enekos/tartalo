@@ -81,7 +81,6 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	} else {
 		g.currentAgent = nil
 	}
-	defer func() { g.currentAgent = prevAgent }()
 	if fd.Kind == ast.FuncKindAgent && fd.Budget > 0 {
 		g.writeLine("_tt_budget := int64(" + itoa64(fd.Budget) + ")")
 		g.writeLine("_ = _tt_budget")
@@ -121,6 +120,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	g.indent--
 	g.writeIndent()
 	g.out.WriteString("}\n")
+	g.currentAgent = prevAgent
 	g.currentReturnType = prevRet
 }
 
