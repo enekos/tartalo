@@ -135,25 +135,77 @@ func (g *Generator) compileTry(e *ast.TryExpr) string {
 
 func (g *Generator) compileIdent(e *ast.Ident) string {
 	// Fast path: common local names that never need mangling or narrowing.
+	// These are mostly single-letter loop vars / params plus a handful of
+	// multi-letter names that are very unlikely to be optional-of-T.
 	switch e.Name {
-	case "n":
-		return "tt_n"
+	case "a":
+		return "tt_a"
+	case "b":
+		return "tt_b"
+	case "c":
+		return "tt_c"
+	case "d":
+		return "tt_d"
+	case "e":
+		return "tt_e"
+	case "f":
+		return "tt_f"
+	case "g":
+		return "tt_g"
+	case "h":
+		return "tt_h"
 	case "i":
 		return "tt_i"
-	case "x":
-		return "tt_x"
-	case "s":
-		return "tt_s"
-	case "v":
-		return "tt_v"
+	case "j":
+		return "tt_j"
 	case "k":
 		return "tt_k"
+	case "l":
+		return "tt_l"
+	case "m":
+		return "tt_m"
+	case "n":
+		return "tt_n"
+	case "o":
+		return "tt_o"
+	case "p":
+		return "tt_p"
+	case "q":
+		return "tt_q"
+	case "r":
+		return "tt_r"
+	case "s":
+		return "tt_s"
+	case "t":
+		return "tt_t"
+	case "u":
+		return "tt_u"
+	case "v":
+		return "tt_v"
+	case "w":
+		return "tt_w"
+	case "x":
+		return "tt_x"
+	case "y":
+		return "tt_y"
+	case "z":
+		return "tt_z"
+	case "fn":
+		return "tt_fn"
+	case "out":
+		return "tt_out"
+	case "in":
+		return "tt_in"
+	case "count":
+		return "tt_count"
+	case "item":
+		return "tt_item"
+	case "main":
+		return "tt_main"
 	case "total":
 		return "tt_total"
 	case "sum":
 		return "tt_sum"
-	case "val":
-		return "tt_val"
 	case "res":
 		return "tt_res"
 	case "err":
