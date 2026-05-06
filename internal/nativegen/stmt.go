@@ -1,7 +1,6 @@
 package nativegen
 
 import (
-	"strconv"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -587,7 +586,7 @@ func (g *Generator) emitMatchSum(s *ast.MatchStmt, sum *types.Sum) {
 			case *ast.WildcardPattern:
 				hasWild = true
 			case *ast.VariantPattern:
-				tagNames = append(tagNames, strconv.Quote(p.Name))
+				tagNames = append(tagNames, fastQuote(p.Name))
 				if bindVariant == "" {
 					bindVariant = p.Name
 					bindings = p.Bindings
