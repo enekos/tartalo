@@ -126,6 +126,7 @@ func (g *Generator) EmitModulesTest(modules []*loader.Module) string {
 }
 
 func (g *Generator) emitProgram(modules []*loader.Module) string {
+	g.out.Grow(2048)
 	// Test mode always emits the mock state struct, which references
 	// *regexp.Regexp. Pre-register the import so it lands in the import
 	// block (writeRuntimeTo runs after writeImportsTo).
@@ -306,22 +307,11 @@ func goFieldName(name string) string {
 	return "F_" + name
 }
 
+var indentStrings = []string{"", "\t", "\t\t", "\t\t\t"}
+
 func (g *Generator) writeIndent() {
-	switch g.indent {
-	case 0:
-	case 1:
-		g.out.WriteByte('\t')
-	case 2:
-		g.out.WriteByte('\t')
-		g.out.WriteByte('\t')
-	case 3:
-		g.out.WriteByte('\t')
-		g.out.WriteByte('\t')
-		g.out.WriteByte('\t')
-	default:
-		for i := 0; i < g.indent; i++ {
-			g.out.WriteByte('\t')
-		}
+	if g.indent < len(indentStrings) {
+		g.out.WriteString(indentStrings[g.indent])
 	}
 }
 
@@ -336,16 +326,12 @@ func (g *Generator) writeLine(s string) {
 		g.out.WriteByte('\t')
 		g.out.WriteByte('\t')
 	} else if g.indent > 3 {
-		g.writeIndentLoop()
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteByte('\t')
+		}
 	}
 	g.out.WriteString(s)
 	g.out.WriteByte('\n')
-}
-
-func (g *Generator) writeIndentLoop() {
-	for i := 0; i < g.indent; i++ {
-		g.out.WriteByte('\t')
-	}
 }
 
 func (g *Generator) tmp(prefix string) string {
