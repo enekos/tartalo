@@ -2,6 +2,7 @@ package nativegen
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
 	"github.com/enekos/tartalo/internal/checker"
@@ -627,14 +628,20 @@ func (g *Generator) emitMatchSum(s *ast.MatchStmt, sum *types.Sum) {
 }
 
 func joinComma(ss []string) string {
-	out := ""
+	if len(ss) == 0 {
+		return ""
+	}
+	if len(ss) == 1 {
+		return ss[0]
+	}
+	var b strings.Builder
 	for i, s := range ss {
 		if i > 0 {
-			out += ", "
+			b.WriteString(", ")
 		}
-		out += s
+		b.WriteString(s)
 	}
-	return out
+	return b.String()
 }
 
 func patternLiteral(p *ast.LiteralPattern) string {
