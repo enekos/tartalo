@@ -413,6 +413,9 @@ func (g *Generator) compileUnwrap(e *ast.UnwrapExpr) string {
 // Tartalo target type `to`. Handles auto-wrap to optional, number→float
 // widening, and a no-op for matching types.
 func (g *Generator) coerce(expr string, from, to types.Type) string {
+	if from == to {
+		return expr
+	}
 	if to == nil || from == nil {
 		return expr
 	}

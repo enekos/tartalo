@@ -1636,6 +1636,7 @@ func (g *Generator) compileArrayLit(a *ast.ArrayLit) exprValue {
 	t := g.tmp("arr")
 	prologue := make([]string, 0, 2)
 	var body strings.Builder
+	body.Grow(len(a.Elems) * 4)
 	for i, el := range a.Elems {
 		v := g.compileExpr(el)
 		prologue = append(prologue, v.prologue...)
