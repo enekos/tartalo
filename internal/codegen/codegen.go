@@ -1423,7 +1423,15 @@ func (g *Generator) emitForRange(s *ast.ForStmt, r *ast.RangeExpr) {
 	// Inline simple end bounds (constants or bare identifiers) to avoid an
 	// extra temp variable. Complex expressions still need a temp.
 	if lit, ok := r.End.(*ast.IntLit); ok {
-		g.writeLine("while [ \"$" + vname + "\" -lt " + itoa64(lit.Value) + " ]; do")
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteString("  ")
+		}
+		g.out.WriteString("while [ \"$")
+		g.out.WriteString(vname)
+		g.out.WriteString("\" -lt ")
+		g.out.WriteString(itoa64(lit.Value))
+		g.out.WriteString(" ]; do")
+		g.out.WriteByte('\n')
 	} else if id, ok := r.End.(*ast.Ident); ok {
 		name := shName(id.Name)
 		if sym := g.info.Uses[id]; sym != nil && sym.Module != nil {
