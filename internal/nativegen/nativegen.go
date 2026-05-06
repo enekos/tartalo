@@ -315,6 +315,10 @@ var indentStrings = []string{"", "\t", "\t\t", "\t\t\t"}
 func (g *Generator) writeIndent() {
 	if g.indent < len(indentStrings) {
 		g.out.WriteString(indentStrings[g.indent])
+		return
+	}
+	for i := 0; i < g.indent; i++ {
+		g.out.WriteByte('\t')
 	}
 }
 
