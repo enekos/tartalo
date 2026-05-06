@@ -188,11 +188,7 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 	g.writeLine("set -eu")
 	g.writeLine("")
 	g.writeLine("__ret=\"\"")
-	g.writeLine(`__tt_us=$(printf '\037')`)
-	// Snapshot the script's positional args into a newline-joined string so
-	// `args()` returns a stable view even from inside helper functions whose
-	// own `$@` shadows the script's.
-	g.writeLine(`__tt_argv=$(if [ $# -gt 0 ]; then for __tt_a in "$@"; do printf '%s\n' "$__tt_a"; done; fi)`)
+	insertPos := g.out.Len()
 	if g.trace {
 		g.writeLines([]string{
 			`__tt_loc=""`,
@@ -307,22 +303,15 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		g.emitTestHarness(entry)
 	}
 	result := g.out.String()
-	if !g.needsArgv {
-		idx := strings.Index(result, "__tt_argv=")
-		if idx >= 0 {
-			start := strings.LastIndexByte(result[:idx], '\n') + 1
-			end := idx + strings.IndexByte(result[idx:], '\n')
-			result = result[:start] + result[end+1:]
+	if g.needsArgv || g.usesRecordArrays {
+		var cond strings.Builder
+		if g.usesRecordArrays {
+			cond.WriteString(`__tt_us=$(printf '\037')` + "\n")
 		}
-	}
-	if !g.usesRecordArrays {
-		idx := strings.Index(result, "__tt_us=")
-		if idx >= 0 {
-			start := strings.LastIndexByte(result[:idx], '\n') + 1
-			end := idx + strings.IndexByte(result[idx:], '\n')
-			// also drop the comment block immediately preceding the assignment
-			result = result[:start] + result[end+1:]
+		if g.needsArgv {
+			cond.WriteString(`__tt_argv=$(if [ $# -gt 0 ]; then for __tt_a in "$@"; do printf '%s\n' "$__tt_a"; done; fi)` + "\n")
 		}
+		result = result[:insertPos] + cond.String() + result[insertPos:]
 	}
 	return result
 }

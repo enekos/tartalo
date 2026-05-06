@@ -18,6 +18,7 @@
 package nativegen
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -352,12 +353,7 @@ func (g *Generator) writeImportsTo(out *strings.Builder) {
 	for p := range g.imports {
 		pkgs = append(pkgs, p)
 	}
-	// Insertion-sort: stdlib only, very small set.
-	for i := 1; i < len(pkgs); i++ {
-		for j := i; j > 0 && pkgs[j-1] > pkgs[j]; j-- {
-			pkgs[j-1], pkgs[j] = pkgs[j], pkgs[j-1]
-		}
-	}
+	sort.Strings(pkgs)
 	out.WriteString("import (\n")
 	for _, p := range pkgs {
 		out.WriteString("\t\"")
