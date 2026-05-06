@@ -439,7 +439,13 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 		v := g.goLocalName(s.Var)
 		switch t.(type) {
 		case *types.Array:
-			g.writeLine("for _, " + v + " := range " + g.compileExpr(s.Iter) + " {")
+			g.writeIndent()
+			g.out.WriteString("for _, ")
+			g.out.WriteString(v)
+			g.out.WriteString(" := range ")
+			g.out.WriteString(g.compileExpr(s.Iter))
+			g.out.WriteString(" {")
+			g.out.WriteByte('\n')
 		default:
 			// Treat as newline-delimited string. Empty string yields zero
 			// iterations (matches the sh backend's `if [ -n ... ]` guard).

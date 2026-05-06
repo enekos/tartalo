@@ -2221,6 +2221,19 @@ func (g *Generator) compileCmdString(c *ast.CmdLit) (string, []string) {
 }
 
 func (g *Generator) compileUnary(u *ast.UnaryExpr) exprValue {
+	// Constant-fold literal operands without evaluating the sub-expression.
+	if u.Op == token.Minus {
+		if lit, ok := u.Operand.(*ast.IntLit); ok {
+			return exprValue{value: itoa64(-lit.Value), form: formArith}
+		}
+	} else if u.Op == token.Bang {
+		if lit, ok := u.Operand.(*ast.BoolLit); ok {
+			if !lit.Value {
+				return exprValue{value: "1", form: formBool}
+			}
+			return exprValue{value: "0", form: formBool}
+		}
+	}
 	v := g.compileExpr(u.Operand)
 	switch u.Op {
 	case token.Minus:
@@ -2241,7 +2254,72 @@ func (g *Generator) compileUnary(u *ast.UnaryExpr) exprValue {
 	return exprValue{value: "0", form: formStr}
 }
 
+func boolLit(v bool) exprValue {
+	if v {
+		return exprValue{value: "1", form: formBool}
+	}
+	return exprValue{value: "0", form: formBool}
+}
+
+func intFold(l, r int64, op token.Kind) (exprValue, bool) {
+	switch op {
+	case token.Plus:
+		return exprValue{value: itoa64(l + r), form: formArith}, true
+	case token.Minus:
+		return exprValue{value: itoa64(l - r), form: formArith}, true
+	case token.Star:
+		return exprValue{value: itoa64(l * r), form: formArith}, true
+	case token.Slash:
+		if r == 0 {
+			return exprValue{}, false
+		}
+		return exprValue{value: itoa64(l / r), form: formArith}, true
+	case token.Percent:
+		if r == 0 {
+			return exprValue{}, false
+		}
+		return exprValue{value: itoa64(l % r), form: formArith}, true
+	case token.Eq:
+		return boolLit(l == r), true
+	case token.Neq:
+		return boolLit(l != r), true
+	case token.Lt:
+		return boolLit(l < r), true
+	case token.Lte:
+		return boolLit(l <= r), true
+	case token.Gt:
+		return boolLit(l > r), true
+	case token.Gte:
+		return boolLit(l >= r), true
+	}
+	return exprValue{}, false
+}
+
 func (g *Generator) compileBinary(b *ast.BinaryExpr) exprValue {
+	// Integer-literal constant folding.
+	if llit, ok := b.Lhs.(*ast.IntLit); ok {
+		if rlit, ok := b.Rhs.(*ast.IntLit); ok {
+			if v, ok := intFold(llit.Value, rlit.Value, b.Op); ok {
+				return v
+			}
+		}
+	}
+	// Bool-literal short-circuit folding.
+	if b.Op == token.AndAnd || b.Op == token.OrOr {
+		if lb, ok := b.Lhs.(*ast.BoolLit); ok {
+			if rb, ok := b.Rhs.(*ast.BoolLit); ok {
+				return boolLit((b.Op == token.AndAnd && lb.Value && rb.Value) ||
+					(b.Op == token.OrOr && (lb.Value || rb.Value)))
+			}
+			if b.Op == token.AndAnd && !lb.Value {
+				return exprValue{value: "0", form: formBool}
+			}
+			if b.Op == token.OrOr && lb.Value {
+				return exprValue{value: "1", form: formBool}
+			}
+		}
+	}
+
 	lt := g.info.Types[b.Lhs]
 	rt := g.info.Types[b.Rhs]
 
@@ -3872,10 +3950,14 @@ func asArith(v exprValue) string {
 }
 
 // asArithStr returns the value as a quotable shell fragment when the consumer
-// expects a string. For arithmetic forms this wraps in $((..)).
+// expects a string. For arithmetic forms this wraps in $((..)) unless the
+// value is already a plain integer literal, in which case no wrapping is needed.
 func asArithStr(v exprValue) string {
 	switch v.form {
 	case formArith, formBool:
+		if isIntLiteral(v.value) {
+			return v.value
+		}
 		return "$((" + v.value + "))"
 	default:
 		return v.value
@@ -4164,4 +4246,3 @@ func escapeForDoubleQuoted(s string) string {
 	}
 	return b.String()
 }
-// test marker
