@@ -483,9 +483,11 @@ func (g *Generator) tmp(prefix string) string {
 }
 
 // itoa is a fast non-allocating int-to-string for small positive ints.
+// Hot path: temp counters in compileCall etc. routinely produce single- and
+// double-digit values, which we serve from the smallInts cache.
 func itoa(n int) string {
-	if n < 10 {
-		return string(byte('0' + n))
+	if n >= 0 && n < len(smallInts) {
+		return smallInts[n]
 	}
 	var buf [16]byte
 	i := len(buf)
@@ -497,9 +499,31 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
+// smallInts caches the string forms of 0..255 so the most common integer
+// literals (loop bounds, indices, small array sizes) emit without allocating.
+var smallInts = func() [256]string {
+	var a [256]string
+	for i := range a {
+		var buf [3]byte
+		j := len(buf)
+		n := i
+		if n == 0 {
+			a[i] = "0"
+			continue
+		}
+		for n > 0 {
+			j--
+			buf[j] = byte('0' + n%10)
+			n /= 10
+		}
+		a[i] = string(buf[j:])
+	}
+	return a
+}()
+
 func itoa64(n int64) string {
-	if n >= 0 && n < 10 {
-		return string(byte('0' + byte(n)))
+	if n >= 0 && n < int64(len(smallInts)) {
+		return smallInts[n]
 	}
 	var buf [24]byte
 	i := len(buf)
@@ -1223,7 +1247,7 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 	if (v.form == formArith || v.form == formBool) && isSimpleIdent(v.value) {
 		g.writeLine("__ret=$" + v.value)
 	} else {
-		g.writeLine(fmt.Sprintf("__ret=%s", v.assignmentRHS()))
+		g.writeLine("__ret=" + v.assignmentRHS())
 	}
 	// If the function's return type is optional, also propagate the null flag.
 	// We detect this by whether the value carries one OR the function's
@@ -1233,7 +1257,7 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 		if nullExpr == "" {
 			nullExpr = "0"
 		}
-		g.writeLine(fmt.Sprintf("__ret__null=$((%s))", nullExpr))
+		g.writeLine("__ret__null=$((" + nullExpr + "))")
 	}
 	if g.currentFuncHasDefers {
 		g.writeLine("__tt_run_defers")
@@ -1372,19 +1396,21 @@ func (g *Generator) emitForLines(s *ast.ForStmt) {
 		linesVar = name
 	} else {
 		linesVar = g.tmp("lines")
-		g.writeLine(fmt.Sprintf("%s=%s", linesVar, v.assignmentRHS()))
+		g.writeLine(linesVar + "=" + v.assignmentRHS())
 	}
-	g.writeLine(fmt.Sprintf("if [ -n \"$%s\" ]; then", linesVar))
+	g.writeLine("if [ -n \"$" + linesVar + "\" ]; then")
 	g.indent++
-	g.writeLine(fmt.Sprintf("while IFS= read -r %s; do", shName(s.Var)))
+	g.writeLine("while IFS= read -r " + shName(s.Var) + "; do")
 	g.indent++
 	for _, st := range s.Body.Stmts {
 		g.emitStmt(st)
 	}
 	g.indent--
-	g.writeLine(fmt.Sprintf("done <<__TARTALO_LINES__"))
+	g.writeLine("done <<__TARTALO_LINES__")
 	// heredoc bodies are not indented
-	g.out.WriteString(fmt.Sprintf("$%s\n", linesVar))
+	g.out.WriteString("$")
+	g.out.WriteString(linesVar)
+	g.out.WriteByte('\n')
 	g.out.WriteString("__TARTALO_LINES__\n")
 	g.indent--
 	g.writeLine("fi")
@@ -1619,7 +1645,7 @@ func (g *Generator) compileArrayLit(a *ast.ArrayLit) exprValue {
 		}
 		body.WriteString(p)
 	}
-	prologue = append(prologue, fmt.Sprintf("%s=\"%s\"", t, body.String()))
+	prologue = append(prologue, t+"=\""+body.String()+"\"")
 	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
 }
 
@@ -2502,12 +2528,15 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 	}
 
 	// Compile arguments first, gathering prologues.
-	var argVals []exprValue
-	var argTypes []types.Type
+	n := len(call.Args)
+	argVals := make([]exprValue, 0, n)
+	argTypes := make([]types.Type, 0, n)
 	var prologue []string
 	for _, a := range call.Args {
 		av := g.compileExpr(a)
-		prologue = append(prologue, av.prologue...)
+		if len(av.prologue) > 0 {
+			prologue = append(prologue, av.prologue...)
+		}
 		argVals = append(argVals, av)
 		argTypes = append(argTypes, g.info.Types[a])
 	}
@@ -2534,7 +2563,8 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		}
 		calleeName = `"${` + varName + `}"`
 	}
-	args := []string{calleeName}
+	args := make([]string, 1, n+1)
+	args[0] = calleeName
 	// The function's declared param types (sym.Type) drive the argument
 	// shape, since callers may pass `T` to a `T?` parameter (auto-wrap).
 	paramTypes := sym.Type.(*types.Func).Params
@@ -2612,8 +2642,8 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 	if opt, ok := ft.Result.(*types.Optional); ok {
 		valTmp := g.tmp("ret")
 		nullTmp := g.tmp("retn")
-		prologue = append(prologue, fmt.Sprintf(`%s="$__ret"`, valTmp))
-		prologue = append(prologue, fmt.Sprintf(`%s="$__ret__null"`, nullTmp))
+		prologue = append(prologue, valTmp+`="$__ret"`)
+		prologue = append(prologue, nullTmp+`="$__ret__null"`)
 		switch opt.Elem {
 		case types.Number, types.Bool:
 			return exprValue{prologue: prologue, value: valTmp, form: formArith, nullCheck: nullTmp}
@@ -2622,7 +2652,7 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		}
 	}
 	t := g.tmp("ret")
-	prologue = append(prologue, fmt.Sprintf("%s=\"$__ret\"", t))
+	prologue = append(prologue, t+`="$__ret"`)
 	switch ft.Result {
 	case types.Number, types.Bool:
 		return exprValue{prologue: prologue, value: t, form: formArith}
@@ -2634,13 +2664,13 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, argTypes []types.Type, prologue []string, isStmt bool, callPos token.Pos) exprValue {
 	switch sym.Name {
 	case "echo":
-		prologue = append(prologue, fmt.Sprintf("printf '%%s\\n' %s", shQuoteDouble(args[0].shString())))
+		prologue = append(prologue, "printf '%s\\n' "+shQuoteDouble(args[0].shString()))
 		return exprValue{prologue: prologue, value: "", form: formStr}
 	case "eprint":
-		prologue = append(prologue, fmt.Sprintf("printf '%%s\\n' %s 1>&2", shQuoteDouble(args[0].shString())))
+		prologue = append(prologue, "printf '%s\\n' "+shQuoteDouble(args[0].shString())+" 1>&2")
 		return exprValue{prologue: prologue, value: "", form: formStr}
 	case "exit":
-		prologue = append(prologue, fmt.Sprintf("exit %s", asArithStr(args[0])))
+		prologue = append(prologue, "exit "+asArithStr(args[0]))
 		return exprValue{prologue: prologue, value: "", form: formStr}
 	case "str":
 		// number → string; identical underlying representation
@@ -3712,7 +3742,7 @@ func (g *Generator) compileCmpCond(b *ast.BinaryExpr) condValue {
 			}
 			return condValue{
 				prologue: prologue,
-				test:     fmt.Sprintf("[ \"%s\" %s \"%s\" ]", lv.shString(), op, rv.shString()),
+				test:     "[ \"" + lv.shString() + "\" " + op + " \"" + rv.shString() + "\" ]",
 			}
 		}
 		return condValue{
@@ -3737,7 +3767,7 @@ func (g *Generator) compileCmpCond(b *ast.BinaryExpr) condValue {
 	}
 	return condValue{
 		prologue: prologue,
-		test:     fmt.Sprintf("[ %s %s %s ]", asTestNum(lv), op, asTestNum(rv)),
+		test:     "[ " + asTestNum(lv) + " " + op + " " + asTestNum(rv) + " ]",
 	}
 }
 

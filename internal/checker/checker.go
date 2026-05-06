@@ -58,11 +58,15 @@ type TypeInfo struct {
 }
 
 func newTypeInfo() *TypeInfo {
+	// Empirical sizes from the typical Tartalo program: many more typed
+	// expressions than ident uses, and a small handful of top-level decls and
+	// assignments. Pre-sizing avoids the doubling-rehash hop most maps hit
+	// while filling.
 	return &TypeInfo{
-		Types:   map[ast.Expr]types.Type{},
-		Uses:    map[*ast.Ident]*Symbol{},
-		Decls:   map[string]*Symbol{},
-		Assigns: map[*ast.AssignStmt]*Symbol{},
+		Types:   make(map[ast.Expr]types.Type, 32),
+		Uses:    make(map[*ast.Ident]*Symbol, 16),
+		Decls:   make(map[string]*Symbol, 8),
+		Assigns: make(map[*ast.AssignStmt]*Symbol, 4),
 	}
 }
 
@@ -73,10 +77,18 @@ type scope struct {
 }
 
 func newScope(parent *scope) *scope {
-	return &scope{parent: parent, syms: map[string]*Symbol{}}
+	// syms is allocated lazily by define(). Many scopes (empty `if` branches,
+	// for-body scopes that only borrow names) never define a symbol; skipping
+	// the map allocation in those cases is a meaningful checker win.
+	return &scope{parent: parent}
 }
 
 func (s *scope) define(sym *Symbol) bool {
+	if s.syms == nil {
+		s.syms = make(map[string]*Symbol, 4)
+		s.syms[sym.Name] = sym
+		return true
+	}
 	if _, exists := s.syms[sym.Name]; exists {
 		return false
 	}
@@ -86,8 +98,10 @@ func (s *scope) define(sym *Symbol) bool {
 
 func (s *scope) resolve(name string) *Symbol {
 	for cur := s; cur != nil; cur = cur.parent {
-		if sym, ok := cur.syms[name]; ok {
-			return sym
+		if cur.syms != nil {
+			if sym, ok := cur.syms[name]; ok {
+				return sym
+			}
 		}
 	}
 	return nil

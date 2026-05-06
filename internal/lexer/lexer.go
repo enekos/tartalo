@@ -41,12 +41,17 @@ type Lexer struct {
 }
 
 func New(file, src string) *Lexer {
+	// Pre-size the token slice based on a rough average of ~5 source bytes per
+	// token. This avoids the doubling-grow churn (1→2→4→...→N) for typical
+	// inputs without significantly over-allocating for sparse ones.
+	estTokens := len(src)/5 + 8
 	return &Lexer{
-		file:  file,
-		src:   src,
-		line:  1,
-		col:   1,
-		stack: []frame{{mode: modeCode}},
+		file:   file,
+		src:    src,
+		line:   1,
+		col:    1,
+		stack:  []frame{{mode: modeCode}},
+		tokens: make([]token.Token, 0, estTokens),
 	}
 }
 
