@@ -7,16 +7,18 @@ N="${1:-20}"
 
 # 1. Go micro-benchmarks for compiler phases
 echo "=== Go Benchmarks ==="
-BENCH_OUT=$(go test -bench=. -benchmem ./internal/codegen/ 2>&1)
+# Run benchmarks in isolation with -run=NONE to skip tests and get stable measurements.
+BENCH_OUT=$(go test -bench=BenchmarkCodegen -benchmem -run=NONE ./internal/codegen/ 2>&1)
 echo "$BENCH_OUT"
 
-# Extract ns/op values
-COMPILE_NS=$(echo "$BENCH_OUT" | grep BenchmarkCompilePipeline | awk '{print $3}')
 CODEGEN_NS=$(echo "$BENCH_OUT" | grep 'BenchmarkCodegen-' | awk '{print $3}')
-
-# Extract allocs/op
-COMPILE_ALLOCS=$(echo "$BENCH_OUT" | grep BenchmarkCompilePipeline | awk '{print $7}')
 CODEGEN_ALLOCS=$(echo "$BENCH_OUT" | grep 'BenchmarkCodegen-' | awk '{print $7}')
+
+BENCH_OUT2=$(go test -bench=BenchmarkCompilePipeline -benchmem -run=NONE ./internal/codegen/ 2>&1)
+echo "$BENCH_OUT2"
+
+COMPILE_NS=$(echo "$BENCH_OUT2" | grep BenchmarkCompilePipeline | awk '{print $3}')
+COMPILE_ALLOCS=$(echo "$BENCH_OUT2" | grep BenchmarkCompilePipeline | awk '{print $7}')
 
 # 2. End-to-end bench with the compiler CLI
 echo ""
