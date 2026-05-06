@@ -327,7 +327,10 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 		return
 	}
 	rhs := g.compileExpr(s.Value)
-	rhs = g.coerce(rhs, g.info.Types[s.Value], g.currentReturnType)
+	from := g.info.Types[s.Value]
+	if from != g.currentReturnType {
+		rhs = g.coerce(rhs, from, g.currentReturnType)
+	}
 	g.writeLine("return " + rhs)
 }
 
