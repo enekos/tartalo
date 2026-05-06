@@ -569,7 +569,8 @@ func (g *Generator) emitExprStmt(x ast.Expr) {
 		expr := g.compileCall(x)
 		// Void calls compile to a bare statement; non-void calls need an
 		// underscore receiver so Go doesn't complain about unused values.
-		if isVoidCall(x, g.info) {
+		t := g.info.Types[x]
+		if t == nil || t == types.Void {
 			g.writeLine(expr)
 			return
 		}
@@ -580,9 +581,4 @@ func (g *Generator) emitExprStmt(x ast.Expr) {
 	default:
 		g.writeLine("_ = " + g.compileExpr(x))
 	}
-}
-
-func isVoidCall(c *ast.CallExpr, info *checker.TypeInfo) bool {
-	t := info.Types[c]
-	return t == nil || t == types.Void
 }

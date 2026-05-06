@@ -593,8 +593,9 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	}
 	prevDefers := g.currentFuncDefers
 	prevHasDefers := g.currentFuncHasDefers
-	defers := collectDefers(fd.Body)
-	if len(defers) > 0 {
+	var defers []*ast.DeferStmt
+	if hasDeferIn(fd.Body) {
+		defers = collectDefers(fd.Body)
 		g.usesDefer = true
 		g.currentFuncDefers = map[*ast.DeferStmt]string{}
 		for i, d := range defers {
