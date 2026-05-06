@@ -1634,7 +1634,7 @@ func (g *Generator) compileArrayLit(a *ast.ArrayLit) exprValue {
 	// Build the array as a newline-joined string. We materialise it via a temp
 	// using `printf` so newlines are preserved exactly.
 	t := g.tmp("arr")
-	var prologue []string
+	prologue := make([]string, 0, 2)
 	var body strings.Builder
 	for i, el := range a.Elems {
 		v := g.compileExpr(el)
@@ -1653,7 +1653,7 @@ func (g *Generator) compileArrayLit(a *ast.ArrayLit) exprValue {
 func (g *Generator) compileArrayLitOfRecord(a *ast.ArrayLit, rec *types.Record) exprValue {
 	g.usesRecordArrays = true
 	leaves := recordLeaves(rec)
-	var prologue []string
+	prologue := make([]string, 0, 2)
 	var body strings.Builder
 	for i, el := range a.Elems {
 		v := g.compileExpr(el)
