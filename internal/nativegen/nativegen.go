@@ -358,6 +358,14 @@ func (g *Generator) writeImportsTo(out *strings.Builder) {
 	if n == 0 {
 		return
 	}
+	if n <= 2 {
+		for p := range g.imports {
+			out.WriteString("import \"")
+			out.WriteString(p)
+			out.WriteString("\"\n\n")
+		}
+		return
+	}
 	// Most programs use only a handful of stdlib imports. Use a small
 	// stack-allocated array to avoid the slice allocation.
 	var arr [16]string
