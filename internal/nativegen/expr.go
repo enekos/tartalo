@@ -224,6 +224,27 @@ func (g *Generator) compileUnary(e *ast.UnaryExpr) string {
 	return "(" + op + g.compileExpr(e.Operand) + ")"
 }
 
+func binExpr(lhs, op, rhs string) string {
+	totalLen := 1 + len(lhs) + 1 + len(op) + 1 + len(rhs) + 1
+	if totalLen <= 64 {
+		var buf [64]byte
+		n := 0
+		buf[n] = '('
+		n++
+		n += copy(buf[n:], lhs)
+		buf[n] = ' '
+		n++
+		n += copy(buf[n:], op)
+		buf[n] = ' '
+		n++
+		n += copy(buf[n:], rhs)
+		buf[n] = ')'
+		n++
+		return string(buf[:n])
+	}
+	return "(" + lhs + " " + op + " " + rhs + ")"
+}
+
 func (g *Generator) compileBinary(e *ast.BinaryExpr) string {
 	lhs := g.compileExpr(e.Lhs)
 	rhs := g.compileExpr(e.Rhs)
@@ -232,31 +253,31 @@ func (g *Generator) compileBinary(e *ast.BinaryExpr) string {
 	switch e.Op {
 	case token.Plus:
 		// String concat in Tartalo only; numeric add otherwise.
-		return "(" + lhs + " + " + rhs + ")"
+		return binExpr(lhs, "+", rhs)
 	case token.Minus:
-		return "(" + lhs + " - " + rhs + ")"
+		return binExpr(lhs, "-", rhs)
 	case token.Star:
-		return "(" + lhs + " * " + rhs + ")"
+		return binExpr(lhs, "*", rhs)
 	case token.Slash:
-		return "(" + lhs + " / " + rhs + ")"
+		return binExpr(lhs, "/", rhs)
 	case token.Percent:
-		return "(" + lhs + " % " + rhs + ")"
+		return binExpr(lhs, "%", rhs)
 	case token.Eq:
 		return g.compileEq(lhs, rhs, lt, rt, false)
 	case token.Neq:
 		return g.compileEq(lhs, rhs, lt, rt, true)
 	case token.Lt:
-		return "(" + lhs + " < " + rhs + ")"
+		return binExpr(lhs, "<", rhs)
 	case token.Lte:
-		return "(" + lhs + " <= " + rhs + ")"
+		return binExpr(lhs, "<=", rhs)
 	case token.Gt:
-		return "(" + lhs + " > " + rhs + ")"
+		return binExpr(lhs, ">", rhs)
 	case token.Gte:
-		return "(" + lhs + " >= " + rhs + ")"
+		return binExpr(lhs, ">=", rhs)
 	case token.AndAnd:
-		return "(" + lhs + " && " + rhs + ")"
+		return binExpr(lhs, "&&", rhs)
 	case token.OrOr:
-		return "(" + lhs + " || " + rhs + ")"
+		return binExpr(lhs, "||", rhs)
 	}
 	return "/* unsupported binary op */ false"
 }
