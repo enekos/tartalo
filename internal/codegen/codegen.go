@@ -4351,7 +4351,20 @@ func shQuoteDouble(body string) string {
 
 // escapeForDoubleQuoted escapes literal text so it can be embedded inside a
 // double-quoted shell string without the shell reinterpreting it.
+func needsEscaping(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' || c == '"' || c == '$' || c == '`' {
+			return true
+		}
+	}
+	return false
+}
+
 func escapeForDoubleQuoted(s string) string {
+	if !needsEscaping(s) {
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s) + 8)
 	for i := 0; i < len(s); i++ {
