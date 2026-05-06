@@ -27,19 +27,35 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	g.out.WriteString("func ")
 	g.out.WriteString(g.goFuncName(g.currentModule, fd.Name))
 	g.out.WriteString("(")
-	for i, p := range fd.Params {
-		if i > 0 {
-			g.out.WriteString(", ")
-		}
-		g.out.WriteString(g.goLocalName(p.Name))
-		g.out.WriteString(" ")
+	switch len(fd.Params) {
+	case 0:
+		// nothing
+	case 1:
+		p := fd.Params[0]
 		var pt types.Type
-		if ft != nil && i < len(ft.Params) {
-			pt = ft.Params[i]
+		if ft != nil && len(ft.Params) > 0 {
+			pt = ft.Params[0]
 		} else {
 			pt = g.typeFromAnn(p.TypeAnn)
 		}
+		g.out.WriteString(g.goLocalName(p.Name))
+		g.out.WriteString(" ")
 		g.out.WriteString(g.goType(pt))
+	default:
+		for i, p := range fd.Params {
+			if i > 0 {
+				g.out.WriteString(", ")
+			}
+			g.out.WriteString(g.goLocalName(p.Name))
+			g.out.WriteString(" ")
+			var pt types.Type
+			if ft != nil && i < len(ft.Params) {
+				pt = ft.Params[i]
+			} else {
+				pt = g.typeFromAnn(p.TypeAnn)
+			}
+			g.out.WriteString(g.goType(pt))
+		}
 	}
 	g.out.WriteString(")")
 	// If this function returns a Result-shaped sum AND the body uses `?`,
