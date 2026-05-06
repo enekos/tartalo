@@ -2125,6 +2125,13 @@ func (g *Generator) compileIdent(id *ast.Ident) exprValue {
 		}
 		return exprValue{value: name, form: formStr}
 	}
+	// Fast path: primitive types are the most common.
+	switch sym.Type {
+	case types.String:
+		return exprValue{value: "${" + name + "}", form: formStr}
+	case types.Number, types.Bool:
+		return exprValue{value: name, form: formArith}
+	}
 	if opt, isOpt := sym.Type.(*types.Optional); isOpt {
 		// Optional locals/globals live as `name` + `name__null` sidecar.
 		nullCheck := name + "__null"
@@ -2147,12 +2154,7 @@ func (g *Generator) compileIdent(id *ast.Ident) exprValue {
 		}
 		return exprValue{value: name, form: formRecord}
 	}
-	switch sym.Type {
-	case types.Number, types.Bool:
-		return exprValue{value: name, form: formArith}
-	default:
-		return exprValue{value: "${" + name + "}", form: formStr}
-	}
+	return exprValue{value: "${" + name + "}", form: formStr}
 }
 
 func (g *Generator) compileStringLit(s *ast.StringLit) exprValue {

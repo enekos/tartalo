@@ -117,7 +117,10 @@ func (g *Generator) compileIdent(e *ast.Ident) string {
 		}
 	}
 	// Locals and params keep the bare name with a `tt_` prefix.
-	return "tt_" + e.Name
+	var buf [32]byte
+	n := copy(buf[:], "tt_")
+	n += copy(buf[n:], e.Name)
+	return string(buf[:n])
 }
 
 func (g *Generator) compileStringLit(e *ast.StringLit) string {
