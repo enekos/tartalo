@@ -2554,6 +2554,7 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 	// Build the call line directly with strings.Builder to avoid the
 	// []string + strings.Join allocation overhead.
 	var callLine strings.Builder
+	callLine.Grow(64)
 	callLine.WriteString(calleeName)
 	// The function's declared param types (sym.Type) drive the argument
 	// shape, since callers may pass `T` to a `T?` parameter (auto-wrap).
