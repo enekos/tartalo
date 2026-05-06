@@ -255,7 +255,11 @@ func (g *Generator) emitAgentRuntime() {
 		// always valid (encoding/json output), the Go raw-string literal is
 		// safe — JSON has no backticks.
 		g.writeLine("")
-		g.writeLine("const _tt_toolSchemas = `" + g.toolSchemasJSON + "`")
+		g.writeIndent()
+		g.out.WriteString("const _tt_toolSchemas = `")
+		g.out.WriteString(g.toolSchemasJSON)
+		g.out.WriteString("`")
+		g.out.WriteByte('\n')
 		g.writeLine("")
 	}
 
@@ -276,9 +280,15 @@ func (g *Generator) emitAgentRuntime() {
 			if !isStringToStringNative(a.Decl) {
 				continue
 			}
-			g.writeLine("case " + fastQuote(a.Name) + ":")
+			g.writeIndent()
+			g.out.WriteString("case ")
+			g.out.WriteString(fastQuote(a.Name))
+			g.out.WriteString(":\n")
 			g.indent++
-			g.writeLine("return " + a.GoName + "(input)")
+			g.writeIndent()
+			g.out.WriteString("return ")
+			g.out.WriteString(a.GoName)
+			g.out.WriteString("(input)\n")
 			g.indent--
 		}
 		g.writeLine("}")
@@ -306,9 +316,15 @@ func (g *Generator) emitAgentRuntime() {
 			if !isStringToStringNative(t.Decl) {
 				continue
 			}
-			g.writeLine("case " + fastQuote(t.Name) + ":")
+			g.writeIndent()
+			g.out.WriteString("case ")
+			g.out.WriteString(fastQuote(t.Name))
+			g.out.WriteString(":\n")
 			g.indent++
-			g.writeLine("return " + t.GoName + "(input)")
+			g.writeIndent()
+			g.out.WriteString("return ")
+			g.out.WriteString(t.GoName)
+			g.out.WriteString("(input)\n")
 			g.indent--
 		}
 		g.writeLine("}")
