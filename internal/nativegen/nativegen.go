@@ -52,6 +52,10 @@ type Generator struct {
 	// they need to know how to wrap the result.
 	currentReturnType types.Type
 
+	// goTypeCache memoizes goType results to avoid repeated recursive
+	// string building for identical type pointers.
+	goTypeCache map[types.Type]string
+
 	// flags toggled while walking — used to gate runtime helpers and imports.
 	usesRuntimeUnwrap      bool
 	usesRuntimePtr         bool
@@ -104,8 +108,9 @@ const (
 // New returns a Generator ready to emit a Go program for the given type info.
 func New(info *checker.TypeInfo) *Generator {
 	return &Generator{
-		info:    info,
-		imports: map[string]struct{}{},
+		info:        info,
+		imports:     map[string]struct{}{},
+		goTypeCache: map[types.Type]string{},
 	}
 }
 
