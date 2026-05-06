@@ -2592,9 +2592,21 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 
 	// Compile arguments first, gathering prologues.
 	n := len(call.Args)
-	argVals := make([]exprValue, 0, n)
-	argTypes := make([]types.Type, 0, n)
-	prologue := make([]string, 0, 4)
+	var argVals []exprValue
+	var argTypes []types.Type
+	var prologue []string
+	if n <= 4 {
+		var argValsArr [4]exprValue
+		var argTypesArr [4]types.Type
+		var prologueArr [4]string
+		argVals = argValsArr[:0]
+		argTypes = argTypesArr[:0]
+		prologue = prologueArr[:0]
+	} else {
+		argVals = make([]exprValue, 0, n)
+		argTypes = make([]types.Type, 0, n)
+		prologue = make([]string, 0, n+1)
+	}
 	for _, a := range call.Args {
 		av := g.compileExpr(a)
 		if len(av.prologue) > 0 {

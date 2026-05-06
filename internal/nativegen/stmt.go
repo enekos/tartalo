@@ -94,9 +94,11 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 		g.writeLine("}")
 		g.writeLine("panic(r)")
 		g.indent--
-		g.writeLine("}")
+		g.writeIndent()
+		g.out.WriteString("}\n")
 		g.indent--
-		g.writeLine("}()")
+		g.writeIndent()
+		g.out.WriteString("}()\n")
 	}
 	for _, s := range fd.Body.Stmts {
 		g.emitStmt(s)
@@ -109,7 +111,8 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 		g.writeLine("return _tt_zero")
 	}
 	g.indent--
-	g.writeLine("}")
+	g.writeIndent()
+	g.out.WriteString("}\n")
 }
 
 // hasTryIn reports whether the block tree transitively contains a TryExpr.
