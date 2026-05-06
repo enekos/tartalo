@@ -86,45 +86,40 @@ func (g *Generator) typeFromAnn(ann ast.TypeExpr) types.Type {
 // can refer to via builtins (Response/Process/FileInfo/PathParts). Their
 // field shapes are defined in the checker's builtinTypes() and must stay
 // in lockstep.
+const predeclaredTypes = `type Tt_Response struct {
+	F_status int64
+	F_ok bool
+	F_body string
+	F_headers string
+}
+
+type Tt_Process struct {
+	F_code int64
+	F_ok bool
+	F_stdout string
+	F_stderr string
+}
+
+type Tt_FileInfo struct {
+	F_exists bool
+	F_isFile bool
+	F_isDir bool
+	F_size int64
+	F_mtime int64
+	F_mode string
+}
+
+type Tt_PathParts struct {
+	F_dir string
+	F_base string
+	F_name string
+	F_ext string
+}
+
+`
+
 func (g *Generator) emitPredeclaredTypes() {
-	g.writeLine("type Tt_Response struct {")
-	g.indent++
-	g.writeLine("F_status int64")
-	g.writeLine("F_ok bool")
-	g.writeLine("F_body string")
-	g.writeLine("F_headers string")
-	g.indent--
-	g.writeLine("}")
-	g.writeLine("")
-	g.writeLine("type Tt_Process struct {")
-	g.indent++
-	g.writeLine("F_code int64")
-	g.writeLine("F_ok bool")
-	g.writeLine("F_stdout string")
-	g.writeLine("F_stderr string")
-	g.indent--
-	g.writeLine("}")
-	g.writeLine("")
-	g.writeLine("type Tt_FileInfo struct {")
-	g.indent++
-	g.writeLine("F_exists bool")
-	g.writeLine("F_isFile bool")
-	g.writeLine("F_isDir bool")
-	g.writeLine("F_size int64")
-	g.writeLine("F_mtime int64")
-	g.writeLine("F_mode string")
-	g.indent--
-	g.writeLine("}")
-	g.writeLine("")
-	g.writeLine("type Tt_PathParts struct {")
-	g.indent++
-	g.writeLine("F_dir string")
-	g.writeLine("F_base string")
-	g.writeLine("F_name string")
-	g.writeLine("F_ext string")
-	g.indent--
-	g.writeLine("}")
-	g.writeLine("")
+	g.out.WriteString(predeclaredTypes)
 }
 
 // emitTypeDecl writes the Go declaration for a Tartalo type. Records become
