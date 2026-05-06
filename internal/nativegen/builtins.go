@@ -36,6 +36,14 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 		fn = "tt_" + id.Name
 	}
 	if len(e.Args) == 0 {
+		totalLen := len(fn) + 2
+		if totalLen <= 64 {
+			var buf [64]byte
+			n := copy(buf[:], fn)
+			buf[n] = '('
+			buf[n+1] = ')'
+			return string(buf[:n+2])
+		}
 		return fn + "()"
 	}
 	if len(e.Args) == 1 {
@@ -57,6 +65,7 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 		return fn + "(" + argExpr + ")"
 	}
 	var b strings.Builder
+	b.Grow(len(fn) + len(e.Args)*16)
 	b.WriteString(fn)
 	b.WriteString("(")
 	for i, a := range e.Args {
