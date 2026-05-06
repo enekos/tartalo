@@ -326,18 +326,16 @@ func (g *Generator) writeIndent() {
 }
 
 func (g *Generator) writeLine(s string) {
-	switch g.indent {
-	case 0:
-	case 1:
+	if g.indent == 1 {
 		g.out.WriteByte('\t')
-	case 2:
+	} else if g.indent == 2 {
 		g.out.WriteByte('\t')
 		g.out.WriteByte('\t')
-	case 3:
+	} else if g.indent == 3 {
 		g.out.WriteByte('\t')
 		g.out.WriteByte('\t')
 		g.out.WriteByte('\t')
-	default:
+	} else if g.indent > 3 {
 		for i := 0; i < g.indent; i++ {
 			g.out.WriteByte('\t')
 		}
