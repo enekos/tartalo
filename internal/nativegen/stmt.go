@@ -387,7 +387,13 @@ func (g *Generator) emitFieldAssign(s *ast.FieldAssignStmt) {
 		}
 	}
 	rhs = g.coerce(rhs, g.info.Types[s.Value], fieldTy)
-	g.writeLine(g.compileExpr(s.Target) + "." + goFieldName(s.Name) + " = " + rhs)
+	g.writeIndent()
+	g.out.WriteString(g.compileExpr(s.Target))
+	g.out.WriteString(".")
+	g.out.WriteString(goFieldName(s.Name))
+	g.out.WriteString(" = ")
+	g.out.WriteString(rhs)
+	g.out.WriteByte('\n')
 }
 
 func (g *Generator) emitReturn(s *ast.ReturnStmt) {
