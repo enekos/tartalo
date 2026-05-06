@@ -156,7 +156,7 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 		for _, d := range m.File.Decls {
 			if fd, ok := d.(*ast.FuncDecl); ok {
 				g.emitFunc(fd)
-				g.writeLine("")
+				g.out.WriteByte('\n')
 			}
 		}
 	}
@@ -177,7 +177,7 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 	}
 	if hasGlobals {
 		g.declareGlobals(modules)
-		g.writeLine("")
+		g.out.WriteByte('\n')
 		g.writeLine("func __ttInit() {")
 		g.indent++
 		for _, m := range modules {
@@ -190,7 +190,7 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 		}
 		g.indent--
 		g.writeLine("}")
-		g.writeLine("")
+		g.out.WriteByte('\n')
 	}
 
 	// In test mode emit one Go function per `test "..."` declaration in the
