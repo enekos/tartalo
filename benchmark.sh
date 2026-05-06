@@ -20,6 +20,13 @@ echo "$BENCH_OUT2"
 COMPILE_NS=$(echo "$BENCH_OUT2" | grep BenchmarkCompilePipeline | awk '{print $3}')
 COMPILE_ALLOCS=$(echo "$BENCH_OUT2" | grep BenchmarkCompilePipeline | awk '{print $7}')
 
+# Nativegen benchmark
+BENCH_OUT3=$(go test -bench=BenchmarkNativegen -benchmem -run=NONE ./internal/nativegen/ 2>&1)
+echo "$BENCH_OUT3"
+
+NATIVEGEN_NS=$(echo "$BENCH_OUT3" | grep 'BenchmarkNativegen-' | awk '{print $3}')
+NATIVEGEN_ALLOCS=$(echo "$BENCH_OUT3" | grep 'BenchmarkNativegen-' | awk '{print $7}')
+
 # 2. End-to-end bench with the compiler CLI
 echo ""
 echo "=== CLI Bench (fizzbuzz) ==="
@@ -67,3 +74,5 @@ echo "METRIC perf_bytes=$PERF_BYTES"
 echo "METRIC perf_lines=$PERF_LINES"
 echo "METRIC compile_allocs=$COMPILE_ALLOCS"
 echo "METRIC codegen_allocs=$CODEGEN_ALLOCS"
+echo "METRIC nativegen_ns=$NATIVEGEN_NS"
+echo "METRIC nativegen_allocs=$NATIVEGEN_ALLOCS"

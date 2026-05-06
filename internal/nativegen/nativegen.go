@@ -336,12 +336,16 @@ func (g *Generator) writeLine(s string) {
 		g.out.WriteByte('\t')
 		g.out.WriteByte('\t')
 	} else if g.indent > 3 {
-		for i := 0; i < g.indent; i++ {
-			g.out.WriteByte('\t')
-		}
+		g.writeIndentLoop()
 	}
 	g.out.WriteString(s)
 	g.out.WriteByte('\n')
+}
+
+func (g *Generator) writeIndentLoop() {
+	for i := 0; i < g.indent; i++ {
+		g.out.WriteByte('\t')
+	}
 }
 
 func (g *Generator) tmp(prefix string) string {
