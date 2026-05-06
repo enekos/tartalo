@@ -246,7 +246,7 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 	case EmitRun:
 		if entry != nil {
 			if _, ok := g.info.Decls[checker.MangledName(entry, "main")]; ok {
-				g.writeLine(g.goFuncName(entry, "main") + "()")
+				g.writeLine("tt_main()")
 			}
 		}
 	case EmitTest:

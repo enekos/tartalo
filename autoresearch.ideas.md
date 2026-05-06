@@ -15,6 +15,7 @@
 - **Track VarDecl presence during Pass 1** — eliminates separate scan for globals detection
 - **Replace json.Marshal with direct strings.Builder in agentToolsJSON** — eliminates map[string]any allocations and reflection overhead for per-agent tool schemas
 - **Replace json.Marshal with direct strings.Builder in initAgentPlatform** — eliminates map[string]any allocations and reflection overhead for toolSchemasJSON
+- **Combine Pass 1 and Pass 2 into single loop per module** — eliminates redundant AST traversal over all declarations
 
 ## Completed (discarded) — Complex Scripts Session
 
@@ -23,6 +24,7 @@
 - **Precomputed indent strings in writeLine** — no measurable benefit; WriteString for short strings may be slower than multiple WriteByte
 - **hasAgents check before initAgentPlatform** — adds an extra scan that doesn't improve performance
 - **Cache agentToolsJSON per agent** — correct but effect too small to measure on macOS due to high variance; better to optimize the JSON building itself
+- **Use strings.Builder for function types in goType** — adds overhead for the common case of 0-2 parameters; no improvement
 
 ## Key Learnings — Complex Scripts Session
 
@@ -34,6 +36,7 @@
 - **fast path for identifiers must not bypass narrowing** — compileIdent's optional-narrowing check must run before fast path returns; adding names like `key` that can be optional variables causes test failures
 - **json.Marshal with map[string]any is extremely allocation-heavy** — replacing it with direct strings.Builder in agentToolsJSON and initAgentPlatform yielded the two biggest single improvements in this session
 - **Reflection-based JSON encoding dominates profiles** — encoding/json.mapEncoder.encode and reflect.copyVal were top allocators before the direct JSON builder optimization
+- **Combining loops saves iteration overhead** — Pass 1+2 combination saved ~500ns by eliminating one full AST traversal
 
 ## Remaining Opportunities (high effort / marginal gain)
 
@@ -42,11 +45,13 @@
 - **Batch writeLine calls**: combine multiple writeLine into single WriteString for common sequences (e.g., function prologue)
 - **Conditional predeclared types (v2)**: track usage during type info construction in checker, not during emission
 - **Inline goType for common composite types**: arrays/optionals of records/sums do string concat; could use a small cache
+- **Write directly to Builder in emitTypeDecl/emitSumTypeDecl**: avoid string concat for type declarations; rare so impact is small
 
 ## Current State — Complex Scripts
 
 - Baseline: 53,821 ns/op, 806 allocs/op, 138,755 bytes/op
-- Current: ~41,847 ns/op, 696 allocs/op, 127,306 bytes/op
-- Improvement: ~22.2% time, ~13.6% allocs, ~8.3% bytes
-- Best individual script improvements: agent_demo -42.4%, mega -17.3%, numpy -18.6%, pandas -17.7%
+- Best: ~41,355 ns/op, 696 allocs/op, 127,305 bytes/op
+- Improvement: ~23.2% time, ~13.6% allocs, ~8.3% bytes
+- Best individual script improvements: agent_demo -42.4%, mega -17.3%, numpy -18.6%, pandas -17.5%
+- Confidence: 5.9× noise floor
 - Limiting factor: macOS scheduler noise makes sub-1% changes hard to distinguish

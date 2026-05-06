@@ -22,7 +22,13 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 		g.currentReturnType = ft.Result
 	}
 	g.out.WriteString("func ")
-	g.out.WriteString(g.goFuncName(g.currentModule, fd.Name))
+	if g.currentModule == nil || g.currentModule.IsEntry {
+		g.out.WriteString("tt_")
+		g.out.WriteString(fd.Name)
+	} else {
+		g.out.WriteString("tt_")
+		g.out.WriteString(checker.MangledName(g.currentModule, fd.Name))
+	}
 	g.out.WriteString("(")
 	switch len(fd.Params) {
 	case 0:
