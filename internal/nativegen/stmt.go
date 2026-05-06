@@ -1,6 +1,7 @@
 package nativegen
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -75,6 +76,17 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	}
 	g.out.WriteString(" {\n")
 	g.indent++
+	prevAgent := g.currentAgent
+	if fd.Kind == ast.FuncKindAgent {
+		g.currentAgent = fd
+	} else {
+		g.currentAgent = nil
+	}
+	defer func() { g.currentAgent = prevAgent }()
+	if fd.Kind == ast.FuncKindAgent && fd.Budget > 0 {
+		g.writeLine(fmt.Sprintf("_tt_budget := int64(%d)", fd.Budget))
+		g.writeLine("_ = _tt_budget")
+	}
 	if useNamedRet {
 		g.usesRuntimeTry = true
 		retSum := ft.Result.(*types.Sum)
@@ -248,11 +260,50 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.emitMatch(s)
 	case *ast.DeferStmt:
 		g.emitDefer(s)
+	case *ast.ParallelStmt:
+		g.emitParallel(s)
 	case *ast.Block:
 		for _, st := range s.Stmts {
 			g.emitStmt(st)
 		}
 	}
+}
+
+// emitParallel lowers `parallel { task { ... } ... }` to a sync.WaitGroup
+// driving one goroutine per task. We wrap the whole thing in a Go block
+// so the WaitGroup name stays scoped — that lets sibling parallel blocks
+// in the same function reuse the obvious local name without collision.
+// The checker forbids writes to outer locals from inside a task body, so
+// closure capture by reference here is safe at the language level.
+func (g *Generator) emitParallel(s *ast.ParallelStmt) {
+	tasks := make([]*ast.TaskStmt, 0, len(s.Body.Stmts))
+	for _, st := range s.Body.Stmts {
+		if ts, ok := st.(*ast.TaskStmt); ok {
+			tasks = append(tasks, ts)
+		}
+	}
+	if len(tasks) == 0 {
+		return
+	}
+	g.addImport("sync")
+	wg := g.tmp("wg")
+	g.writeLine("{")
+	g.indent++
+	g.writeLine("var " + wg + " sync.WaitGroup")
+	g.writeLine(wg + ".Add(" + itoa(len(tasks)) + ")")
+	for _, ts := range tasks {
+		g.writeLine("go func() {")
+		g.indent++
+		g.writeLine("defer " + wg + ".Done()")
+		for _, bs := range ts.Body.Stmts {
+			g.emitStmt(bs)
+		}
+		g.indent--
+		g.writeLine("}()")
+	}
+	g.writeLine(wg + ".Wait()")
+	g.indent--
+	g.writeLine("}")
 }
 
 // emitDefer maps a Tartalo defer block to a Go `defer func() { ... }()`.

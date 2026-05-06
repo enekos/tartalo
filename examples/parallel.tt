@@ -1,0 +1,28 @@
+// parallel.tt — structured concurrency: run independent work side-by-side
+// and join before the block returns. Tasks see outer locals read-only;
+// the checker rejects writes so the sh (subshell) and native (goroutine)
+// backends behave identically.
+
+func main(): void {
+  let prefix: string = "task"
+
+  parallel {
+    task {
+      echo("${prefix}-a started")
+      sleep(1)
+      echo("${prefix}-a done")
+    }
+    task {
+      echo("${prefix}-b started")
+      sleep(1)
+      echo("${prefix}-b done")
+    }
+    task {
+      echo("${prefix}-c started")
+      sleep(1)
+      echo("${prefix}-c done")
+    }
+  }
+
+  echo("all tasks joined")
+}

@@ -1,0 +1,66 @@
+// pandas.tt — pandas-lite data work on top of records and CSV.
+//
+//   tartalo build --target=native -o /tmp/pandas examples/pandas.tt && /tmp/pandas
+//
+// CSV I/O requires --target=native; the sh backend stubs it out.
+//
+// Demonstrates: readCsv into a typed record array, group-style aggregations
+// using count + filter + map/reduce, unique values per column, and
+// writeCsv to round-trip the result.
+//
+// Note: Tartalo records currently allow `number` and `bool` scalar fields
+// but not `float` scalars (only `float[]`). Until that lands, store money
+// in cents.
+
+type Sale = {
+  customer: string,
+  product: string,
+  cents: number,
+  paid: bool,
+}
+
+func isPaid(s: Sale): bool {
+  return s.paid
+}
+
+func isUnpaid(s: Sale): bool {
+  return s.paid == false
+}
+
+func customer(s: Sale): string {
+  return s.customer
+}
+
+func sumCents(acc: number, s: Sale): number {
+  return acc + s.cents
+}
+
+func main(): void {
+  // Seed a CSV inline so the example is self-contained.
+  let csv = "customer,product,cents,paid\n" + "alice,widget,1250,true\n" + "bob,gadget,9900,false\n" + "alice,widget,725,true\n" + "carol,thingamajig,4210,true\n" + "bob,widget,1500,true\n"
+
+  writeFile("/tmp/sales.csv", csv)
+
+  let sales: Sale[] = readCsv("/tmp/sales.csv")
+  echo("loaded " + str(len(sales)) + " rows")
+
+  // Aggregate.
+  let paid = count(sales, isPaid)
+  let unpaid = count(sales, isUnpaid)
+  let totalCents: number = reduce(sales, 0, sumCents)
+  let total = floatOf(totalCents) / 100.0
+
+  echo("paid:   " + str(paid))
+  echo("unpaid: " + str(unpaid))
+  echo("total:  \$" + formatFloat(total, 2))
+
+  // Distinct customers / products.
+  let names = map(sales, customer)
+  let distinct = unique(names)
+  echo("customers: " + join(distinct, ", "))
+
+  // Filter just the paid rows and round-trip them.
+  let paidOnly = filter(sales, isPaid)
+  writeCsv(paidOnly, "/tmp/sales_paid.csv")
+  echo("wrote " + str(len(paidOnly)) + " paid rows to /tmp/sales_paid.csv")
+}

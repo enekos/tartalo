@@ -1,0 +1,58 @@
+// numpy.tt — numpy-lite vector ops on float[] / number[].
+//
+//   tartalo run examples/numpy.tt
+//   tartalo build --target=native -o /tmp/numpy examples/numpy.tt && /tmp/numpy
+//
+// Demonstrates reductions (vSum/vMean/vStd), element-wise ops
+// (vAdd/vScale/vDot), constructors (linspace/arange) and cumulative ops
+// (cumsum) on the built-in float[] type — no external library needed.
+
+func main(): void {
+  // 1) Build a sample distribution: 11 evenly-spaced samples in [0, 10].
+  let xs = linspace(0.0, 10.0, 11)
+
+  echo("samples:")
+  for x in xs {
+    echo("  " + formatFloat(x, 1))
+  }
+
+  echo("")
+  echo("count: " + str(len(xs)))
+  echo("sum:   " + formatFloat(vSum(xs), 4))
+  echo("mean:  " + formatFloat(vMean(xs), 4))
+  echo("min:   " + formatFloat(vMin(xs), 4))
+  echo("max:   " + formatFloat(vMax(xs), 4))
+  echo("var:   " + formatFloat(vVar(xs), 4))
+  echo("std:   " + formatFloat(vStd(xs), 4))
+
+  // 2) Element-wise transforms. y = 2*x + 1.
+  let scaled = vScale(xs, 2.0)
+  let ones = linspace(1.0, 1.0, len(xs))
+  let ys = vAdd(scaled, ones)
+
+  echo("")
+  echo("y = 2x + 1:")
+  for y in ys {
+    echo("  " + formatFloat(y, 2))
+  }
+
+  // 3) Dot product as a stand-in for inner product / weighted sum.
+  let weights = linspace(0.0, 1.0, len(xs))
+  echo("")
+  echo("xs . weights = " + formatFloat(vDot(xs, weights), 4))
+
+  // 4) cumsum for running totals.
+  echo("")
+  echo("cumsum(xs):")
+  let running = cumsum(xs)
+  for v in running {
+    echo("  " + formatFloat(v, 2))
+  }
+
+  // 5) arange for integer ranges.
+  echo("")
+  echo("arange(0, 5, 1):")
+  for i in arange(0, 5, 1) {
+    echo("  " + str(i))
+  }
+}

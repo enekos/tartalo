@@ -388,6 +388,63 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("strings")
 		return "_tt_round(" + args[0] + ")"
 
+	// --- pandas-lite (HOFs over T[]) ---
+	case "count":
+		return "func() int64 { _n := int64(0); for _, _x := range " + args[0] + " { if " + args[1] + "(_x) { _n++ } }; return _n }()"
+	case "unique":
+		arr, _ := argTypes[0].(*types.Array)
+		elemTy := g.goType(arr.Elem)
+		return "func() []" + elemTy + " { _seen := map[" + elemTy + "]bool{}; _out := make([]" + elemTy + ", 0, len(" + args[0] + ")); for _, _x := range " + args[0] + " { if !_seen[_x] { _seen[_x] = true; _out = append(_out, _x) } }; return _out }()"
+	case "readCsv":
+		return g.compileReadCsvNative(e)
+	case "writeCsv":
+		return g.compileWriteCsvNative(e, args, argTypes)
+
+	// --- numeric vector (numpy-lite) ---
+	case "vSum":
+		g.usesRuntimeVec = true
+		return "_tt_vSum(" + args[0] + ")"
+	case "vMean":
+		g.usesRuntimeVec = true
+		return "_tt_vMean(" + args[0] + ")"
+	case "vMin":
+		g.usesRuntimeVec = true
+		return "_tt_vMin(" + args[0] + ")"
+	case "vMax":
+		g.usesRuntimeVec = true
+		return "_tt_vMax(" + args[0] + ")"
+	case "vVar":
+		g.usesRuntimeVec = true
+		return "_tt_vVar(" + args[0] + ")"
+	case "vStd":
+		g.usesRuntimeVec = true
+		g.addImport("math")
+		return "_tt_vStd(" + args[0] + ")"
+	case "vAdd":
+		g.usesRuntimeVec = true
+		return "_tt_vAdd(" + args[0] + ", " + args[1] + ")"
+	case "vSub":
+		g.usesRuntimeVec = true
+		return "_tt_vSub(" + args[0] + ", " + args[1] + ")"
+	case "vMul":
+		g.usesRuntimeVec = true
+		return "_tt_vMul(" + args[0] + ", " + args[1] + ")"
+	case "vScale":
+		g.usesRuntimeVec = true
+		return "_tt_vScale(" + args[0] + ", " + args[1] + ")"
+	case "vDot":
+		g.usesRuntimeVec = true
+		return "_tt_vDot(" + args[0] + ", " + args[1] + ")"
+	case "linspace":
+		g.usesRuntimeVec = true
+		return "_tt_linspace(" + args[0] + ", " + args[1] + ", " + args[2] + ")"
+	case "arange":
+		g.usesRuntimeVec = true
+		return "_tt_arange(" + args[0] + ", " + args[1] + ", " + args[2] + ")"
+	case "cumsum":
+		g.usesRuntimeVec = true
+		return "_tt_cumsum(" + args[0] + ")"
+
 	// --- higher-order ---
 	case "map":
 		g.usesRuntimeHigherOrder = true
@@ -525,6 +582,22 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("strings")
 		g.addImport("fmt")
 		g.addImport("runtime")
+		g.addImport("bytes")
+		g.addImport("encoding/json")
+		g.addImport("io")
+		g.addImport("net/http")
+		// Inside an agent body with budget(N), wrap the llm call so the
+		// per-invocation counter is decremented and verified before each
+		// dispatch. The wrapper is an inline IIFE so the result still slots
+		// into a Go expression position, no statement-level rewrite needed.
+		if g.currentAgent != nil && g.currentAgent.Budget > 0 {
+			agentName := g.currentAgent.Name
+			return "func() string { " +
+				"if _tt_budget <= 0 { " +
+				"fmt.Fprintf(os.Stderr, \"tartalo: agent " + agentName + " exceeded llm budget of " + strconv.FormatInt(g.currentAgent.Budget, 10) + "\\n\"); os.Exit(1) }; " +
+				"_tt_budget--; " +
+				"return _tt_llm(" + args[0] + ") }()"
+		}
 		return "_tt_llm(" + args[0] + ")"
 	case "approval":
 		g.usesAgentApproval = true
@@ -542,6 +615,16 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("os")
 		g.addImport("fmt")
 		return "_tt_spawnAgent(" + args[0] + ", " + args[1] + ")"
+	case "callTool":
+		g.usesAgentCallTool = true
+		g.addImport("os")
+		g.addImport("fmt")
+		return "_tt_callTool(" + args[0] + ", " + args[1] + ")"
+	case "agentTools":
+		if g.currentAgent == nil || len(g.currentAgent.Tools) == 0 {
+			return `"[]"`
+		}
+		return strconv.Quote(g.agentToolsJSON(g.currentAgent))
 	case "toolSchemas":
 		if g.toolSchemasJSON != "" && g.toolSchemasJSON != "[]" {
 			return "_tt_toolSchemas"

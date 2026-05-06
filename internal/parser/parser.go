@@ -152,7 +152,8 @@ func (p *Parser) recoverToStmt() {
 	for !p.atEnd() {
 		switch p.peek().Kind {
 		case token.Let, token.Const, token.Func, token.Tool, token.Agent, token.If, token.For, token.Return,
-			token.Match, token.Type, token.Export, token.Test, token.RBrace, token.Semicolon:
+			token.Match, token.Type, token.Export, token.Test, token.Defer, token.Parallel,
+			token.RBrace, token.Semicolon:
 			return
 		}
 		p.advance()
@@ -398,6 +399,30 @@ func (p *Parser) parseFuncLike(ctx string, kind ast.FuncKind) *ast.FuncDecl {
 		}
 	}
 	p.expect(token.RParen, ctx)
+
+	// Optional `uses (toolA, toolB)` clause — only for agent declarations.
+	// Placed between params and the return type so the signature reads
+	// `agent foo(...) uses (toolA): T !effect`. "uses" is a contextual
+	// keyword: parsed as Ident and matched by value so we don't introduce a
+	// new reserved word.
+	var tools []string
+	if kind == ast.FuncKindAgent && p.peek().Kind == token.Ident && p.peek().Value == "uses" {
+		p.advance() // uses
+		p.expect(token.LParen, "agent uses clause")
+		if p.peek().Kind != token.RParen {
+			for {
+				t := p.expect(token.Ident, "agent uses clause")
+				if t.Value != "" {
+					tools = append(tools, t.Value)
+				}
+				if _, ok := p.accept(token.Comma); !ok {
+					break
+				}
+			}
+		}
+		p.expect(token.RParen, "agent uses clause")
+	}
+
 	p.expect(token.Colon, ctx)
 	ret := p.parseTypeExpr()
 
@@ -420,6 +445,7 @@ func (p *Parser) parseFuncLike(ctx string, kind ast.FuncKind) *ast.FuncDecl {
 		Params:  params,
 		Result:  ret,
 		Effects: effects,
+		Tools:   tools,
 		Body:    body,
 	}
 }
@@ -622,6 +648,20 @@ func (p *Parser) parseStmt() ast.Stmt {
 		return p.parseMatch()
 	case token.Defer:
 		return p.parseDefer()
+	case token.Parallel:
+		return p.parseParallel()
+	case token.Task:
+		// `task { }` is only legal directly inside a `parallel { }` body, where
+		// parseParallel consumes it. Hitting the keyword anywhere else means
+		// the user wrote a stray task — diagnose explicitly so they don't get
+		// a confusing "expected statement" cascade.
+		kw := p.advance()
+		p.errorf(kw.Pos, "task can only appear inside a parallel block")
+		// Consume an attached body so we don't trip over its braces.
+		if p.peek().Kind == token.LBrace {
+			p.parseBlock()
+		}
+		return nil
 	case token.LBrace:
 		return p.parseBlock()
 	}
@@ -679,6 +719,38 @@ func (p *Parser) parseDefer() *ast.DeferStmt {
 	kw := p.advance() // defer
 	body := p.parseBlock()
 	return &ast.DeferStmt{KwPos: kw.Pos, Body: body}
+}
+
+// parseParallel parses `parallel { task { ... } task { ... } ... }`. The
+// body is collected as a regular Block whose stmts are all *TaskStmt; any
+// other statement triggers a parse error so the checker can rely on the
+// invariant.
+func (p *Parser) parseParallel() *ast.ParallelStmt {
+	kw := p.advance() // parallel
+	lb := p.expect(token.LBrace, "parallel block")
+	body := &ast.Block{LBrace: lb.Pos}
+	for !p.atEnd() && p.peek().Kind != token.RBrace {
+		if p.peek().Kind != token.Task {
+			tok := p.peek()
+			p.errorf(tok.Pos, "parallel block can only contain task { ... } statements, got %s", tok.Kind)
+			// Skip until we find a task or the closing brace, so one stray
+			// statement doesn't poison the rest of the block.
+			for !p.atEnd() && p.peek().Kind != token.Task && p.peek().Kind != token.RBrace {
+				p.advance()
+			}
+			continue
+		}
+		body.Stmts = append(body.Stmts, p.parseTask())
+	}
+	rb := p.expect(token.RBrace, "parallel block")
+	body.RBrace = rb.Pos
+	return &ast.ParallelStmt{KwPos: kw.Pos, Body: body}
+}
+
+func (p *Parser) parseTask() *ast.TaskStmt {
+	kw := p.advance() // task
+	body := p.parseBlock()
+	return &ast.TaskStmt{KwPos: kw.Pos, Body: body}
 }
 
 func (p *Parser) parseFor() *ast.ForStmt {

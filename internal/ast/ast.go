@@ -81,6 +81,7 @@ type FuncDecl struct {
 	Effects     []string // declared effect tags ("net", "fs:read", "ai", ...)
 	Description string   // pulled from leading desc("...") in tool/agent body
 	Budget      int64    // pulled from leading budget(N); 0 = unset
+	Tools       []string // names of tools this agent may invoke (uses clause)
 	Body        *Block
 }
 
@@ -309,6 +310,30 @@ type DeferStmt struct {
 
 func (s *DeferStmt) Pos() token.Pos { return s.KwPos }
 func (s *DeferStmt) stmtNode()      {}
+
+// ParallelStmt: `parallel { task { ... } task { ... } ... }`. Runs every
+// inner task concurrently and joins before continuing past the closing
+// brace. Tasks see the enclosing scope read-only; the checker rejects
+// assignments to outer locals so the sh (subshell) and native (goroutine)
+// backends behave identically. Only TaskStmt is allowed inside the body.
+type ParallelStmt struct {
+	KwPos token.Pos
+	Body  *Block // contains *TaskStmt entries (checker enforces)
+}
+
+func (s *ParallelStmt) Pos() token.Pos { return s.KwPos }
+func (s *ParallelStmt) stmtNode()      {}
+
+// TaskStmt: `task { ... }`. Only valid as a direct child of a ParallelStmt
+// body. Behaves like a void function body that runs concurrently with its
+// siblings; cannot return, defer, or contain a nested parallel/task.
+type TaskStmt struct {
+	KwPos token.Pos
+	Body  *Block
+}
+
+func (s *TaskStmt) Pos() token.Pos { return s.KwPos }
+func (s *TaskStmt) stmtNode()      {}
 
 // Block: `{ stmts... }`. RBrace is captured so source-position-based passes
 // (formatter, IDE tools) know where the block ends without re-scanning.

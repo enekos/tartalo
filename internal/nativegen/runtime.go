@@ -74,6 +74,9 @@ func (g *Generator) writeRuntimeTo(out *strings.Builder) {
 	if g.usesRuntimeFloat {
 		out.WriteString(runtimeFloat)
 	}
+	if g.usesRuntimeVec {
+		out.WriteString(runtimeVec)
+	}
 	if g.usesRuntimeHigherOrder {
 		out.WriteString(runtimeHigherOrder)
 	}
@@ -88,6 +91,7 @@ func (g *Generator) writeRuntimeTo(out *strings.Builder) {
 		out.WriteString(runtimeMockState)
 		g.writeMockSetters(out)
 	}
+	g.emitCsvHelpers(out)
 	g.emitAgentRuntimeAppendix(out)
 }
 
@@ -185,7 +189,8 @@ func (g *Generator) anyRuntimeUsed() bool {
 		g.usesRuntimeShellOut || g.usesRuntimeArgs || g.usesRuntimeExec ||
 		g.usesRuntimeExecTimeout || g.usesRuntimeFile || g.usesRuntimePath ||
 		g.usesRuntimeStat || g.usesRuntimeJSON || g.usesRuntimeRegex ||
-		g.usesRuntimeFormatTime || g.usesRuntimeFloat ||
+		g.usesRuntimeFormatTime || g.usesRuntimeFloat || g.usesRuntimeVec ||
+		len(g.csvReaders) > 0 || len(g.csvWriters) > 0 ||
 		g.usesRuntimeHigherOrder || g.usesRuntimeFetch || g.usesRuntimeTestState ||
 		g.usesRuntimeEnv || g.usesRuntimeNow || g.usesRuntimeTry ||
 		g.usesAgentLLM || g.usesAgentApproval || g.usesAgentTrace ||
@@ -955,5 +960,161 @@ func _tt_formatFloat(f float64, prec int64) string {
 func _tt_floor(f float64) float64 { return math.Floor(f) }
 func _tt_ceil(f float64) float64  { return math.Ceil(f) }
 func _tt_round(f float64) float64 { return math.Round(f) }
+
+`
+
+const runtimeVec = `func _tt_vSum(xs []float64) float64 {
+	s := 0.0
+	for _, x := range xs {
+		s += x
+	}
+	return s
+}
+
+func _tt_vMean(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	return _tt_vSum(xs) / float64(len(xs))
+}
+
+func _tt_vMin(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	m := xs[0]
+	for _, x := range xs[1:] {
+		if x < m {
+			m = x
+		}
+	}
+	return m
+}
+
+func _tt_vMax(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	m := xs[0]
+	for _, x := range xs[1:] {
+		if x > m {
+			m = x
+		}
+	}
+	return m
+}
+
+func _tt_vVar(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	mu := _tt_vMean(xs)
+	s := 0.0
+	for _, x := range xs {
+		d := x - mu
+		s += d * d
+	}
+	return s / float64(len(xs))
+}
+
+func _tt_vStd(xs []float64) float64 { return math.Sqrt(_tt_vVar(xs)) }
+
+func _tt_vAdd(a, b []float64) []float64 {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	out := make([]float64, n)
+	for i := 0; i < n; i++ {
+		out[i] = a[i] + b[i]
+	}
+	return out
+}
+
+func _tt_vSub(a, b []float64) []float64 {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	out := make([]float64, n)
+	for i := 0; i < n; i++ {
+		out[i] = a[i] - b[i]
+	}
+	return out
+}
+
+func _tt_vMul(a, b []float64) []float64 {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	out := make([]float64, n)
+	for i := 0; i < n; i++ {
+		out[i] = a[i] * b[i]
+	}
+	return out
+}
+
+func _tt_vScale(xs []float64, k float64) []float64 {
+	out := make([]float64, len(xs))
+	for i, x := range xs {
+		out[i] = x * k
+	}
+	return out
+}
+
+func _tt_vDot(a, b []float64) float64 {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	s := 0.0
+	for i := 0; i < n; i++ {
+		s += a[i] * b[i]
+	}
+	return s
+}
+
+func _tt_linspace(start, end float64, n int64) []float64 {
+	if n <= 0 {
+		return []float64{}
+	}
+	if n == 1 {
+		return []float64{start}
+	}
+	out := make([]float64, n)
+	step := (end - start) / float64(n-1)
+	for i := int64(0); i < n; i++ {
+		out[i] = start + float64(i)*step
+	}
+	return out
+}
+
+func _tt_arange(start, end, step int64) []int64 {
+	if step == 0 {
+		return []int64{}
+	}
+	var out []int64
+	if step > 0 {
+		for i := start; i < end; i += step {
+			out = append(out, i)
+		}
+	} else {
+		for i := start; i > end; i += step {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func _tt_cumsum(xs []float64) []float64 {
+	out := make([]float64, len(xs))
+	s := 0.0
+	for i, x := range xs {
+		s += x
+		out[i] = s
+	}
+	return out
+}
 
 `

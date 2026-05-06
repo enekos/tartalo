@@ -56,6 +56,11 @@ var suppressed = map[int]string{
 	// "requires `timeout` on PATH") that shellcheck mistakes for unintended
 	// expansion attempts.
 	2016: "runtime error messages use single-quoted text with literal backticks",
+	// Some sh-target builtins (CSV, certain mocks) lower to a `printf >&2;
+	// exit 1` stub that directs the user to --target=native. Shellcheck
+	// flags everything after the inline exit as unreachable; that's true,
+	// but expected — the stub *is* a runtime guard.
+	2317: "abort stubs (CSV unsupported, mock fallbacks) intentionally make later codegen unreachable",
 }
 
 // Suppressed returns the set of shellcheck codes that verify silences. Useful

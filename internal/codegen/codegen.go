@@ -149,11 +149,23 @@ type Generator struct {
 	usesApproval   bool
 	usesTrace      bool
 	usesSpawnAgent bool
+	usesCallTool   bool
+
+	// currentAgent points at the agent FuncDecl currently being emitted, or
+	// nil when emitting a plain function or tool. Read by compileLlm to
+	// decide whether to emit budget checks, and by compileAgentTools to
+	// resolve `agentTools()` to the surrounding agent's tool list.
+	currentAgent *ast.FuncDecl
 
 	// agents is every FuncDecl whose Kind is FuncKindAgent across all
 	// modules being emitted, in declaration order. Drives the
 	// __tt_spawn_agent case dispatcher.
 	agents []agentRef
+
+	// tools is every FuncDecl whose Kind is FuncKindTool across all modules,
+	// in declaration order. Drives the __tt_call_tool case dispatcher and
+	// gives compileAgentTools a flat list to look up by name.
+	tools []agentRef
 
 	// toolSchemasJSON is the precomputed JSON string for toolSchemas().
 	// Built once during emission so every call to toolSchemas() is O(1).
@@ -162,7 +174,8 @@ type Generator struct {
 
 // agentRef is a (user-name, sh-name, decl) triple used to drive the
 // spawn-agent dispatcher. ShName is the actual sh function name from
-// checker.MangledName so cross-module agents resolve correctly.
+// checker.MangledName so cross-module agents resolve correctly. The same
+// shape is reused for tools (callTool dispatch).
 type agentRef struct {
 	Name   string
 	ShName string
@@ -600,6 +613,16 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	g.out.WriteString("() {")
 	g.out.WriteByte('\n')
 	g.indent++
+	prevAgent := g.currentAgent
+	if fd.Kind == ast.FuncKindAgent {
+		g.currentAgent = fd
+	} else {
+		g.currentAgent = nil
+	}
+	defer func() { g.currentAgent = prevAgent }()
+	if fd.Kind == ast.FuncKindAgent && fd.Budget > 0 {
+		g.writeLine(fmt.Sprintf("local __tt_budget=%d", fd.Budget))
+	}
 	// Record the return type so emitReturn knows whether to also write
 	// __ret__null. We restore the previous value on exit so nested emits
 	// (none today, but future-proof) don't leak.
@@ -884,9 +907,38 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.emitFieldAssign(s)
 	case *ast.DeferStmt:
 		g.emitDeferPush(s)
+	case *ast.ParallelStmt:
+		g.emitParallel(s)
 	default:
 		g.writeLine(fmt.Sprintf("# unsupported stmt: %T", s))
 	}
+}
+
+// emitParallel lowers `parallel { task { ... } ... }` to a series of
+// backgrounded subshells joined by `wait`. Each subshell inherits the
+// parent's variables read-only (mutations stay inside the subshell — the
+// checker rejects writes to outer locals so this matches the language
+// model). `wait` with no arguments blocks until every backgrounded child
+// has completed.
+func (g *Generator) emitParallel(s *ast.ParallelStmt) {
+	if len(s.Body.Stmts) == 0 {
+		return
+	}
+	for _, st := range s.Body.Stmts {
+		ts, ok := st.(*ast.TaskStmt)
+		if !ok {
+			// Checker rejects this; defensive.
+			continue
+		}
+		g.writeLine("(")
+		g.indent++
+		for _, bs := range ts.Body.Stmts {
+			g.emitStmt(bs)
+		}
+		g.indent--
+		g.writeLine(") &")
+	}
+	g.writeLine("wait")
 }
 
 // emitDeferPush appends the helper-function name for `s` to the current
@@ -2553,6 +2605,184 @@ func (g *Generator) compileFloatRound(args []exprValue, prologue []string, fn st
 	return exprValue{prologue: prologue, value: t, form: formArith}
 }
 
+// --- pandas-lite lowering --------------------------------------------------
+
+// compileCount lowers `count(arr, pred)`. Mirrors compileFilter's heredoc /
+// per-element fn-call shape but accumulates into an integer counter rather
+// than building an output array.
+func (g *Generator) compileCount(args []exprValue, prologue []string) exprValue {
+	arr := g.tmp("cnt_a")
+	fn := g.tmp("cnt_f")
+	out := g.tmp("cnt_o")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", arr, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", fn, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=0`, out))
+	prologue = append(prologue, fmt.Sprintf(`if [ -n "$%s" ]; then`, arr))
+	body := fmt.Sprintf(
+		`    "$%s" "$__tt_iter"`+"\n"+
+			`    if [ "$__ret" = 1 ]; then %s=$((%s + 1)); fi`,
+		fn, out, out)
+	prologue = append(prologue, herdocBlock(body, arr, "__TT_CNT_EOF__"))
+	prologue = append(prologue, `fi`)
+	return exprValue{prologue: prologue, value: out, form: formArith}
+}
+
+// compileUnique lowers `unique(arr)` for primitive element types. Order is
+// preserved (first-seen wins) via awk's `!seen[$0]++` idiom.
+func (g *Generator) compileUnique(args []exprValue, prologue []string) exprValue {
+	in := g.tmp("uq_in")
+	out := g.tmp("unique")
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, fmt.Sprintf("%s=%s", in, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`if [ -z "$%s" ]; then %s=""; else %s=$(printf '%%s\n' "$%s" | awk '!seen[$0]++'); fi`,
+		in, out, out, in))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// --- numeric vector lowering (numpy-lite) ---------------------------------
+//
+// Arrays in the sh backend are newline-joined strings. The reductions below
+// pipe that string through awk for a single-pass accumulation; the empty
+// array case is short-circuited because `printf '%s\n' ""` would otherwise
+// feed awk one blank line and skew counts.
+
+func (g *Generator) compileVecReduce(args []exprValue, prologue []string, fn string) exprValue {
+	in := g.tmp("v" + fn + "_in")
+	out := g.tmp(fn)
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, fmt.Sprintf("%s=%s", in, args[0].assignmentRHS()))
+	var awkBody string
+	switch fn {
+	case "vSum":
+		awkBody = `{s+=$1+0} END {printf "%g", s+0}`
+	case "vMean":
+		awkBody = `{s+=$1+0; n++} END {if(n>0) printf "%g", s/n; else printf "0"}`
+	case "vMin":
+		awkBody = `NR==1{m=$1+0; next} ($1+0)<m{m=$1+0} END {if(NR>0) printf "%g", m; else printf "0"}`
+	case "vMax":
+		awkBody = `NR==1{m=$1+0; next} ($1+0)>m{m=$1+0} END {if(NR>0) printf "%g", m; else printf "0"}`
+	case "vVar":
+		awkBody = `{x=$1+0; xs[NR]=x; s+=x; n++} END {if(n==0){printf "0"; exit} m=s/n; for(i=1;i<=n;i++){d=xs[i]-m; v+=d*d} printf "%g", v/n}`
+	case "vStd":
+		awkBody = `{x=$1+0; xs[NR]=x; s+=x; n++} END {if(n==0){printf "0"; exit} m=s/n; for(i=1;i<=n;i++){d=xs[i]-m; v+=d*d} printf "%g", sqrt(v/n)}`
+	}
+	prologue = append(prologue, fmt.Sprintf(
+		`if [ -z "$%s" ]; then %s=0; else %s=$(printf '%%s\n' "$%s" | awk '%s'); fi`,
+		in, out, out, in, awkBody))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// compileVecBinary lowers vAdd / vSub / vMul. Both operands are streamed
+// through awk separated by a sentinel line; the second pass emits one
+// result line per pair, capped at min(len(a), len(b)).
+func (g *Generator) compileVecBinary(args []exprValue, prologue []string, fn string) exprValue {
+	a := g.tmp("v" + fn + "_a")
+	b := g.tmp("v" + fn + "_b")
+	out := g.tmp(fn)
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	prologue = append(prologue, fmt.Sprintf("%s=%s", a, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", b, args[1].assignmentRHS()))
+	var op string
+	switch fn {
+	case "vAdd":
+		op = "+"
+	case "vSub":
+		op = "-"
+	case "vMul":
+		op = "*"
+	}
+	awkBody := fmt.Sprintf(
+		`/^__TT_VEC_BREAK__$/ {p=1; next} p==0 {xa[++na]=$1+0} p==1 {nb++; if(nb<=na) printf "%%g\n", xa[nb] %s ($1+0)}`,
+		op,
+	)
+	prologue = append(prologue, fmt.Sprintf(
+		`if [ -z "$%s" ] || [ -z "$%s" ]; then %s=""; else %s=$({ printf '%%s\n' "$%s"; printf '__TT_VEC_BREAK__\n'; printf '%%s\n' "$%s"; } | awk '%s'); fi`,
+		a, b, out, out, a, b, awkBody))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+func (g *Generator) compileVecScale(args []exprValue, prologue []string) exprValue {
+	in := g.tmp("vs_in")
+	out := g.tmp("vScale")
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	prologue = append(prologue, fmt.Sprintf("%s=%s", in, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`if [ -z "$%s" ]; then %s=""; else %s=$(printf '%%s\n' "$%s" | awk -v k=%s '{printf "%%g\n", ($1+0)*k}'); fi`,
+		in, out, out, in, shQuoteDouble(args[1].shString())))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+func (g *Generator) compileVecDot(args []exprValue, prologue []string) exprValue {
+	a := g.tmp("vd_a")
+	b := g.tmp("vd_b")
+	out := g.tmp("vDot")
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	prologue = append(prologue, fmt.Sprintf("%s=%s", a, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", b, args[1].assignmentRHS()))
+	awkBody := `/^__TT_VEC_BREAK__$/ {p=1; next} p==0 {xa[++na]=$1+0} p==1 {nb++; if(nb<=na) s += xa[nb]*($1+0)} END {printf "%g", s+0}`
+	prologue = append(prologue, fmt.Sprintf(
+		`if [ -z "$%s" ] || [ -z "$%s" ]; then %s=0; else %s=$({ printf '%%s\n' "$%s"; printf '__TT_VEC_BREAK__\n'; printf '%%s\n' "$%s"; } | awk '%s'); fi`,
+		a, b, out, out, a, b, awkBody))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+func (g *Generator) compileLinspace(args []exprValue, prologue []string) exprValue {
+	out := g.tmp("linspace")
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	prologue = append(prologue, args[2].prologue...)
+	awkBody := `BEGIN{
+  if(n<=0) exit
+  if(n==1) {printf "%g", s; exit}
+  step=(e-s)/(n-1)
+  for(i=0;i<n;i++) {if(i>0) printf "\n"; printf "%g", s+i*step}
+}`
+	prologue = append(prologue, fmt.Sprintf(
+		`%s=$(awk -v s=%s -v e=%s -v n=%s '%s')`,
+		out,
+		shQuoteDouble(args[0].shString()),
+		shQuoteDouble(args[1].shString()),
+		asArithExpansion(args[2]),
+		awkBody))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+func (g *Generator) compileArange(args []exprValue, prologue []string) exprValue {
+	out := g.tmp("arange")
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	prologue = append(prologue, args[2].prologue...)
+	awkBody := `BEGIN{
+  if(step==0) exit
+  if(step>0) { for(i=s;i<e;i+=step){if(first) printf "\n"; printf "%d", i; first=1} }
+  else       { for(i=s;i>e;i+=step){if(first) printf "\n"; printf "%d", i; first=1} }
+}`
+	prologue = append(prologue, fmt.Sprintf(
+		`%s=$(awk -v s=%s -v e=%s -v step=%s '%s')`,
+		out,
+		asArithExpansion(args[0]),
+		asArithExpansion(args[1]),
+		asArithExpansion(args[2]),
+		awkBody))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+func (g *Generator) compileCumsum(args []exprValue, prologue []string) exprValue {
+	in := g.tmp("cs_in")
+	out := g.tmp("cumsum")
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, fmt.Sprintf("%s=%s", in, args[0].assignmentRHS()))
+	awkBody := `{s+=$1+0; if(NR>1) printf "\n"; printf "%g", s}`
+	prologue = append(prologue, fmt.Sprintf(
+		`if [ -z "$%s" ]; then %s=""; else %s=$(printf '%%s\n' "$%s" | awk '%s'); fi`,
+		in, out, out, in, awkBody))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
 // floatCompare emits a 1/0 result for a float (or mixed int/float)
 // comparison. Returned as formArith so it slots into the condition machinery
 // without further wrapping.
@@ -3135,6 +3365,37 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 	case "floor", "ceil", "round":
 		return g.compileFloatRound(args, prologue, sym.Name)
 
+	// --- pandas-lite ---
+	case "count":
+		return g.compileCount(args, prologue)
+	case "unique":
+		return g.compileUnique(args, prologue)
+	case "readCsv", "writeCsv":
+		// Proper CSV parsing/quoting on the sh side requires more than awk
+		// can do reliably (embedded commas, quoted fields, multi-line cells).
+		// For v1 we direct users to the native target, which uses
+		// encoding/csv and is RFC 4180-compliant.
+		prologue = append(prologue, fmt.Sprintf(
+			`printf 'tartalo: %s requires --target=native\n' >&2; exit 1`,
+			sym.Name))
+		return exprValue{prologue: prologue, value: "", form: formStr}
+
+	// --- numeric vector (numpy-lite) ---
+	case "vSum", "vMean", "vMin", "vMax", "vVar", "vStd":
+		return g.compileVecReduce(args, prologue, sym.Name)
+	case "vAdd", "vSub", "vMul":
+		return g.compileVecBinary(args, prologue, sym.Name)
+	case "vScale":
+		return g.compileVecScale(args, prologue)
+	case "vDot":
+		return g.compileVecDot(args, prologue)
+	case "linspace":
+		return g.compileLinspace(args, prologue)
+	case "arange":
+		return g.compileArange(args, prologue)
+	case "cumsum":
+		return g.compileCumsum(args, prologue)
+
 	// --- testing ---
 	case "assertEq":
 		return g.compileAssertEqual(args, argTypes, prologue, callPos, false)
@@ -3166,6 +3427,10 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		return g.compileSpawnAgent(args, prologue)
 	case "toolSchemas":
 		return g.compileToolSchemas(prologue)
+	case "callTool":
+		return g.compileCallTool(args, prologue)
+	case "agentTools":
+		return g.compileAgentTools(prologue)
 	case "mockLlm":
 		return g.compileMockLlm(args, prologue)
 	case "mockLlmCalls":

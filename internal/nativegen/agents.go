@@ -44,6 +44,13 @@ func (g *Generator) initAgentPlatform(modules []*loader.Module) {
 					Decl:   fd,
 				})
 			}
+			if fd.Kind == ast.FuncKindTool {
+				g.tools = append(g.tools, agentRefNative{
+					Name:   fd.Name,
+					GoName: g.goFuncName(m, fd.Name),
+					Decl:   fd,
+				})
+			}
 			params := make([]map[string]any, 0, len(fd.Params))
 			for _, p := range fd.Params {
 				params = append(params, map[string]any{
@@ -65,6 +72,9 @@ func (g *Generator) initAgentPlatform(modules []*loader.Module) {
 			}
 			if fd.Budget > 0 {
 				entry["budget"] = fd.Budget
+			}
+			if len(fd.Tools) > 0 {
+				entry["tools"] = fd.Tools
 			}
 			entries = append(entries, entry)
 		}
@@ -155,6 +165,8 @@ func (g *Generator) scanAgentExpr(e ast.Expr) {
 					g.usesAgentTrace = true
 				case "spawnAgent":
 					g.usesAgentSpawn = true
+				case "callTool":
+					g.usesAgentCallTool = true
 				case "mockLlm", "mockLlmCalls":
 					g.usesAgentLLM = true
 					g.usesMockLlm = true
@@ -262,12 +274,7 @@ func (g *Generator) emitAgentRuntime() {
 			// Only emit a case for agents whose signature is (string) -> string;
 			// other shapes don't fit the spawn protocol and stay callable
 			// directly by name.
-			if len(a.Decl.Params) != 1 {
-				continue
-			}
-			tn, _ := a.Decl.Params[0].TypeAnn.(*ast.TypeName)
-			rn, _ := a.Decl.Result.(*ast.TypeName)
-			if tn == nil || rn == nil || tn.Name != "string" || rn.Name != "string" {
+			if !isStringToStringNative(a.Decl) {
 				continue
 			}
 			g.writeLine(fmt.Sprintf("case %q:", a.Name))
@@ -288,6 +295,87 @@ func (g *Generator) emitAgentRuntime() {
 		g.addImport("fmt")
 		g.addImport("os")
 	}
+
+	if g.usesAgentCallTool {
+		// Mirror of _tt_spawnAgent for tools. Same (string)→string
+		// constraint applies.
+		g.writeLine("")
+		g.writeLine("func _tt_callTool(name string, input string) string {")
+		g.indent++
+		g.writeLine("switch name {")
+		for _, t := range g.tools {
+			if !isStringToStringNative(t.Decl) {
+				continue
+			}
+			g.writeLine(fmt.Sprintf("case %q:", t.Name))
+			g.indent++
+			g.writeLine("return " + t.GoName + "(input)")
+			g.indent--
+		}
+		g.writeLine("}")
+		g.writeLine(`fmt.Fprintf(os.Stderr, "tartalo: unknown tool: %s\n", name)`)
+		g.writeLine(`os.Exit(1)`)
+		g.writeLine(`_ = input`)
+		g.writeLine(`return ""`)
+		g.indent--
+		g.writeLine("}")
+		g.writeLine("")
+		g.addImport("fmt")
+		g.addImport("os")
+	}
+}
+
+// agentToolsJSON is the per-agent counterpart of the all-tools toolSchemas
+// blob. Looks up each name in g.tools and emits its tool schema in the same
+// shape as toolSchemas() entries.
+func (g *Generator) agentToolsJSON(fd *ast.FuncDecl) string {
+	entries := make([]map[string]any, 0, len(fd.Tools))
+	for _, name := range fd.Tools {
+		var tfd *ast.FuncDecl
+		for i := range g.tools {
+			if g.tools[i].Name == name {
+				tfd = g.tools[i].Decl
+				break
+			}
+		}
+		if tfd == nil {
+			continue
+		}
+		params := make([]map[string]any, 0, len(tfd.Params))
+		for _, p := range tfd.Params {
+			params = append(params, map[string]any{
+				"name": p.Name,
+				"type": typeExprText(p.TypeAnn),
+			})
+		}
+		entry := map[string]any{
+			"name":    tfd.Name,
+			"kind":    "tool",
+			"params":  params,
+			"returns": typeExprText(tfd.Result),
+		}
+		if tfd.Description != "" {
+			entry["description"] = tfd.Description
+		}
+		if len(tfd.Effects) > 0 {
+			entry["effects"] = tfd.Effects
+		}
+		entries = append(entries, entry)
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func isStringToStringNative(fd *ast.FuncDecl) bool {
+	if len(fd.Params) != 1 {
+		return false
+	}
+	pn, _ := fd.Params[0].TypeAnn.(*ast.TypeName)
+	rn, _ := fd.Result.(*ast.TypeName)
+	return pn != nil && rn != nil && pn.Name == "string" && rn.Name == "string"
 }
 
 // emitAgentRuntimeAppendix writes the static helper functions to the file
@@ -296,6 +384,7 @@ func (g *Generator) emitAgentRuntime() {
 func (g *Generator) emitAgentRuntimeAppendix(out *strings.Builder) {
 	if g.usesAgentLLM {
 		out.WriteString(runtimeLLM)
+		out.WriteString(runtimeKimi)
 		if g.emitMode == EmitTest {
 			out.WriteString(dispatcherLLMTest)
 			if g.usesMockLlm {
@@ -313,7 +402,19 @@ func (g *Generator) emitAgentRuntimeAppendix(out *strings.Builder) {
 	}
 }
 
+// runtimeLLM ships the per-provider dispatcher and the legacy command-pipe
+// fallback. Provider selection is driven by TARTALO_LLM_PROVIDER; an empty
+// value preserves the original "pipe to $TARTALO_LLM_CMD" behaviour so
+// existing scripts keep working unchanged.
 const runtimeLLM = `func _tt_llm_real(prompt string) string {
+	switch os.Getenv("TARTALO_LLM_PROVIDER") {
+	case "kimi", "moonshot":
+		return _tt_llm_kimi(prompt)
+	}
+	return _tt_llm_legacy(prompt)
+}
+
+func _tt_llm_legacy(prompt string) string {
 	cmd := os.Getenv("TARTALO_LLM_CMD")
 	if cmd == "" {
 		cmd = "claude -p"
@@ -336,6 +437,79 @@ const runtimeLLM = `func _tt_llm_real(prompt string) string {
 }
 
 `
+
+// runtimeKimi calls Moonshot's OpenAI-compatible chat/completions endpoint.
+// Defaults: base https://api.moonshot.ai/v1, model moonshot-v1-8k. Both can
+// be overridden with TARTALO_KIMI_BASE_URL / TARTALO_KIMI_MODEL — the URL
+// override is also what makes the test suite point at a local httptest
+// server. KIMI_API_KEY is mandatory; we fail fast with a clear message
+// rather than letting the upstream return 401.
+const runtimeKimi = "func _tt_llm_kimi(prompt string) string {\n" +
+	"\tkey := os.Getenv(\"KIMI_API_KEY\")\n" +
+	"\tif key == \"\" {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: kimi: KIMI_API_KEY not set\\n\")\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tbase := os.Getenv(\"TARTALO_KIMI_BASE_URL\")\n" +
+	"\tif base == \"\" {\n" +
+	"\t\tbase = \"https://api.moonshot.ai/v1\"\n" +
+	"\t}\n" +
+	"\tfor len(base) > 0 && base[len(base)-1] == '/' {\n" +
+	"\t\tbase = base[:len(base)-1]\n" +
+	"\t}\n" +
+	"\tmodel := os.Getenv(\"TARTALO_KIMI_MODEL\")\n" +
+	"\tif model == \"\" {\n" +
+	"\t\tmodel = \"moonshot-v1-8k\"\n" +
+	"\t}\n" +
+	"\treqBody, err := json.Marshal(map[string]any{\n" +
+	"\t\t\"model\": model,\n" +
+	"\t\t\"messages\": []map[string]string{\n" +
+	"\t\t\t{\"role\": \"user\", \"content\": prompt},\n" +
+	"\t\t},\n" +
+	"\t})\n" +
+	"\tif err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: kimi: marshal: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\thttpReq, err := http.NewRequest(\"POST\", base+\"/chat/completions\", bytes.NewReader(reqBody))\n" +
+	"\tif err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: kimi: new request: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\thttpReq.Header.Set(\"Authorization\", \"Bearer \"+key)\n" +
+	"\thttpReq.Header.Set(\"Content-Type\", \"application/json\")\n" +
+	"\tresp, err := http.DefaultClient.Do(httpReq)\n" +
+	"\tif err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: kimi: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tdefer resp.Body.Close()\n" +
+	"\trespBody, err := io.ReadAll(resp.Body)\n" +
+	"\tif err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: kimi: read: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tif resp.StatusCode < 200 || resp.StatusCode >= 300 {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: kimi: status %d: %s\\n\", resp.StatusCode, string(respBody))\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tvar parsed struct {\n" +
+	"\t\tChoices []struct {\n" +
+	"\t\t\tMessage struct {\n" +
+	"\t\t\t\tContent string `json:\"content\"`\n" +
+	"\t\t\t} `json:\"message\"`\n" +
+	"\t\t} `json:\"choices\"`\n" +
+	"\t}\n" +
+	"\tif err := json.Unmarshal(respBody, &parsed); err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: kimi: unmarshal: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tif len(parsed.Choices) == 0 {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: kimi: no choices in response: %s\\n\", string(respBody))\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\treturn parsed.Choices[0].Message.Content\n" +
+	"}\n\n"
 
 const dispatcherLLMTest = `func _tt_llm(prompt string) string {
 	_tt_mockLlmCallsLog = append(_tt_mockLlmCallsLog, prompt)

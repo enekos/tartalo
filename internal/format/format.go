@@ -273,7 +273,18 @@ func (p *printer) printFunc(fd *ast.FuncDecl) {
 		p.write(": ")
 		p.printType(par.TypeAnn)
 	}
-	p.write("): ")
+	p.write(")")
+	if len(fd.Tools) > 0 {
+		p.write(" uses (")
+		for i, t := range fd.Tools {
+			if i > 0 {
+				p.write(", ")
+			}
+			p.write(t)
+		}
+		p.write(")")
+	}
+	p.write(": ")
 	p.printType(fd.Result)
 	for _, eff := range fd.Effects {
 		p.write(" !")
@@ -494,6 +505,10 @@ func (p *printer) printStmt(s ast.Stmt) {
 		p.printFor(x)
 	case *ast.MatchStmt:
 		p.printMatch(x)
+	case *ast.ParallelStmt:
+		p.printParallel(x)
+	case *ast.TaskStmt:
+		p.printTask(x)
 	case *ast.Block:
 		p.printBlock(x)
 		p.nl()
@@ -532,6 +547,20 @@ func (p *printer) printFor(s *ast.ForStmt) {
 	p.write(" in ")
 	p.printExpr(s.Iter, precLowest)
 	p.write(" ")
+	p.printBlock(s.Body)
+	p.trailingOn(p.lastSrcLine)
+	p.nl()
+}
+
+func (p *printer) printParallel(s *ast.ParallelStmt) {
+	p.write("parallel ")
+	p.printBlock(s.Body)
+	p.trailingOn(p.lastSrcLine)
+	p.nl()
+}
+
+func (p *printer) printTask(s *ast.TaskStmt) {
+	p.write("task ")
 	p.printBlock(s.Body)
 	p.trailingOn(p.lastSrcLine)
 	p.nl()

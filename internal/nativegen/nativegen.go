@@ -70,6 +70,7 @@ type Generator struct {
 	usesRuntimeRegex       bool
 	usesRuntimeFormatTime  bool
 	usesRuntimeFloat       bool
+	usesRuntimeVec         bool
 	usesRuntimeHigherOrder bool
 	usesRuntimeFetch       bool
 	usesRuntimeTestState   bool
@@ -89,13 +90,27 @@ type Generator struct {
 	usesMockArgs     bool
 	usesMockStdin    bool
 
+	// csvReaders / csvWriters are deduplicated record types that the
+	// program calls readCsv / writeCsv against. emitCsvHelpers (csv.go)
+	// emits one per-type helper function for each entry at end-of-program.
+	csvReaders map[string]*types.Record
+	csvWriters map[string]*types.Record
+
 	usesAgentLLM      bool
 	usesAgentApproval bool
 	usesAgentTrace    bool
 	usesAgentSpawn    bool
+	usesAgentCallTool bool
 	usesMockLlm       bool
 	agents            []agentRefNative
+	tools             []agentRefNative
 	toolSchemasJSON   string
+
+	// currentAgent points at the agent FuncDecl currently being emitted,
+	// or nil while emitting plain functions / tools. Read by the llm()
+	// lowering for budget enforcement and by agentTools() to resolve to
+	// the surrounding agent's tool list at compile time.
+	currentAgent *ast.FuncDecl
 
 	emitMode EmitMode
 }

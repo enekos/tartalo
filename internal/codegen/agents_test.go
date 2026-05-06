@@ -2,6 +2,9 @@ package codegen_test
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -366,6 +369,70 @@ test "unmocked llm fails" {
 	}
 }
 
+// TestLlm_KimiProvider verifies that TARTALO_LLM_PROVIDER=kimi routes llm()
+// to Moonshot's chat/completions endpoint, sends the prompt as a user
+// message, and returns the assistant content. We point the helper at a
+// local httptest server via TARTALO_KIMI_BASE_URL so no real network call
+// is made.
+func TestLlm_KimiProvider(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH; required by the shell-target Kimi helper")
+	}
+	var gotAuth, gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hi from kimi"}}]}`))
+	}))
+	defer server.Close()
+
+	src := `func main(): void { echo(llm("hello")) }`
+	out, code := runShellWith(t, compileBuild(t, src), map[string]string{
+		"TARTALO_LLM_PROVIDER":  "kimi",
+		"KIMI_API_KEY":          "test-key",
+		"TARTALO_KIMI_BASE_URL": server.URL,
+		"TARTALO_KIMI_MODEL":    "moonshot-v1-8k",
+	})
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := strings.TrimSpace(out); got != "hi from kimi" {
+		t.Errorf("got %q, want %q", got, "hi from kimi")
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("auth header = %q, want %q", gotAuth, "Bearer test-key")
+	}
+	if gotPath != "/chat/completions" {
+		t.Errorf("path = %q, want /chat/completions", gotPath)
+	}
+	if !strings.Contains(gotBody, `"model": "moonshot-v1-8k"`) {
+		t.Errorf("body missing model field:\n%s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"content": "hello"`) {
+		t.Errorf("body missing prompt content:\n%s", gotBody)
+	}
+}
+
+// TestLlm_KimiMissingKey verifies the helper aborts with a clear message
+// when KIMI_API_KEY is not set, rather than silently letting upstream
+// return a 401.
+func TestLlm_KimiMissingKey(t *testing.T) {
+	src := `func main(): void { echo(llm("hello")) }`
+	out, code := runShellWith(t, compileBuild(t, src), map[string]string{
+		"TARTALO_LLM_PROVIDER": "kimi",
+		"KIMI_API_KEY":         "",
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, got 0; output:\n%s", out)
+	}
+	if !strings.Contains(out, "KIMI_API_KEY not set") {
+		t.Errorf("expected guidance about KIMI_API_KEY, got:\n%s", out)
+	}
+}
+
 // --- approval ----------------------------------------------------------------
 
 // TestApproval_PathExists exercises the codegen path for approval(). We can't
@@ -388,5 +455,149 @@ func main(): void {
 	}
 	if !strings.Contains(sh, "__tt_approval ") {
 		t.Errorf("expected approval helper invocation:\n%s", sh)
+	}
+}
+
+// TestCallTool_DispatchesByName checks that callTool routes to the named
+// tool. Mirrors TestSpawnAgent_DispatchesByName but for tools.
+func TestCallTool_DispatchesByName(t *testing.T) {
+	src := `
+tool a(x: string): string { return "A:" + x }
+tool b(x: string): string { return "B:" + x }
+
+func main(): void {
+  echo(callTool("a", "1"))
+  echo(callTool("b", "2"))
+}
+`
+	out, code := runShellWith(t, compileBuild(t, src), nil)
+	if code != 0 {
+		t.Fatalf("exit %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "A:1") || !strings.Contains(out, "B:2") {
+		t.Errorf("expected dispatched outputs, got:\n%s", out)
+	}
+}
+
+// TestCallTool_UnknownAborts ensures dispatching to a name no tool declares
+// fails fast with a clear stderr message.
+func TestCallTool_UnknownAborts(t *testing.T) {
+	src := `
+tool a(x: string): string { return "A:" + x }
+func main(): void { echo(callTool("missing", "x")) }
+`
+	out, code := runShellWith(t, compileBuild(t, src), nil)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, got 0; output:\n%s", out)
+	}
+	if !strings.Contains(out, "unknown tool") {
+		t.Errorf("expected 'unknown tool' in stderr, got:\n%s", out)
+	}
+}
+
+// TestUsesClause_Schema verifies the tools list flows into the per-agent
+// schema entry and into agentTools().
+func TestUsesClause_Schema(t *testing.T) {
+	src := `
+tool listFiles(): string { return "ls" }
+tool greet(n: string): string { return "Hi " + n }
+
+agent helper(q: string) uses (listFiles, greet): string !ai {
+  desc("helper")
+  return agentTools()
+}
+
+func main(): void {
+  echo(toolSchemas())
+  echo("---")
+  echo(spawnAgent("helper", "anything"))
+}
+`
+	sh := compileBuild(t, src)
+	out, code := runShellWith(t, sh, nil)
+	if code != 0 {
+		t.Fatalf("exit %d, output:\n%s\nscript:\n%s", code, out, sh)
+	}
+	parts := strings.SplitN(out, "---\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected two output sections separated by ---, got:\n%s", out)
+	}
+	var schemas []map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(parts[0])), &schemas); err != nil {
+		t.Fatalf("toolSchemas not valid JSON: %v\nout:\n%s", err, parts[0])
+	}
+	var helper map[string]any
+	for _, e := range schemas {
+		if e["name"] == "helper" {
+			helper = e
+		}
+	}
+	if helper == nil {
+		t.Fatalf("helper agent missing from schemas: %s", parts[0])
+	}
+	tools, _ := helper["tools"].([]any)
+	if len(tools) != 2 {
+		t.Errorf("expected helper.tools length 2, got %v", tools)
+	}
+	var agentTools []map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(parts[1])), &agentTools); err != nil {
+		t.Fatalf("agentTools() not valid JSON: %v\nout:\n%s", err, parts[1])
+	}
+	if len(agentTools) != 2 {
+		t.Errorf("expected agentTools length 2, got %d: %v", len(agentTools), agentTools)
+	}
+}
+
+// TestBudget_ExhaustionAborts verifies that crossing the declared budget
+// terminates the program with a clear error before the over-budget call.
+func TestBudget_ExhaustionAborts(t *testing.T) {
+	src := `
+agent g(q: string): string !ai {
+  desc("greedy")
+  budget(2)
+  let a = llm("first")
+  let b = llm("second")
+  let c = llm("third")
+  return a + b + c
+}
+
+func main(): void {
+  echo(spawnAgent("g", "go"))
+}
+`
+	out, code := runShellWith(t, compileBuild(t, src), map[string]string{
+		"TARTALO_LLM_CMD": "echo OK",
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit; got:\n%s", out)
+	}
+	if !strings.Contains(out, "exceeded llm budget") {
+		t.Errorf("expected 'exceeded llm budget' in output, got:\n%s", out)
+	}
+}
+
+// TestBudget_PerInvocationReset verifies the counter is local to the agent
+// frame, so calling the agent twice with budget 2 each works for 4 calls
+// total.
+func TestBudget_PerInvocationReset(t *testing.T) {
+	src := `
+agent ask(q: string): string !ai {
+  desc("ask")
+  budget(2)
+  let a = llm("a")
+  let b = llm("b")
+  return a + b
+}
+
+func main(): void {
+  echo(spawnAgent("ask", "1"))
+  echo(spawnAgent("ask", "2"))
+}
+`
+	out, code := runShellWith(t, compileBuild(t, src), map[string]string{
+		"TARTALO_LLM_CMD": "echo X",
+	})
+	if code != 0 {
+		t.Fatalf("exit %d, output:\n%s", code, out)
 	}
 }

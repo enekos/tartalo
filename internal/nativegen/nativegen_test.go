@@ -1,6 +1,9 @@
 package nativegen_test
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1002,5 +1005,136 @@ func TestNativeExamplesParity(t *testing.T) {
 				t.Errorf("output differs:\n--native--\n%s\n--sh--\n%s", gotNative, gotSh)
 			}
 		})
+	}
+}
+
+// TestNativeCallTool covers the (string)→string callTool dispatcher in the
+// native target.
+func TestNativeCallTool(t *testing.T) {
+	bin := build(t, `
+tool a(x: string): string { return "A:" + x }
+tool b(x: string): string { return "B:" + x }
+func main(): void {
+  echo(callTool("a", "1"))
+  echo(callTool("b", "2"))
+}
+`)
+	got := runBin(t, bin)
+	if !strings.Contains(got, "A:1") || !strings.Contains(got, "B:2") {
+		t.Errorf("expected dispatched outputs, got:\n%s", got)
+	}
+}
+
+// TestNativeAgentTools_AndUsesClause verifies agentTools() resolves to the
+// surrounding agent's uses-clause tools.
+func TestNativeAgentTools_AndUsesClause(t *testing.T) {
+	bin := build(t, `
+tool x(): string { return "x" }
+tool y(s: string): string { return s }
+
+agent helper(q: string) uses (x, y): string !ai {
+  desc("h")
+  return agentTools()
+}
+
+func main(): void {
+  echo(spawnAgent("helper", "q"))
+}
+`)
+	got := runBin(t, bin)
+	if !strings.Contains(got, `"name":"x"`) || !strings.Contains(got, `"name":"y"`) {
+		t.Errorf("expected agentTools to list x and y, got:\n%s", got)
+	}
+}
+
+// TestNativeKimiProvider verifies that TARTALO_LLM_PROVIDER=kimi on the
+// native target POSTs to Moonshot's chat/completions endpoint and returns
+// the assistant content. We point the generated binary at a local
+// httptest server so no real network call is made.
+func TestNativeKimiProvider(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	var gotAuth, gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hi from kimi"}}]}`))
+	}))
+	defer server.Close()
+
+	bin := build(t, `func main(): void { echo(llm("hello")) }`)
+	cmd := exec.Command(bin)
+	cmd.Env = append(os.Environ(),
+		"TARTALO_LLM_PROVIDER=kimi",
+		"KIMI_API_KEY=test-key",
+		"TARTALO_KIMI_BASE_URL="+server.URL,
+		"TARTALO_KIMI_MODEL=moonshot-v1-8k",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary failed: %v\noutput:\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "hi from kimi" {
+		t.Errorf("got %q, want %q", got, "hi from kimi")
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("auth header = %q, want %q", gotAuth, "Bearer test-key")
+	}
+	if gotPath != "/chat/completions" {
+		t.Errorf("path = %q, want /chat/completions", gotPath)
+	}
+	if !strings.Contains(gotBody, `"model":"moonshot-v1-8k"`) {
+		t.Errorf("body missing model field:\n%s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"content":"hello"`) {
+		t.Errorf("body missing prompt content:\n%s", gotBody)
+	}
+}
+
+// TestNativeKimiMissingKey verifies the native helper aborts with a
+// clear message when KIMI_API_KEY is unset.
+func TestNativeKimiMissingKey(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	bin := build(t, `func main(): void { echo(llm("hello")) }`)
+	cmd := exec.Command(bin)
+	cmd.Env = append(os.Environ(), "TARTALO_LLM_PROVIDER=kimi", "KIMI_API_KEY=")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "KIMI_API_KEY not set") {
+		t.Errorf("expected KIMI_API_KEY guidance, got:\n%s", out)
+	}
+}
+
+// TestNativeBudgetAborts verifies budget enforcement on the native target.
+func TestNativeBudgetAborts(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	bin := build(t, `
+agent g(q: string): string !ai {
+  desc("greedy")
+  budget(1)
+  let a = llm("first")
+  let b = llm("second")
+  return a + b
+}
+func main(): void { echo(spawnAgent("g", "go")) }
+`)
+	cmd := exec.Command(bin)
+	cmd.Env = append(os.Environ(), "TARTALO_LLM_CMD=echo OK")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "exceeded llm budget") {
+		t.Errorf("expected 'exceeded llm budget' in output, got:\n%s", out)
 	}
 }

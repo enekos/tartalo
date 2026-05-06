@@ -297,6 +297,26 @@
           </p>
         </section>
 
+        <!-- Parallel -->
+        <section :id="ids.parallel" ref="secRefs">
+          <h2>Parallel tasks</h2>
+          <p>
+            <code>parallel { task { ... } task { ... } ... }</code> runs every
+            inner task concurrently and joins them all before continuing past
+            the closing brace. Sh lowers each task to a backgrounded subshell
+            joined by <code>wait</code>; native lowers to a goroutine driven
+            by a <code>sync.WaitGroup</code>.
+          </p>
+          <CodeBlock :code="codeParallel" />
+          <p>
+            The body of <code>parallel</code> may only contain
+            <code>task</code> statements. A task body may not assign to outer-
+            scope variables, may not <code>return</code> or <code>defer</code>,
+            and may not nest another <code>parallel</code>. These restrictions
+            keep both backends observably equivalent.
+          </p>
+        </section>
+
         <!-- Result and ? -->
         <section :id="ids.result" ref="secRefs">
           <h2>Result and the <code>?</code> operator</h2>
@@ -508,6 +528,7 @@ const ids = {
   records: "records",
   sums: "sums",
   defer: "defer",
+  parallel: "parallel",
   result: "result",
   pipelines: "pipelines",
   functions: "functions",
@@ -529,6 +550,7 @@ const toc = [
   { id: ids.records, label: "Records" },
   { id: ids.sums, label: "Tagged unions" },
   { id: ids.defer, label: "Defer" },
+  { id: ids.parallel, label: "Parallel tasks" },
   { id: ids.result, label: "Result & ?" },
   { id: ids.pipelines, label: "Pipelines" },
   { id: ids.functions, label: "Functions" },
@@ -831,6 +853,15 @@ const codeDefer = `func work(): void {
   defer { echo("a") }
   defer { echo("b") }
   echo("body")     // body, then b, then a
+}`;
+
+const codeParallel = `func main(): void {
+  parallel {
+    task { echo("a") }
+    task { echo("b") }
+    task { echo("c") }
+  }
+  echo("done")     // runs only after every task completes
 }`;
 
 const codeResult = `type IntResult = Ok{value: number} | Err{error: string}

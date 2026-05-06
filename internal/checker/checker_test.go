@@ -977,3 +977,32 @@ func TestRejectInferFromVoidCall(t *testing.T) {
 		}
 	`, "initializer has type void")
 }
+
+func TestAgentUsesUnknownToolRejected(t *testing.T) {
+	wantError(t, `
+		agent foo(q: string) uses (nope): string !ai {
+			return q
+		}
+		func main(): void { echo(foo("x")) }
+	`, `unknown tool "nope"`)
+}
+
+func TestAgentUsesDuplicateRejected(t *testing.T) {
+	wantError(t, `
+		tool t(x: string): string { return x }
+		agent foo(q: string) uses (t, t): string !ai {
+			return q
+		}
+		func main(): void { echo(foo("x")) }
+	`, `duplicate tool "t"`)
+}
+
+func TestAgentUsesValidAccepts(t *testing.T) {
+	wantOk(t, `
+		tool t(x: string): string { return x }
+		agent foo(q: string) uses (t): string !ai {
+			return q
+		}
+		func main(): void { echo(foo("x")) }
+	`)
+}

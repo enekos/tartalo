@@ -42,6 +42,8 @@ const (
 	False
 	Tool
 	Agent
+	Parallel
+	Task
 	TyString
 	TyNumber
 	TyFloat
@@ -96,6 +98,7 @@ var kindNames = map[Kind]string{
 	Import: "import", Export: "export", Test: "test", Defer: "defer",
 	Null: "null", True: "true", False: "false",
 	Tool: "tool", Agent: "agent",
+	Parallel: "parallel", Task: "task",
 	TyString: "string", TyNumber: "number", TyFloat: "float", TyBool: "bool", TyVoid: "void",
 	Assign: "=", Plus: "+", Minus: "-", Star: "*", Slash: "/", Percent: "%",
 	Eq: "==", Neq: "!=", Lt: "<", Lte: "<=", Gt: ">", Gte: ">=",
@@ -146,28 +149,30 @@ func (t Token) String() string {
 }
 
 var Keywords = map[string]Kind{
-	"let":    Let,
-	"const":  Const,
-	"func":   Func,
-	"return": Return,
-	"if":     If,
-	"else":   Else,
-	"for":    For,
-	"in":     In,
-	"match":  Match,
-	"type":   Type,
-	"import": Import,
-	"export": Export,
-	"test":   Test,
-	"defer":  Defer,
-	"null":   Null,
-	"true":   True,
-	"false":  False,
-	"tool":   Tool,
-	"agent":  Agent,
-	"string": TyString,
-	"number": TyNumber,
-	"float":  TyFloat,
-	"bool":   TyBool,
-	"void":   TyVoid,
+	"let":      Let,
+	"const":    Const,
+	"func":     Func,
+	"return":   Return,
+	"if":       If,
+	"else":     Else,
+	"for":      For,
+	"in":       In,
+	"match":    Match,
+	"type":     Type,
+	"import":   Import,
+	"export":   Export,
+	"test":     Test,
+	"defer":    Defer,
+	"null":     Null,
+	"true":     True,
+	"false":    False,
+	"tool":     Tool,
+	"agent":    Agent,
+	"parallel": Parallel,
+	"task":     Task,
+	"string":   TyString,
+	"number":   TyNumber,
+	"float":    TyFloat,
+	"bool":     TyBool,
+	"void":     TyVoid,
 }

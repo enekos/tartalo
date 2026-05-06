@@ -34,6 +34,13 @@ func (g *Generator) collectAgentsAndSchemas(modules []*loader.Module) {
 					Decl:   fd,
 				})
 			}
+			if fd.Kind == ast.FuncKindTool {
+				g.tools = append(g.tools, agentRef{
+					Name:   fd.Name,
+					ShName: checker.MangledName(m, fd.Name),
+					Decl:   fd,
+				})
+			}
 			params := make([]map[string]any, 0, len(fd.Params))
 			for _, p := range fd.Params {
 				params = append(params, map[string]any{
@@ -55,6 +62,9 @@ func (g *Generator) collectAgentsAndSchemas(modules []*loader.Module) {
 			}
 			if fd.Budget > 0 {
 				entry["budget"] = fd.Budget
+			}
+			if len(fd.Tools) > 0 {
+				entry["tools"] = fd.Tools
 			}
 			entries = append(entries, entry)
 		}
@@ -115,9 +125,11 @@ func (g *Generator) emitAgentRuntime() {
 			`# llm(prompt) lowers to __tt_llm_call. In test mode the helper consults`,
 			`# __tt_mock_llm (one rule per line: pattern<TAB>response) and aborts on`,
 			`# any unmatched prompt — never falls through to a real model in tests.`,
-			`# In run mode it pipes the prompt to $TARTALO_LLM_CMD (default:`,
-			`# claude -p) and writes stdout into __ret. We deliberately avoid a`,
-			`# $(...) capture in the call site so the test-mode mock state survives.`,
+			`# In run mode it dispatches on $TARTALO_LLM_PROVIDER: "kimi" calls`,
+			`# Moonshot's OpenAI-compatible API (requires python3 + KIMI_API_KEY);`,
+			`# anything else pipes the prompt to $TARTALO_LLM_CMD (default: claude -p).`,
+			`# We deliberately avoid a $(...) capture in the call site so the`,
+			`# test-mode mock state survives.`,
 			`__tt_llm_call() {`,
 			`  __tt_p="$1"`,
 		})
@@ -134,8 +146,50 @@ func (g *Generator) emitAgentRuntime() {
 			})
 		} else {
 			g.writeLines([]string{
+				`  case "${TARTALO_LLM_PROVIDER:-}" in`,
+				`    kimi|moonshot) __tt_llm_kimi "$__tt_p"; return $? ;;`,
+				`  esac`,
 				`  __tt_cmd="${TARTALO_LLM_CMD:-claude -p}"`,
 				`  __ret=$(printf '%s' "$__tt_p" | sh -c "$__tt_cmd")`,
+				`}`,
+				"",
+				`# __tt_llm_kimi calls Moonshot's OpenAI-compatible chat/completions`,
+				`# endpoint. Defaults: base https://api.moonshot.ai/v1, model`,
+				`# moonshot-v1-8k. Both are overridable via TARTALO_KIMI_BASE_URL`,
+				`# and TARTALO_KIMI_MODEL — the URL override is also what makes`,
+				`# tests point at a local server. python3 is required for portable`,
+				`# JSON marshalling and HTTPS; KIMI_API_KEY is mandatory.`,
+				`__tt_llm_kimi() {`,
+				`  __tt_p="$1"`,
+				`  if [ -z "${KIMI_API_KEY:-}" ]; then`,
+				`    printf 'tartalo: kimi: KIMI_API_KEY not set\n' >&2; exit 1`,
+				`  fi`,
+				`  if ! command -v python3 >/dev/null 2>&1; then`,
+				`    printf 'tartalo: kimi: python3 is required on the shell target (use --target=native for a no-deps build)\n' >&2; exit 1`,
+				`  fi`,
+				`  __ret=$(__TT_KIMI_PROMPT="$__tt_p" python3 -c '`,
+				`import json, os, sys, urllib.request, urllib.error`,
+				`prompt = os.environ["__TT_KIMI_PROMPT"]`,
+				`key = os.environ["KIMI_API_KEY"]`,
+				`base = os.environ.get("TARTALO_KIMI_BASE_URL", "https://api.moonshot.ai/v1").rstrip("/")`,
+				`model = os.environ.get("TARTALO_KIMI_MODEL", "moonshot-v1-8k")`,
+				`body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}]}).encode()`,
+				`req = urllib.request.Request(base + "/chat/completions", data=body, headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})`,
+				`try:`,
+				`    resp = urllib.request.urlopen(req)`,
+				`    data = json.load(resp)`,
+				`except urllib.error.HTTPError as e:`,
+				`    sys.stderr.write("tartalo: kimi: status %d: %s\n" % (e.code, e.read().decode("utf-8", "replace")))`,
+				`    sys.exit(1)`,
+				`except Exception as e:`,
+				`    sys.stderr.write("tartalo: kimi: " + str(e) + "\n")`,
+				`    sys.exit(1)`,
+				`choices = data.get("choices") or []`,
+				`if not choices:`,
+				`    sys.stderr.write("tartalo: kimi: no choices in response\n")`,
+				`    sys.exit(1)`,
+				`sys.stdout.write(choices[0]["message"]["content"])`,
+				`')`,
 				`}`,
 				"",
 			})
@@ -195,6 +249,39 @@ func (g *Generator) emitAgentRuntime() {
 		g.writeLine(`}`)
 		g.writeLine("")
 	}
+
+	if g.usesCallTool {
+		// Same shape as __tt_spawn_agent but only enumerates tools whose
+		// signature is (string)→string. Tools with richer shapes stay
+		// directly callable but are unreachable through callTool.
+		g.writeLine(`# callTool(name, input) dispatches to a declared tool by name. Only`)
+		g.writeLine(`# (string)→string tools are reachable through this dispatcher.`)
+		g.writeLine(`__tt_call_tool() {`)
+		g.writeLine(`  __tt_tn="$1"`)
+		g.writeLine(`  __tt_ti="$2"`)
+		g.writeLine(`  case "$__tt_tn" in`)
+		for _, t := range g.tools {
+			if !isStringToString(t.Decl) {
+				continue
+			}
+			g.writeLine(fmt.Sprintf(`    %s) %s "$__tt_ti" ;;`, shCaseLiteral(t.Name), t.ShName))
+		}
+		g.writeLine(`    *) printf 'tartalo: unknown tool: %s\n' "$__tt_tn" >&2; exit 1 ;;`)
+		g.writeLine(`  esac`)
+		g.writeLine(`}`)
+		g.writeLine("")
+	}
+}
+
+// isStringToString reports whether a func/tool declaration has the
+// (string) -> string shape required by name-keyed dispatchers.
+func isStringToString(fd *ast.FuncDecl) bool {
+	if len(fd.Params) != 1 {
+		return false
+	}
+	pn, _ := fd.Params[0].TypeAnn.(*ast.TypeName)
+	rn, _ := fd.Result.(*ast.TypeName)
+	return pn != nil && rn != nil && pn.Name == "string" && rn.Name == "string"
 }
 
 // shCaseLiteral escapes a name for the LHS of a sh `case` arm.
@@ -217,6 +304,20 @@ func shCaseLiteral(name string) string {
 func (g *Generator) compileLlm(args []exprValue, prologue []string) exprValue {
 	g.usesLLM = true
 	out := g.tmp("llm")
+	// Inside an agent body with a declared budget, decrement and check the
+	// per-invocation counter before each llm() call. The check is inlined
+	// (not in __tt_llm_call) because the counter is a local of the agent
+	// function — making it visible to a shared helper would mean exporting
+	// it as a global, losing the per-invocation reset.
+	if g.currentAgent != nil && g.currentAgent.Budget > 0 {
+		prologue = append(prologue,
+			`if [ "$__tt_budget" -le 0 ]; then `+
+				`printf 'tartalo: agent %s exceeded llm budget of %d\n' `+
+				shSingleQuote(g.currentAgent.Name)+` `+
+				itoa64(g.currentAgent.Budget)+` >&2; exit 1; fi`,
+			"__tt_budget=$((__tt_budget - 1))",
+		)
+	}
 	// Call the helper as a function (no subshell capture) so it can update
 	// per-test mock state (__tt_mock_llm_calls). The helper writes its
 	// result into __ret; we snapshot that into a fresh tmp immediately so a
@@ -252,6 +353,77 @@ func (g *Generator) compileToolSchemas(prologue []string) exprValue {
 		return exprValue{prologue: prologue, value: "[]", form: formStr}
 	}
 	return exprValue{prologue: prologue, value: "${__TT_SCHEMAS}", form: formStr}
+}
+
+// compileCallTool lowers callTool(name, input) — a name-keyed tool dispatcher
+// mirroring spawnAgent. Restricted at the codegen level to (string)→string
+// tools; tools with richer signatures are unreachable through callTool but
+// remain callable directly. Unknown names abort the script.
+func (g *Generator) compileCallTool(args []exprValue, prologue []string) exprValue {
+	g.usesCallTool = true
+	out := g.tmp("ct")
+	prologue = append(prologue, fmt.Sprintf("__tt_call_tool %s %s", args[0].assignmentRHS(), args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s="$__ret"`, out))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// compileAgentTools resolves to a JSON literal containing the schemas of
+// the surrounding agent's `uses (...)` tools, or "[]" when called outside an
+// agent or when the agent has no uses clause. Resolution happens at compile
+// time — the result is a constant string per call site.
+func (g *Generator) compileAgentTools(prologue []string) exprValue {
+	if g.currentAgent == nil || len(g.currentAgent.Tools) == 0 {
+		return exprValue{prologue: prologue, value: "[]", form: formStr}
+	}
+	js := g.agentToolsJSON(g.currentAgent)
+	v := g.tmp("at")
+	prologue = append(prologue, fmt.Sprintf(`%s='%s'`, v, escForSingleQuoted(js)))
+	return exprValue{prologue: prologue, value: "${" + v + "}", form: formStr}
+}
+
+// agentToolsJSON produces the per-agent tool-schema array. Looks up each
+// name in the precomputed g.tools slice and serialises matching tool decls
+// in the same shape as toolSchemas() entries so consumers can prompt-inject
+// either without reformatting.
+func (g *Generator) agentToolsJSON(fd *ast.FuncDecl) string {
+	entries := make([]map[string]any, 0, len(fd.Tools))
+	for _, name := range fd.Tools {
+		var tfd *ast.FuncDecl
+		for i := range g.tools {
+			if g.tools[i].Name == name {
+				tfd = g.tools[i].Decl
+				break
+			}
+		}
+		if tfd == nil {
+			continue
+		}
+		params := make([]map[string]any, 0, len(tfd.Params))
+		for _, p := range tfd.Params {
+			params = append(params, map[string]any{
+				"name": p.Name,
+				"type": typeExprText(p.TypeAnn),
+			})
+		}
+		entry := map[string]any{
+			"name":    tfd.Name,
+			"kind":    "tool",
+			"params":  params,
+			"returns": typeExprText(tfd.Result),
+		}
+		if tfd.Description != "" {
+			entry["description"] = tfd.Description
+		}
+		if len(tfd.Effects) > 0 {
+			entry["effects"] = tfd.Effects
+		}
+		entries = append(entries, entry)
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 func (g *Generator) compileMockLlm(args []exprValue, prologue []string) exprValue {
@@ -351,6 +523,8 @@ func (g *Generator) scanExpr(e ast.Expr) {
 					g.usesTrace = true
 				case "spawnAgent":
 					g.usesSpawnAgent = true
+				case "callTool":
+					g.usesCallTool = true
 				}
 			}
 		}

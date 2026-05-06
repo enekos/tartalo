@@ -279,24 +279,20 @@ func (g *Generator) compileUnary(e *ast.UnaryExpr) string {
 }
 
 func binExpr(lhs, op, rhs string) string {
-	totalLen := 1 + len(lhs) + 1 + len(op) + 1 + len(rhs) + 1
-	if totalLen <= 64 {
-		var buf [64]byte
-		n := 0
-		buf[n] = '('
-		n++
-		n += copy(buf[n:], lhs)
-		buf[n] = ' '
-		n++
-		n += copy(buf[n:], op)
-		buf[n] = ' '
-		n++
-		n += copy(buf[n:], rhs)
-		buf[n] = ')'
-		n++
-		return string(buf[:n])
+	if len(lhs)+len(op)+len(rhs)+4 > 64 {
+		return "(" + lhs + " " + op + " " + rhs + ")"
 	}
-	return "(" + lhs + " " + op + " " + rhs + ")"
+	var buf [64]byte
+	buf[0] = '('
+	n := 1 + copy(buf[1:], lhs)
+	buf[n] = ' '
+	n++
+	n += copy(buf[n:], op)
+	buf[n] = ' '
+	n++
+	n += copy(buf[n:], rhs)
+	buf[n] = ')'
+	return string(buf[:n+1])
 }
 
 func (g *Generator) compileBinary(e *ast.BinaryExpr) string {

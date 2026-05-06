@@ -22,13 +22,16 @@ tool greet(name: string): string {
 }
 
 // An `agent` is the same shape as a tool, distinguished only in the schema.
-// Effects on the return type (`!ai !net`) declare what the agent may do —
-// for now they're advisory; future work enforces them via --caps.
-agent assistant(question: string): string !ai {
+// `uses (...)` declares which tools the agent may invoke; agentTools()
+// returns just those schemas so a prompt can show the LLM only what's in
+// scope. budget(N) caps the number of llm() calls per invocation —
+// exceeding it aborts the program with a clear error.
+agent assistant(question: string) uses (listFiles, greet): string !ai {
   desc("answer a question, possibly using tools")
-  budget(50)
+  budget(2)
   trace("agent.start", question)
-  let answer = llm("Answer briefly: " + question)
+  let prompt = "Tools: " + agentTools() + "\nQ: " + question
+  let answer = llm(prompt)
   trace("agent.end", answer)
   return answer
 }
@@ -39,8 +42,14 @@ func main(): void {
   echo(toolSchemas())
   echo("")
 
-  echo("== greet ==")
+  echo("== greet (direct) ==")
   echo(greet("Tartalo"))
+  echo("")
+
+  // callTool dispatches a (string)→string tool by name — same shape as
+  // spawnAgent, useful when an LLM response names the tool to invoke.
+  echo("== greet (via callTool) ==")
+  echo(callTool("greet", "world"))
   echo("")
 
   // spawnAgent dispatches by name. The compiler enumerated the agents at

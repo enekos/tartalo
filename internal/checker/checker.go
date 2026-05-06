@@ -139,6 +139,12 @@ type Checker struct {
 	currentMod *loader.Module
 	currentRet types.Type
 
+	// taskOuter is non-nil while checking the body of a `task { ... }` block.
+	// Its value is the scope that immediately encloses the task body, so
+	// `isLocalToTask` can tell whether a resolved symbol was declared inside
+	// the task (assignable) or outside (read-only). Nil outside any task.
+	taskOuter *scope
+
 	// inTest is true while checking the body of a `test "..." { ... }` decl.
 	// Assertion builtins (assertEq, fail, skip, ...) require this to be true.
 	// Helpers called from tests cannot use them directly — pass a bool back
@@ -146,6 +152,12 @@ type Checker struct {
 	inTest bool
 
 	narrows []map[string]types.Type
+
+	// expectedType carries an outer context type into a call expression — used
+	// today only by readCsv to recover the row-record type from the LHS of a
+	// `let xs: T[] = readCsv(...)`. Set by checkVarDecl / checkAssignStmt
+	// before recursing into the initializer; nil otherwise.
+	expectedType types.Type
 }
 
 // sharedPredeclTypes and sharedBuiltinScope are built once at package init.
@@ -846,6 +858,9 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 		return
 	}
 	ft := sym.Type.(*types.Func)
+	if fd.Kind == ast.FuncKindAgent && len(fd.Tools) > 0 {
+		c.checkAgentToolList(fd, env)
+	}
 	saved := c.current
 	savedRet := c.currentRet
 	savedInTest := c.inTest
@@ -869,6 +884,28 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	c.inTest = savedInTest
 }
 
+// checkAgentToolList validates each name in an agent's `uses (...)` clause
+// resolves to a declared tool in scope, and rejects duplicates. We reuse
+// scope resolution so cross-module tool imports work without extra plumbing.
+func (c *Checker) checkAgentToolList(fd *ast.FuncDecl, env *moduleEnv) {
+	seen := map[string]bool{}
+	for _, t := range fd.Tools {
+		if seen[t] {
+			c.errorf(fd.NamePos, "duplicate tool %q in agent %q uses clause", t, fd.Name)
+			continue
+		}
+		seen[t] = true
+		s := env.scope.resolve(t)
+		if s == nil {
+			c.errorf(fd.NamePos, "agent %q uses unknown tool %q", fd.Name, t)
+			continue
+		}
+		if !s.IsFunc {
+			c.errorf(fd.NamePos, "agent %q uses %q, which is not a tool", fd.Name, t)
+		}
+	}
+}
+
 func (c *Checker) checkVarDecl(d *ast.VarDecl, isGlobal bool) {
 	// Record-type init shortcut: empty array literal needs the annotated type.
 	var bound types.Type
@@ -880,7 +917,10 @@ func (c *Checker) checkVarDecl(d *ast.VarDecl, isGlobal bool) {
 			c.bindVar(d, bound, isGlobal)
 			return
 		}
+		saved := c.expectedType
+		c.expectedType = declared
 		got := c.checkExpr(d.Value)
+		c.expectedType = saved
 		if declared != types.Invalid && got != types.Invalid && !types.IsAssignable(got, declared) {
 			c.errorf(d.Value.Pos(),
 				"type mismatch: variable %q declared as %s, initializer is %s",
@@ -951,13 +991,22 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 		if sym.IsFunc {
 			c.errorf(s.NamePos, "cannot assign to function %q", s.Name)
 		}
+		if c.taskOuter != nil && !c.isLocalToTask(sym) {
+			c.errorf(s.NamePos, "cannot assign to outer-scope variable %q from inside a task", s.Name)
+		}
+		saved := c.expectedType
+		c.expectedType = sym.Type
 		got := c.checkExpr(s.Value)
+		c.expectedType = saved
 		if got != types.Invalid && sym.Type != types.Invalid && !types.IsAssignable(got, sym.Type) {
 			c.errorf(s.Value.Pos(),
 				"type mismatch: %q is %s, value is %s",
 				s.Name, types.Format(sym.Type), types.Format(got))
 		}
 	case *ast.ReturnStmt:
+		if c.taskOuter != nil {
+			c.errorf(s.KwPos, "return is not allowed inside a task block")
+		}
 		if s.Value == nil {
 			if c.currentRet != types.Void {
 				c.errorf(s.KwPos, "function returns %s, return statement has no value", types.Format(c.currentRet))
@@ -1035,11 +1084,26 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 		if c.currentRet == nil {
 			c.errorf(s.KwPos, "defer is only valid inside a function body")
 		}
+		if c.taskOuter != nil {
+			c.errorf(s.KwPos, "defer is not allowed inside a task block")
+		}
 		c.checkBlock(s.Body)
 		if pos, has := firstReturnIn(s.Body); has {
 			c.errorf(pos, "return is not allowed inside a defer block")
 		}
+	case *ast.ParallelStmt:
+		c.checkParallel(s)
+	case *ast.TaskStmt:
+		c.errorf(s.KwPos, "task can only appear inside a parallel block")
+		c.checkBlock(s.Body)
 	case *ast.FieldAssignStmt:
+		if c.taskOuter != nil {
+			if root := rootIdent(s.Target); root != nil {
+				if sym := c.current.resolve(root.Name); sym != nil && !c.isLocalToTask(sym) {
+					c.errorf(s.NamePos, "cannot mutate field of outer-scope record %q from inside a task", root.Name)
+				}
+			}
+		}
 		tt := c.checkExpr(s.Target)
 		rec, ok := tt.(*types.Record)
 		if !ok {
@@ -1063,6 +1127,75 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 		}
 	default:
 		c.errorf(s.Pos(), "unhandled statement type %T", s)
+	}
+}
+
+// checkParallel validates a `parallel { task { ... } ... }` block. The
+// parser already restricts the body to TaskStmt children, but we re-check
+// defensively in case a synthesised AST appears in tests. Each task body
+// runs with c.taskOuter set, which makes nested return/defer/parallel and
+// outer-scope writes errors (handled inline in checkStmt).
+func (c *Checker) checkParallel(s *ast.ParallelStmt) {
+	if c.currentRet == nil {
+		c.errorf(s.KwPos, "parallel is only valid inside a function body")
+	}
+	if c.taskOuter != nil {
+		c.errorf(s.KwPos, "parallel cannot be nested inside a task block")
+		// Continue checking so further errors surface anyway.
+	}
+	for _, st := range s.Body.Stmts {
+		ts, ok := st.(*ast.TaskStmt)
+		if !ok {
+			c.errorf(st.Pos(), "parallel block can only contain task { ... } statements")
+			c.checkStmt(st)
+			continue
+		}
+		savedOuter := c.taskOuter
+		savedScope := c.current
+		c.taskOuter = c.current
+		c.current = newScope(savedScope)
+		for _, bs := range ts.Body.Stmts {
+			c.checkStmt(bs)
+		}
+		c.current = savedScope
+		c.taskOuter = savedOuter
+	}
+}
+
+// isLocalToTask reports whether sym was declared inside the current task
+// body (between c.current and c.taskOuter, exclusive of taskOuter). Outer
+// declarations are read-only inside a task because the sh backend runs each
+// task in a subshell where mutations don't propagate back to the parent.
+func (c *Checker) isLocalToTask(sym *Symbol) bool {
+	if c.taskOuter == nil {
+		return true
+	}
+	for cur := c.current; cur != nil && cur != c.taskOuter; cur = cur.parent {
+		if cur.syms == nil {
+			continue
+		}
+		if got, ok := cur.syms[sym.Name]; ok && got == sym {
+			return true
+		}
+	}
+	return false
+}
+
+// rootIdent walks an expression chain like `a.b.c[0].d` down to its root
+// identifier. Returns nil if the root isn't an Ident (e.g. the chain starts
+// from a call result, which can't be assigned to an outer name anyway).
+func rootIdent(e ast.Expr) *ast.Ident {
+	for {
+		switch x := e.(type) {
+		case *ast.Ident:
+			return x
+		case *ast.FieldExpr:
+			e = x.Target
+		case *ast.IndexExpr:
+			e = x.Target
+		default:
+			return nil
+		}
 	}
 }
 
@@ -1644,6 +1777,12 @@ func (c *Checker) checkBinary(e *ast.BinaryExpr) types.Type {
 }
 
 func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
+	// expectedType applies only to *this* call (e.g. readCsv with a known LHS
+	// row-record type). Snapshot and clear so it doesn't bleed into nested
+	// argument checks.
+	expected := c.expectedType
+	c.expectedType = nil
+	defer func() { c.expectedType = expected }()
 	id, ok := e.Callee.(*ast.Ident)
 	if !ok {
 		c.errorf(e.LParenPos, "only direct function calls are supported")
@@ -1668,6 +1807,14 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 			return c.checkFilterCall(e)
 		case "reduce":
 			return c.checkReduceCall(e)
+		case "count":
+			return c.checkCountCall(e)
+		case "unique":
+			return c.checkUniqueCall(e)
+		case "readCsv":
+			return c.checkReadCsvCall(e, expected)
+		case "writeCsv":
+			return c.checkWriteCsvCall(e)
 		case "assertEq", "assertNe", "check", "fail", "skip":
 			return c.checkTestBuiltinCall(e, sym)
 		case "mockExec", "mockFetch", "mockEnv", "mockReadFile", "mockLlm", "mockLlmCalls",
@@ -1817,6 +1964,162 @@ func (c *Checker) checkFilterCall(e *ast.CallExpr) types.Type {
 		return types.Invalid
 	}
 	return arr
+}
+
+// checkCountCall validates `count(arr: T[], pred: func(T): bool): number`.
+// Same shape as filter but produces a count.
+func (c *Checker) checkCountCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "count expects 2 arguments (array, predicate), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	at := c.checkExpr(e.Args[0])
+	ft := c.checkExpr(e.Args[1])
+	arr, ok := at.(*types.Array)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "count: first argument must be an array, got %s", types.Format(at))
+		return types.Invalid
+	}
+	fn, ok := ft.(*types.Func)
+	if !ok {
+		c.errorf(e.Args[1].Pos(), "count: second argument must be a function, got %s", types.Format(ft))
+		return types.Invalid
+	}
+	if len(fn.Params) != 1 || !types.Equal(fn.Params[0], arr.Elem) {
+		c.errorf(e.Args[1].Pos(), "count: predicate must take one parameter of type %s", types.Format(arr.Elem))
+		return types.Invalid
+	}
+	if fn.Result != types.Bool {
+		c.errorf(e.Args[1].Pos(), "count: predicate must return bool, got %s", types.Format(fn.Result))
+		return types.Invalid
+	}
+	return types.Number
+}
+
+// checkUniqueCall validates `unique(arr: T[]): T[]`. T must be a primitive
+// (string/number/float/bool); deduplicating arrays of records would require
+// structural equality on records and is deferred.
+func (c *Checker) checkUniqueCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 1 {
+		c.errorf(e.LParenPos, "unique expects 1 argument, got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	at := c.checkExpr(e.Args[0])
+	arr, ok := at.(*types.Array)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "unique: argument must be an array, got %s", types.Format(at))
+		return types.Invalid
+	}
+	switch arr.Elem {
+	case types.String, types.Number, types.Float, types.Bool:
+		return arr
+	}
+	c.errorf(e.Args[0].Pos(),
+		"unique: element type must be a primitive (string, number, float, bool), got %s",
+		types.Format(arr.Elem))
+	return types.Invalid
+}
+
+// checkReadCsvCall validates `readCsv(path: string): T[]`. The element type
+// T comes from the surrounding context (variable annotation), and must be a
+// record whose fields are all primitives. The expected type is captured by
+// checkVarDecl / checkAssignStmt before the regular call-checking path runs;
+// when reached without context, the call is rejected.
+func (c *Checker) checkReadCsvCall(e *ast.CallExpr, want types.Type) types.Type {
+	if len(e.Args) != 1 {
+		c.errorf(e.LParenPos, "readCsv expects 1 argument (path), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	pt := c.checkExpr(e.Args[0])
+	if pt != types.Invalid && pt != types.String {
+		c.errorf(e.Args[0].Pos(), "readCsv: path must be string, got %s", types.Format(pt))
+	}
+	if want == nil {
+		c.errorf(e.LParenPos,
+			"readCsv requires a typed context, e.g. `let xs: Person[] = readCsv(...)`")
+		return types.Invalid
+	}
+	arr, ok := want.(*types.Array)
+	if !ok {
+		c.errorf(e.LParenPos, "readCsv: expected array type from context, got %s", types.Format(want))
+		return types.Invalid
+	}
+	rec, ok := arr.Elem.(*types.Record)
+	if !ok {
+		c.errorf(e.LParenPos, "readCsv: element type must be a record, got %s", types.Format(arr.Elem))
+		return types.Invalid
+	}
+	for _, f := range rec.Fields {
+		if !isCsvFieldType(f.Type) {
+			c.errorf(e.LParenPos,
+				"readCsv: record field %q must be a primitive (string, number, float, bool), got %s",
+				f.Name, types.Format(f.Type))
+			return types.Invalid
+		}
+	}
+	return arr
+}
+
+// checkWriteCsvCall validates `writeCsv(rows: T[], path: string): void`.
+// T must be a record of primitive fields.
+func (c *Checker) checkWriteCsvCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "writeCsv expects 2 arguments (rows, path), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Void
+	}
+	at := c.checkExpr(e.Args[0])
+	pt := c.checkExpr(e.Args[1])
+	if pt != types.Invalid && pt != types.String {
+		c.errorf(e.Args[1].Pos(), "writeCsv: path must be string, got %s", types.Format(pt))
+	}
+	arr, ok := at.(*types.Array)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "writeCsv: rows must be an array of records, got %s", types.Format(at))
+		return types.Void
+	}
+	rec, ok := arr.Elem.(*types.Record)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "writeCsv: row element type must be a record, got %s", types.Format(arr.Elem))
+		return types.Void
+	}
+	for _, f := range rec.Fields {
+		if !isCsvFieldType(f.Type) {
+			c.errorf(e.Args[0].Pos(),
+				"writeCsv: record field %q must be a primitive (string, number, float, bool), got %s",
+				f.Name, types.Format(f.Type))
+			return types.Void
+		}
+	}
+	return types.Void
+}
+
+// isCsvFieldType reports whether a record field is representable as a CSV
+// cell. Optional primitives are OK (rendered as empty / parsed as null).
+// Arrays, records-of-records, and sums are rejected.
+func isCsvFieldType(t types.Type) bool {
+	switch t {
+	case types.String, types.Number, types.Float, types.Bool:
+		return true
+	}
+	if opt, ok := t.(*types.Optional); ok {
+		switch opt.Elem {
+		case types.String, types.Number, types.Float, types.Bool:
+			return true
+		}
+	}
+	return false
 }
 
 // checkTestBuiltinCall handles the assertion/test-control builtins. Common
@@ -1991,6 +2294,8 @@ func builtins() []*Symbol {
 	bln := types.Bool
 	void := types.Void
 	stringArr := &types.Array{Elem: types.String}
+	floatArr := &types.Array{Elem: types.Float}
+	numArr := &types.Array{Elem: types.Number}
 	mk := func(name string, params []types.Type, result types.Type) *Symbol {
 		return &Symbol{Name: name, IsFunc: true, IsBuiltin: true,
 			Type: &types.Func{Params: params, Result: result}}
@@ -2075,6 +2380,25 @@ func builtins() []*Symbol {
 		mk("ceil", []types.Type{flt}, num),
 		mk("round", []types.Type{flt}, num),
 
+		// Numeric vector builtins (numpy-lite). All operate on float[];
+		// arange returns number[]. Reductions return float; element-wise
+		// ops return float[]. Mismatched-length binary ops use the shorter
+		// operand's length (no error).
+		mk("vSum", []types.Type{floatArr}, flt),
+		mk("vMean", []types.Type{floatArr}, flt),
+		mk("vMin", []types.Type{floatArr}, flt),
+		mk("vMax", []types.Type{floatArr}, flt),
+		mk("vVar", []types.Type{floatArr}, flt),
+		mk("vStd", []types.Type{floatArr}, flt),
+		mk("vAdd", []types.Type{floatArr, floatArr}, floatArr),
+		mk("vSub", []types.Type{floatArr, floatArr}, floatArr),
+		mk("vMul", []types.Type{floatArr, floatArr}, floatArr),
+		mk("vScale", []types.Type{floatArr, flt}, floatArr),
+		mk("vDot", []types.Type{floatArr, floatArr}, flt),
+		mk("linspace", []types.Type{flt, flt, num}, floatArr),
+		mk("arange", []types.Type{num, num, num}, numArr),
+		mk("cumsum", []types.Type{floatArr}, floatArr),
+
 		// Higher-order builtins. The signatures registered here are
 		// placeholders — the actual type checking is done by the
 		// checkMapCall / checkFilterCall / checkReduceCall handlers above,
@@ -2082,6 +2406,14 @@ func builtins() []*Symbol {
 		mk("map", []types.Type{stringArr, str}, stringArr),
 		mk("filter", []types.Type{stringArr, str}, stringArr),
 		mk("reduce", []types.Type{stringArr, str, str}, str),
+
+		// Pandas-lite. Like map/filter/reduce, the signatures are
+		// placeholders; checkCountCall/checkUniqueCall/checkReadCsvCall/
+		// checkWriteCsvCall do the real work.
+		mk("count", []types.Type{stringArr, str}, num),
+		mk("unique", []types.Type{stringArr}, stringArr),
+		mk("readCsv", []types.Type{str}, stringArr),
+		mk("writeCsv", []types.Type{stringArr, str}, void),
 
 		// Testing builtins. assertEq/assertNe are polymorphic over the
 		// scalar primitives (string, number, bool, float); the placeholder
@@ -2119,6 +2451,8 @@ func builtins() []*Symbol {
 		//   approval(prompt) -> bool      prompts on /dev/tty (y/n); effect !io
 		//   trace(label, value) -> void   appends NDJSON to $TARTALO_TRACE if set
 		//   spawnAgent(name, in) -> string call agent by name in this program
+		//   callTool(name, in) -> string  call a (string)→string tool by name
+		//   agentTools() -> string        JSON of the surrounding agent's tools
 		//   toolSchemas() -> string       JSON of all declared tools/agents
 		//   mockLlm(pat, resp) -> void    test-only: canned llm response
 		//   mockLlmCalls() -> string[]    test-only: prompts seen this run
@@ -2126,6 +2460,8 @@ func builtins() []*Symbol {
 		mk("approval", []types.Type{str}, bln),
 		mk("trace", []types.Type{str, str}, void),
 		mk("spawnAgent", []types.Type{str, str}, str),
+		mk("callTool", []types.Type{str, str}, str),
+		mk("agentTools", nil, str),
 		mk("toolSchemas", nil, str),
 		mk("mockLlm", []types.Type{str, str}, void),
 		mk("mockLlmCalls", nil, stringArr),

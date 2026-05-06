@@ -9,9 +9,11 @@ shell scripting: catch type errors at compile time, choose the runtime that
 fits.
 
 It also doubles as an **agent platform**: `tool` and `agent` declarations
-expose typed entry points to LLMs via auto-generated JSON schemas, and
-builtins like `llm()`, `approval()`, `trace()`, and `spawnAgent()` give
-you a self-contained agent in a single `.sh` file. See the [agent
+expose typed entry points to LLMs via auto-generated JSON schemas. Agents
+declare which tools they can invoke with a `uses (...)` clause, get a
+runtime-enforced `budget(N)` on `llm()` calls, and dispatch tools by name
+through `callTool()` — all in a self-contained `.sh` (or native binary)
+with no `pip`, no `node_modules`, no Docker. See the [agent
 platform](SPEC.md#agent-platform) section of the spec.
 
 ```tartalo
@@ -105,6 +107,21 @@ shellcheck — it's an sh-specific guardrail.
 
 Stdlib modules ship inside the binary and are imported via the `tartalo:`
 scheme, e.g. `import { padLeft, repeat } from "tartalo:strings/extra"`.
+
+## LLM providers
+
+`llm()` dispatches on `TARTALO_LLM_PROVIDER`. Setting it to `kimi` (or
+`moonshot`) calls Moonshot's OpenAI-compatible chat/completions API using
+`KIMI_API_KEY`; override `TARTALO_KIMI_BASE_URL` / `TARTALO_KIMI_MODEL` to
+point at a self-hosted endpoint or a different model (default
+`moonshot-v1-8k`). With no provider set, the prompt is piped to
+`TARTALO_LLM_CMD` (default `claude -p`) so any CLI tool works as a fallback.
+The native target talks HTTP directly; the sh target shells out through
+`python3` for the kimi path.
+
+```
+TARTALO_LLM_PROVIDER=kimi KIMI_API_KEY=sk-... ./demo.sh "hello"
+```
 
 ## Testing
 

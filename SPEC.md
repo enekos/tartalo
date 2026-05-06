@@ -68,7 +68,7 @@ Constraints in v0:
 - Numbers: integer literals only in v0 (`42`, `-3`).
 - Strings: double-quoted, with `\n \t \\ \" \$` escapes and `${expr}` interpolation.
 - Command literals: backticks, e.g. `` `ls -1` ``. Substitutes to a `string` (stdout, trailing newline trimmed).
-- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `match`, `type`, `import`, `export`, `test`, `defer`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
+- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `match`, `type`, `import`, `export`, `test`, `defer`, `parallel`, `task`, `tool`, `agent`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
 
 ## Types (v0)
 
@@ -403,6 +403,50 @@ invokes them. Sh's dynamic-scoped locals make the defer body see the
 enclosing function's variables transparently, matching Go's semantics for
 the native target where defer maps to `defer func() { ... }()`.
 
+## Parallel tasks
+
+`parallel { task { ... } task { ... } ... }` runs every task block
+concurrently and joins them all before continuing past the closing brace.
+It is the language's structured-concurrency primitive — fire and join, no
+async colours, no scheduler API.
+
+```tartalo
+func main(): void {
+  parallel {
+    task { echo("a") }
+    task { echo("b") }
+    task { echo("c") }
+  }
+  echo("done")    // always prints after every task has finished
+}
+```
+
+Rules (enforced by the checker):
+
+- The body of `parallel { ... }` may only contain `task { ... }` statements.
+- A task body may **not** assign to variables declared outside the task.
+  Reading them is fine.
+- A task body may **not** contain `return`, `defer`, or another `parallel`
+  block. (No nested concurrency in v0.)
+- `task { ... }` outside of a surrounding `parallel { ... }` is a syntax
+  error.
+
+These restrictions exist so the sh and native backends produce the same
+observable behaviour. The sh backend lowers each task to a backgrounded
+subshell (`( ... ) &`) joined by `wait`; the native backend lowers each
+task to a goroutine driven by a `sync.WaitGroup`. Subshells cannot
+propagate variable mutations back to the parent, and goroutines that wrote
+to shared locals would race — so the language forbids both.
+
+### Codegen sketch
+
+- **sh**: each `task { body }` emits `( body ) &`; after the last task the
+  block ends with `wait` (no args, blocks until all backgrounded children
+  exit).
+- **native**: the whole block is wrapped in a Go `{ ... }` scope holding a
+  fresh `sync.WaitGroup`; each task becomes `go func() { defer wg.Done(); body }()`,
+  and the block ends with `wg.Wait()`.
+
 ## Result and the `?` operator
 
 There is no built-in `Result` type — the user defines their own sum that
@@ -509,6 +553,47 @@ A command in statement position runs for side effects:
 - `floor(f: float): number` — largest integer ≤ f
 - `ceil(f: float): number` — smallest integer ≥ f
 - `round(f: float): number` — round to nearest integer (half away from zero)
+
+### Numeric vectors (numpy-lite)
+
+Element-wise and reduction ops on `float[]` (and `arange` on `number[]`).
+All reductions return `0` for an empty vector. Binary ops use the shorter
+operand's length when sizes don't match.
+
+- `vSum(xs: float[]): float` — sum
+- `vMean(xs: float[]): float` — arithmetic mean
+- `vMin(xs: float[]): float` — minimum
+- `vMax(xs: float[]): float` — maximum
+- `vVar(xs: float[]): float` — population variance
+- `vStd(xs: float[]): float` — population standard deviation
+- `vAdd(a, b: float[]): float[]` — element-wise sum
+- `vSub(a, b: float[]): float[]` — element-wise difference
+- `vMul(a, b: float[]): float[]` — element-wise product
+- `vScale(xs: float[], k: float): float[]` — scalar multiply
+- `vDot(a, b: float[]): float` — dot product
+- `linspace(start, end: float, n: number): float[]` — `n` evenly-spaced
+  samples in `[start, end]` (inclusive)
+- `arange(start, end, step: number): number[]` — half-open integer range
+- `cumsum(xs: float[]): float[]` — running totals
+
+### Pandas-lite (data ops on record arrays)
+
+A typed array of records `T[]` is the dataframe. CSV I/O uses
+`encoding/csv` on the native target; the sh target stubs `readCsv`/`writeCsv`
+out with a runtime error directing users to `--target=native`.
+
+- `count(arr: T[], pred: func(T): bool): number` — count elements matching
+  the predicate (no allocation, unlike `len(filter(...))`)
+- `unique(arr: T[]): T[]` — order-preserving deduplication. T must be a
+  primitive (string, number, float, bool); deduplicating record arrays is
+  not yet supported.
+- `readCsv(path: string): T[]` — parse a CSV file into an array of records.
+  T must be inferred from a typed context, e.g.
+  `let xs: Person[] = readCsv("p.csv")`. Each record field maps to a
+  column by header name; primitive (and optional-primitive) fields only.
+  Native target only.
+- `writeCsv(rows: T[], path: string): void` — write records as CSV with a
+  header row. Same field-type constraints as `readCsv`. Native target only.
 
 ### File I/O
 
@@ -651,10 +736,11 @@ tool searchFiles(pattern: string): string {
   return exec("grep -rIn " + pattern + " .").stdout
 }
 
-agent assistant(question: string): string !ai {
+agent assistant(question: string) uses (searchFiles): string !ai {
   desc("answer a question, possibly using tools")
-  budget(50)
-  return llm("Answer briefly: " + question)
+  budget(5)
+  let prompt = "Tools: " + agentTools() + "\nQ: " + question
+  return llm(prompt)
 }
 ```
 
@@ -663,6 +749,17 @@ return type, same body — but each is tagged in the AST so the codegen knows
 to register them in the schema table. The first lines of a tool/agent body
 may be `desc("...")` and `budget(N)` calls; these are pulled off as
 metadata, not executed.
+
+An optional `uses (toolA, toolB, ...)` clause sits between the parameter
+list and the return-type colon. It declares which tools the agent may
+invoke; `agentTools()` resolves to a JSON array of just those tools'
+schemas, suitable for prompt-injecting only the tools that are in scope.
+The checker rejects unknown names so a typo can't ship to runtime.
+
+`budget(N)` is enforced at runtime: each `llm()` call inside the agent body
+decrements an invocation-local counter, and the program aborts with a
+clear error on the (N+1)th call. The counter resets every time the agent
+is invoked.
 
 ### Effect annotations
 
@@ -675,11 +772,13 @@ Future work will enforce them via a compile-time `--caps=` capability set.
 
 | Builtin | Type | Effect | Notes |
 |---|---|---|---|
-| `llm(prompt: string): string` | `(string) → string` | `!ai` | Pipes prompt to `$TARTALO_LLM_CMD` (default `claude -p`). In test mode every call must be matched by `mockLlm` or the test fails. |
+| `llm(prompt: string): string` | `(string) → string` | `!ai` | Dispatches on `$TARTALO_LLM_PROVIDER`. `kimi` (or `moonshot`) calls Moonshot's OpenAI-compatible chat/completions API using `$KIMI_API_KEY` (overridable via `$TARTALO_KIMI_BASE_URL` / `$TARTALO_KIMI_MODEL`). Anything else pipes the prompt to `$TARTALO_LLM_CMD` (default `claude -p`). The shell target needs `python3` for the kimi path; the native target uses Go's `net/http` directly. In test mode every call must be matched by `mockLlm` or the test fails. |
 | `approval(prompt: string): bool` | `(string) → bool` | `!io` | Prints prompt on stderr, reads y/n from `/dev/tty` (falls back to stdin). Returns true for y/Y/yes, else false. |
 | `trace(label: string, value: string): void` | `(string,string) → void` | `!fs:write` | Appends one NDJSON record `{ts, label, value}` to `$TARTALO_TRACE` if set; no-op otherwise. |
-| `spawnAgent(name: string, input: string): string` | `(string,string) → string` | inherits | Calls a declared agent by name through a compile-time-built `case` dispatcher. No eval, no string-to-function lookup. Aborts with a clear error on unknown names. |
-| `toolSchemas(): string` | `() → string` | none | Returns a static JSON string with one entry per tool/agent: `{name, kind, params:[{name,type}], returns, description?, effects?, budget?}`. Built at compile time, stored as a sh constant / Go `const` — every call is O(1). |
+| `spawnAgent(name: string, input: string): string` | `(string,string) → string` | inherits | Calls a declared agent by name through a compile-time-built `case` dispatcher. No eval, no string-to-function lookup. Aborts with a clear error on unknown names. Restricted to `(string) → string` agents. |
+| `callTool(name: string, input: string): string` | `(string,string) → string` | inherits | Same shape as `spawnAgent` but for tools. Useful when an LLM response names the tool to invoke. Restricted to `(string) → string` tools. |
+| `agentTools(): string` | `() → string` | none | Returns a JSON array of the schemas of the tools declared in the surrounding agent's `uses (...)` clause; returns `"[]"` outside an agent context. Resolved at compile time per call site. |
+| `toolSchemas(): string` | `() → string` | none | Returns a static JSON string with one entry per tool/agent: `{name, kind, params:[{name,type}], returns, description?, effects?, budget?, tools?}`. Built at compile time, stored as a sh constant / Go `const` — every call is O(1). |
 | `mockLlm(pat, resp: string): void` | `(string,string) → void` | test-only | Registers a regex → response rule for `llm()` during a test. |
 | `mockLlmCalls(): string[]` | `() → string[]` | test-only | Prompts seen this run, in order. |
 
