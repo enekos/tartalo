@@ -13,6 +13,8 @@
 - **Expand compileIdent fast path to all single-letter names** — covers a-z plus safe multi-letter names (total, sum, res, err, ok, idx, tmp, cur, max, min, xs, fn, out, in, count, item, main)
 - **Stack buffer for 0-arg and 2-arg calls in compileCall** — avoids Builder allocation for common call patterns
 - **Track VarDecl presence during Pass 1** — eliminates separate scan for globals detection
+- **Replace json.Marshal with direct strings.Builder in agentToolsJSON** — eliminates map[string]any allocations and reflection overhead for per-agent tool schemas
+- **Replace json.Marshal with direct strings.Builder in initAgentPlatform** — eliminates map[string]any allocations and reflection overhead for toolSchemasJSON
 
 ## Completed (discarded) — Complex Scripts Session
 
@@ -20,6 +22,7 @@
 - **Larger fixed pre-growth (8192 bytes)** — over-allocates for small scripts, hurting cache locality and increasing suite_bytes by 44%
 - **Precomputed indent strings in writeLine** — no measurable benefit; WriteString for short strings may be slower than multiple WriteByte
 - **hasAgents check before initAgentPlatform** — adds an extra scan that doesn't improve performance
+- **Cache agentToolsJSON per agent** — correct but effect too small to measure on macOS due to high variance; better to optimize the JSON building itself
 
 ## Key Learnings — Complex Scripts Session
 
@@ -29,6 +32,8 @@
 - **defer has real overhead even in emitter** — not just closure alloc but runtime bookkeeping; explicit save/restore is faster
 - **macOS variance is still high** — ~1-2µs per script, ~10-20µs for the suite; need 5×+ confidence for keep decisions
 - **fast path for identifiers must not bypass narrowing** — compileIdent's optional-narrowing check must run before fast path returns; adding names like `key` that can be optional variables causes test failures
+- **json.Marshal with map[string]any is extremely allocation-heavy** — replacing it with direct strings.Builder in agentToolsJSON and initAgentPlatform yielded the two biggest single improvements in this session
+- **Reflection-based JSON encoding dominates profiles** — encoding/json.mapEncoder.encode and reflect.copyVal were top allocators before the direct JSON builder optimization
 
 ## Remaining Opportunities (high effort / marginal gain)
 
@@ -36,13 +41,12 @@
 - **Generator pooling**: reuse Generator across compilations to eliminate New() allocation and imports slice alloc
 - **Batch writeLine calls**: combine multiple writeLine into single WriteString for common sequences (e.g., function prologue)
 - **Conditional predeclared types (v2)**: track usage during type info construction in checker, not during emission
-- **Custom JSON builder for toolSchemasJSON**: replace json.Marshal with direct string building for the very regular tool schema structure
 - **Inline goType for common composite types**: arrays/optionals of records/sums do string concat; could use a small cache
 
 ## Current State — Complex Scripts
 
 - Baseline: 53,821 ns/op, 806 allocs/op, 138,755 bytes/op
-- Current: ~45,482 ns/op, 793 allocs/op, 132,070 bytes/op
-- Improvement: ~15.5% time, ~1.6% allocs, ~4.8% bytes
-- Best individual script improvements: pandas -16.1%, numpy -17.9%, mega -14.7%, agent_demo -9.5%
+- Current: ~41,847 ns/op, 696 allocs/op, 127,306 bytes/op
+- Improvement: ~22.2% time, ~13.6% allocs, ~8.3% bytes
+- Best individual script improvements: agent_demo -42.4%, mega -17.3%, numpy -18.6%, pandas -17.7%
 - Limiting factor: macOS scheduler noise makes sub-1% changes hard to distinguish

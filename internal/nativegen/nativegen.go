@@ -182,8 +182,9 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 	// types so this never breaks `go build`.
 	g.emitPredeclaredTypes()
 
-	// Pass 1: type declarations across all modules. Records used as parameters
-	// or fields must be in scope before any function body that uses them.
+	// Pass 1+2: type declarations and function definitions. In Go, forward
+	// references within a package are allowed, so types and functions can be
+	// emitted in a single pass per module.
 	hasGlobals := false
 	for _, m := range modules {
 		g.currentModule = m
@@ -193,16 +194,8 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 				g.emitTypeDecl(d)
 			case *ast.VarDecl:
 				hasGlobals = true
-			}
-		}
-	}
-
-	// Pass 2: function definitions.
-	for _, m := range modules {
-		g.currentModule = m
-		for _, d := range m.File.Decls {
-			if fd, ok := d.(*ast.FuncDecl); ok {
-				g.emitFunc(fd)
+			case *ast.FuncDecl:
+				g.emitFunc(d)
 				g.out.WriteByte('\n')
 			}
 		}
