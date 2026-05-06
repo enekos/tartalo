@@ -279,7 +279,6 @@ func (g *Generator) emitDefer(s *ast.DeferStmt) {
 func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 	rhs := g.compileExpr(d.Value)
 	from := g.info.Types[d.Value]
-	target := g.goLocalName(d.Name)
 	to := from
 	if d.TypeAnn != nil {
 		if at := g.typeFromAnn(d.TypeAnn); at != nil {
@@ -287,25 +286,44 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 		}
 	}
 	rhs = g.coerce(rhs, from, to)
+	g.writeIndent()
 	if d.TypeAnn != nil && !types.Equal(from, to) {
-		g.writeLine("var " + target + " " + g.goType(to) + " = " + rhs)
+		g.out.WriteString("var tt_")
+		g.out.WriteString(d.Name)
+		g.out.WriteString(" ")
+		g.out.WriteString(g.goType(to))
+		g.out.WriteString(" = ")
+		g.out.WriteString(rhs)
 	} else {
-		g.writeLine(target + " := " + rhs)
+		g.out.WriteString("tt_")
+		g.out.WriteString(d.Name)
+		g.out.WriteString(" := ")
+		g.out.WriteString(rhs)
 	}
-	g.writeLine("_ = " + target)
+	g.out.WriteByte('\n')
+	g.writeIndent()
+	g.out.WriteString("_ = tt_")
+	g.out.WriteString(d.Name)
+	g.out.WriteByte('\n')
 }
 
 func (g *Generator) emitAssign(s *ast.AssignStmt) {
 	sym := g.info.Assigns[s]
-	target := "tt_" + s.Name
-	if sym != nil && sym.Module != nil {
-		target = "tt_" + checker.MangledName(sym.Module, s.Name)
-	}
 	rhs := g.compileExpr(s.Value)
 	if sym != nil {
 		rhs = g.coerce(rhs, g.info.Types[s.Value], sym.Type)
 	}
-	g.writeLine(target + " = " + rhs)
+	g.writeIndent()
+	if sym != nil && sym.Module != nil {
+		g.out.WriteString("tt_")
+		g.out.WriteString(checker.MangledName(sym.Module, s.Name))
+	} else {
+		g.out.WriteString("tt_")
+		g.out.WriteString(s.Name)
+	}
+	g.out.WriteString(" = ")
+	g.out.WriteString(rhs)
+	g.out.WriteByte('\n')
 }
 
 func (g *Generator) emitFieldAssign(s *ast.FieldAssignStmt) {
@@ -331,11 +349,18 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 	if from != g.currentReturnType {
 		rhs = g.coerce(rhs, from, g.currentReturnType)
 	}
-	g.writeLine("return " + rhs)
+	g.writeIndent()
+	g.out.WriteString("return ")
+	g.out.WriteString(rhs)
+	g.out.WriteByte('\n')
 }
 
 func (g *Generator) emitIf(s *ast.IfStmt) {
-	g.writeLine("if " + g.compileExpr(s.Cond) + " {")
+	g.writeIndent()
+	g.out.WriteString("if ")
+	g.out.WriteString(g.compileExpr(s.Cond))
+	g.out.WriteString(" {")
+	g.out.WriteByte('\n')
 	g.indent++
 	for _, st := range s.Then.Stmts {
 		g.emitStmt(st)
