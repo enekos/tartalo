@@ -40,9 +40,11 @@ type Generator struct {
 	indent int
 	tmpSeq int
 
-	// imports is a deduplicated set of stdlib packages the emitter has
+	// imports is a deduplicated slice of stdlib packages the emitter has
 	// determined the generated code needs. Populated as builtins are emitted.
-	imports map[string]struct{}
+	// Kept as a slice (not a map) because most programs have only a handful
+	// of imports and linear deduplication is faster than map allocation.
+	imports []string
 
 	// currentModule mirrors the codegen's same-named field; mangling helpers
 	// consult it while emitting top-level decls.
@@ -105,8 +107,7 @@ const (
 // New returns a Generator ready to emit a Go program for the given type info.
 func New(info *checker.TypeInfo) *Generator {
 	return &Generator{
-		info:    info,
-		imports: map[string]struct{}{},
+		info: info,
 	}
 }
 
@@ -358,7 +359,12 @@ func itoa(n int) string {
 // `import (...)` block is emitted at the very end, sorted, so the order in
 // which builtins request packages doesn't matter.
 func (g *Generator) addImport(pkg string) {
-	g.imports[pkg] = struct{}{}
+	for _, p := range g.imports {
+		if p == pkg {
+			return
+		}
+	}
+	g.imports = append(g.imports, pkg)
 }
 
 func (g *Generator) writeImportsTo(out *strings.Builder) {
@@ -367,27 +373,20 @@ func (g *Generator) writeImportsTo(out *strings.Builder) {
 		return
 	}
 	if n <= 2 {
-		for p := range g.imports {
+		for _, p := range g.imports {
 			out.WriteString("import \"")
 			out.WriteString(p)
 			out.WriteString("\"\n\n")
 		}
 		return
 	}
-	// Most programs use only a handful of stdlib imports. Use a small
-	// stack-allocated array to avoid the slice allocation.
-	var arr [16]string
-	pkgs := arr[:0]
-	for p := range g.imports {
-		pkgs = append(pkgs, p)
-	}
-	if n == 2 && pkgs[0] > pkgs[1] {
-		pkgs[0], pkgs[1] = pkgs[1], pkgs[0]
+	if n == 2 && g.imports[0] > g.imports[1] {
+		g.imports[0], g.imports[1] = g.imports[1], g.imports[0]
 	} else {
-		sort.Strings(pkgs)
+		sort.Strings(g.imports)
 	}
 	out.WriteString("import (\n")
-	for _, p := range pkgs {
+	for _, p := range g.imports {
 		out.WriteString("\t\"")
 		out.WriteString(p)
 		out.WriteString("\"\n")
