@@ -114,27 +114,32 @@ func (g *Generator) emitAgentRuntime() {
 		g.writeLines([]string{
 			`# llm(prompt) lowers to __tt_llm_call. In test mode the helper consults`,
 			`# __tt_mock_llm (one rule per line: pattern<TAB>response) and aborts on`,
-			`# an unmocked prompt. In normal mode it pipes the prompt to`,
-			`# $TARTALO_LLM_CMD (default: claude -p) and returns the stdout.`,
+			`# any unmatched prompt — never falls through to a real model in tests.`,
+			`# In run mode it pipes the prompt to $TARTALO_LLM_CMD (default:`,
+			`# claude -p) and writes stdout into __ret. We deliberately avoid a`,
+			`# $(...) capture in the call site so the test-mode mock state survives.`,
 			`__tt_llm_call() {`,
 			`  __tt_p="$1"`,
 		})
 		if g.testMode {
 			g.writeLines([]string{
+				`  __tt_mock_llm_calls="${__tt_mock_llm_calls}${__tt_p}` + "\n" + `"`,
 				`  if [ -n "${__tt_mock_llm:-}" ]; then`,
 				`    __tt_match=$(printf '%s' "$__tt_mock_llm" | awk -F'\t' -v p="$__tt_p" '$0!="" { if (match(p, $1)) { print $2; exit } }')`,
-				`    __tt_mock_llm_calls="${__tt_mock_llm_calls}${__tt_p}` + "\n" + `"`,
-				`    if [ -n "$__tt_match" ]; then printf '%s' "$__tt_match"; return 0; fi`,
-				`    printf 'tartalo: unmocked llm call: %s\n' "$__tt_p" >&2; exit 1`,
+				`    if [ -n "$__tt_match" ]; then __ret="$__tt_match"; return 0; fi`,
 				`  fi`,
+				`  printf 'tartalo: unmocked llm call: %s\n' "$__tt_p" >&2; exit 1`,
+				`}`,
+				"",
+			})
+		} else {
+			g.writeLines([]string{
+				`  __tt_cmd="${TARTALO_LLM_CMD:-claude -p}"`,
+				`  __ret=$(printf '%s' "$__tt_p" | sh -c "$__tt_cmd")`,
+				`}`,
+				"",
 			})
 		}
-		g.writeLines([]string{
-			`  __tt_cmd="${TARTALO_LLM_CMD:-claude -p}"`,
-			`  printf '%s' "$__tt_p" | sh -c "$__tt_cmd"`,
-			`}`,
-			"",
-		})
 	}
 
 	if g.usesApproval {
@@ -212,7 +217,12 @@ func shCaseLiteral(name string) string {
 func (g *Generator) compileLlm(args []exprValue, prologue []string) exprValue {
 	g.usesLLM = true
 	out := g.tmp("llm")
-	prologue = append(prologue, fmt.Sprintf("%s=$(__tt_llm_call %s)", out, args[0].assignmentRHS()))
+	// Call the helper as a function (no subshell capture) so it can update
+	// per-test mock state (__tt_mock_llm_calls). The helper writes its
+	// result into __ret; we snapshot that into a fresh tmp immediately so a
+	// subsequent call doesn't clobber us.
+	prologue = append(prologue, fmt.Sprintf("__tt_llm_call %s", args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s="$__ret"`, out))
 	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
 }
 

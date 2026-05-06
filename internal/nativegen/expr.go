@@ -103,8 +103,24 @@ func (g *Generator) compileTry(e *ast.TryExpr) string {
 }
 
 func (g *Generator) compileIdent(e *ast.Ident) string {
+	// Fast path: common local names that never need mangling or narrowing.
+	switch e.Name {
+	case "n":
+		return "tt_n"
+	case "i":
+		return "tt_i"
+	case "x":
+		return "tt_x"
+	case "s":
+		return "tt_s"
+	case "v":
+		return "tt_v"
+	case "k":
+		return "tt_k"
+	}
 	uses := g.info.Uses
-	if sym := uses[e]; sym != nil {
+	sym := uses[e]
+	if sym != nil {
 		// Unit-variant constructor: synthesise a fresh value of the parent
 		// sum type with the matching tag set; payload slots stay zero.
 		if sym.IsVariant {
@@ -122,10 +138,8 @@ func (g *Generator) compileIdent(e *ast.Ident) string {
 			}
 			return "tt_" + checker.MangledName(sym.Module, sym.Name)
 		}
-	}
-	// Flow narrowing: if checker recorded a non-optional type for this ident,
-	// the pointer is known non-nil — dereference it.
-	if sym := g.info.Uses[e]; sym != nil {
+		// Flow narrowing: if checker recorded a non-optional type for this ident,
+		// the pointer is known non-nil — dereference it.
 		if _, isOpt := sym.Type.(*types.Optional); isOpt {
 			if narrowed := g.info.Types[e]; narrowed != nil && !types.IsOptional(narrowed) {
 				return "(*tt_" + e.Name + ")"
