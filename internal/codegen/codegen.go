@@ -29,6 +29,12 @@ import (
 // concatPrologues merges two prologue slices without the double-allocation
 // of concatPrologues(a, b).
 func concatPrologues(a, b []string) []string {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
 	out := make([]string, 0, len(a)+len(b))
 	out = append(out, a...)
 	out = append(out, b...)
