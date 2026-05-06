@@ -114,6 +114,12 @@ func (g *Generator) compileIdent(e *ast.Ident) string {
 		}
 		// Top-level (function or global): use the module-mangled form.
 		if sym.Module != nil {
+			if sym.Module.IsEntry {
+				var buf [32]byte
+				n := copy(buf[:], "tt_")
+				n += copy(buf[n:], sym.Name)
+				return string(buf[:n])
+			}
 			return "tt_" + checker.MangledName(sym.Module, sym.Name)
 		}
 	}
