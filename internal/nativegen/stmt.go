@@ -425,7 +425,19 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 		start := g.compileExpr(iter.Start)
 		end := g.compileExpr(iter.End)
 		v := g.goLocalName(s.Var)
-		g.writeLine("for " + v + " := " + start + "; " + v + " < " + end + "; " + v + "++ {")
+		g.writeIndent()
+		g.out.WriteString("for ")
+		g.out.WriteString(v)
+		g.out.WriteString(" := ")
+		g.out.WriteString(start)
+		g.out.WriteString("; ")
+		g.out.WriteString(v)
+		g.out.WriteString(" < ")
+		g.out.WriteString(end)
+		g.out.WriteString("; ")
+		g.out.WriteString(v)
+		g.out.WriteString("++ {")
+		g.out.WriteByte('\n')
 		g.indent++
 		for _, st := range s.Body.Stmts {
 			g.emitStmt(st)
@@ -605,14 +617,25 @@ func (g *Generator) emitExprStmt(x ast.Expr) {
 		// underscore receiver so Go doesn't complain about unused values.
 		t := g.info.Types[x]
 		if t == nil || t == types.Void {
-			g.writeLine(expr)
+			g.writeIndent()
+			g.out.WriteString(expr)
+			g.out.WriteByte('\n')
 			return
 		}
-		g.writeLine("_ = " + expr)
+		g.writeIndent()
+		g.out.WriteString("_ = ")
+		g.out.WriteString(expr)
+		g.out.WriteByte('\n')
 	case *ast.CmdLit:
 		// Discard the output but still execute the command.
-		g.writeLine("_ = " + g.compileCmdLit(x))
+		g.writeIndent()
+		g.out.WriteString("_ = ")
+		g.out.WriteString(g.compileCmdLit(x))
+		g.out.WriteByte('\n')
 	default:
-		g.writeLine("_ = " + g.compileExpr(x))
+		g.writeIndent()
+		g.out.WriteString("_ = ")
+		g.out.WriteString(g.compileExpr(x))
+		g.out.WriteByte('\n')
 	}
 }
