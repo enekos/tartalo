@@ -308,29 +308,71 @@ func (g *Generator) emitGlobalInit(vd *ast.VarDecl) {
 // predeclared identifiers. Top-level names reuse the checker's module
 // mangling so cross-module symbols stay distinct in the bundled program.
 func (g *Generator) goVarName(name string) string {
-	return "tt_" + checker.MangledName(g.currentModule, name)
+	m := g.currentModule
+	if m == nil || m.IsEntry {
+		n := 3 + len(name)
+		if n <= 64 {
+			var buf [64]byte
+			copy(buf[:], "tt_")
+			copy(buf[3:], name)
+			return string(buf[:n])
+		}
+		return "tt_" + name
+	}
+	return "tt_" + checker.MangledName(m, name)
 }
 
 // goLocalName mangles a strictly-local identifier (parameter or block-scoped
 // `let`). No module mangling — these never escape their function.
 func (g *Generator) goLocalName(name string) string {
+	n := 3 + len(name)
+	if n <= 64 {
+		var buf [64]byte
+		copy(buf[:], "tt_")
+		copy(buf[3:], name)
+		return string(buf[:n])
+	}
 	return "tt_" + name
 }
 
 // goFuncName builds the Go identifier for a top-level function in module m.
 func (g *Generator) goFuncName(m *loader.Module, name string) string {
+	if m == nil || m.IsEntry {
+		n := 3 + len(name)
+		if n <= 64 {
+			var buf [64]byte
+			copy(buf[:], "tt_")
+			copy(buf[3:], name)
+			return string(buf[:n])
+		}
+		return "tt_" + name
+	}
 	return "tt_" + checker.MangledName(m, name)
 }
 
 // goTypeName mangles a type name. We capitalise the first character after
 // the prefix so generated structs read more naturally in stack traces.
 func goTypeName(name string) string {
+	n := 3 + len(name)
+	if n <= 64 {
+		var buf [64]byte
+		copy(buf[:], "Tt_")
+		copy(buf[3:], name)
+		return string(buf[:n])
+	}
 	return "Tt_" + name
 }
 
 // goFieldName mangles a record field. Capitalising avoids collisions with
 // Go reserved words used as field names (e.g. `type`, `range`).
 func goFieldName(name string) string {
+	n := 2 + len(name)
+	if n <= 64 {
+		var buf [64]byte
+		copy(buf[:], "F_")
+		copy(buf[2:], name)
+		return string(buf[:n])
+	}
 	return "F_" + name
 }
 
