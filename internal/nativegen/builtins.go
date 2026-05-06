@@ -25,14 +25,19 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 	if sym != nil {
 		ft, _ = sym.Type.(*types.Func)
 	}
-	var b strings.Builder
+	var fn string
 	if sym != nil && sym.Module != nil {
-		b.WriteString("tt_" + checker.MangledName(sym.Module, sym.Name))
+		fn = "tt_" + checker.MangledName(sym.Module, sym.Name)
 	} else if sym != nil {
-		b.WriteString("tt_" + sym.Name)
+		fn = "tt_" + sym.Name
 	} else {
-		b.WriteString("tt_" + id.Name)
+		fn = "tt_" + id.Name
 	}
+	if len(e.Args) == 0 {
+		return fn + "()"
+	}
+	var b strings.Builder
+	b.WriteString(fn)
 	b.WriteString("(")
 	for i, a := range e.Args {
 		if i > 0 {
