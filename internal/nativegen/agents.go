@@ -1,7 +1,7 @@
 package nativegen
 
 import (
-	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -28,7 +28,8 @@ type agentRefNative struct {
 // feature flags by name-matching builtin calls so the runtime emission step
 // only ships helpers that are actually needed.
 func (g *Generator) initAgentPlatform(modules []*loader.Module) {
-	var entries []map[string]any
+	var schemas strings.Builder
+	firstEntry := true
 	for _, m := range modules {
 		for _, d := range m.File.Decls {
 			fd, ok := d.(*ast.FuncDecl)
@@ -49,42 +50,70 @@ func (g *Generator) initAgentPlatform(modules []*loader.Module) {
 					Decl:   fd,
 				})
 			}
-			params := make([]map[string]any, 0, len(fd.Params))
-			for _, p := range fd.Params {
-				params = append(params, map[string]any{
-					"name": p.Name,
-					"type": typeExprText(p.TypeAnn),
-				})
+			if !firstEntry {
+				schemas.WriteByte(',')
 			}
-			entry := map[string]any{
-				"name":    fd.Name,
-				"kind":    fd.Kind.String(),
-				"params":  params,
-				"returns": typeExprText(fd.Result),
+			firstEntry = false
+			schemas.WriteString(`{"name":`)
+			schemas.WriteString(fastQuote(fd.Name))
+			schemas.WriteString(`,"kind":"`)
+			schemas.WriteString(fd.Kind.String())
+			schemas.WriteString(`"`)
+			if len(fd.Params) > 0 {
+				schemas.WriteString(`,"params":[`)
+				for i, p := range fd.Params {
+					if i > 0 {
+						schemas.WriteByte(',')
+					}
+					schemas.WriteString(`{"name":`)
+					schemas.WriteString(fastQuote(p.Name))
+					schemas.WriteString(`,"type":`)
+					schemas.WriteString(fastQuote(typeExprText(p.TypeAnn)))
+					schemas.WriteString("}")
+				}
+				schemas.WriteString("]")
 			}
+			schemas.WriteString(`,"returns":`)
+			schemas.WriteString(fastQuote(typeExprText(fd.Result)))
 			if fd.Description != "" {
-				entry["description"] = fd.Description
+				schemas.WriteString(",\"description\":")
+				schemas.WriteString(fastQuote(fd.Description))
 			}
 			if len(fd.Effects) > 0 {
-				entry["effects"] = fd.Effects
+				schemas.WriteString(",\"effects\":[")
+				for i, eff := range fd.Effects {
+					if i > 0 {
+						schemas.WriteByte(',')
+					}
+					schemas.WriteString(fastQuote(eff))
+				}
+				schemas.WriteString("]")
 			}
 			if fd.Budget > 0 {
-				entry["budget"] = fd.Budget
+				schemas.WriteString(",\"budget\":")
+				schemas.WriteString(strconv.FormatInt(fd.Budget, 10))
 			}
 			if len(fd.Tools) > 0 {
-				entry["tools"] = fd.Tools
+				schemas.WriteString(",\"tools\":[")
+				for i, tname := range fd.Tools {
+					if i > 0 {
+						schemas.WriteByte(',')
+					}
+					schemas.WriteString(fastQuote(tname))
+				}
+				schemas.WriteString("]")
 			}
-			entries = append(entries, entry)
+			schemas.WriteString("}")
 		}
 	}
-	if len(entries) == 0 {
+	if firstEntry {
 		g.toolSchemasJSON = "[]"
-		return
-	}
-	if b, err := json.Marshal(entries); err == nil {
-		g.toolSchemasJSON = string(b)
 	} else {
-		g.toolSchemasJSON = "[]"
+		var b strings.Builder
+		b.WriteByte('[')
+		b.WriteString(schemas.String())
+		b.WriteByte(']')
+		g.toolSchemasJSON = b.String()
 	}
 }
 
