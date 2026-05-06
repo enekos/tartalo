@@ -10,6 +10,37 @@ import (
 	"github.com/enekos/tartalo/internal/types"
 )
 
+// fastQuote returns strconv.Quote(s) without allocation for simple ASCII
+// strings that contain no characters requiring escaping.
+func fastQuote(s string) string {
+	needsEscape := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' || c == '\\' || c < 0x20 {
+			needsEscape = true
+			break
+		}
+	}
+	if needsEscape {
+		return strconv.Quote(s)
+	}
+	// Simple string: use stack buffer to avoid allocation.
+	n := len(s) + 2
+	if n <= 256 {
+		var buf [256]byte
+		buf[0] = '"'
+		copy(buf[1:], s)
+		buf[n-1] = '"'
+		return string(buf[:n])
+	}
+	var b strings.Builder
+	b.Grow(n)
+	b.WriteByte('"')
+	b.WriteString(s)
+	b.WriteByte('"')
+	return b.String()
+}
+
 // compileExpr returns a Go expression text for the Tartalo expression `e`.
 // Unlike the sh backend (which builds prologues plus a value reference), Go
 // has real expressions, so most compileExpr cases are one-liners. The
@@ -149,7 +180,7 @@ func (g *Generator) compileIdent(e *ast.Ident) string {
 		// sum type with the matching tag set; payload slots stay zero.
 		if sym.IsVariant {
 			if sum, ok := sym.Type.(*types.Sum); ok {
-				return goTypeName(sum.Name) + "{Tag: " + strconv.Quote(sym.Name) + "}"
+				return goTypeName(sum.Name) + "{Tag: " + fastQuote(sym.Name) + "}"
 			}
 		}
 		// Top-level (function or global): use the module-mangled form.
@@ -184,7 +215,7 @@ func (g *Generator) compileStringLit(e *ast.StringLit) string {
 	// Single literal chunk → emit one quoted string.
 	if len(e.Parts) == 1 {
 		if c, ok := e.Parts[0].(*ast.StringChunk); ok {
-			return strconv.Quote(c.Value)
+			return fastQuote(c.Value)
 		}
 	}
 	// Mixed: stitch with `+`. Each interpolated expression is converted to
@@ -196,7 +227,7 @@ func (g *Generator) compileStringLit(e *ast.StringLit) string {
 		}
 		switch p := p.(type) {
 		case *ast.StringChunk:
-			b.WriteString(strconv.Quote(p.Value))
+			b.WriteString(fastQuote(p.Value))
 		default:
 			t := g.info.Types[p]
 			b.WriteString(g.toString(g.compileExpr(p), t))
@@ -246,7 +277,7 @@ func (g *Generator) compileCmdLit(e *ast.CmdLit) string {
 	}
 	if len(e.Parts) == 1 {
 		if c, ok := e.Parts[0].(*ast.StringChunk); ok {
-			return "_tt_shellOut(" + strconv.Quote(c.Value) + ")"
+			return "_tt_shellOut(" + fastQuote(c.Value) + ")"
 		}
 	}
 	var b strings.Builder
@@ -257,7 +288,7 @@ func (g *Generator) compileCmdLit(e *ast.CmdLit) string {
 		}
 		switch p := p.(type) {
 		case *ast.StringChunk:
-			b.WriteString(strconv.Quote(p.Value))
+			b.WriteString(fastQuote(p.Value))
 		default:
 			t := g.info.Types[p]
 			b.WriteString(g.toString(g.compileExpr(p), t))
@@ -440,12 +471,12 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 func (g *Generator) compileVariantLit(e *ast.RecordLit, sum *types.Sum) string {
 	v := sum.LookupVariant(e.TypeName)
 	if v == nil {
-		return goTypeName(sum.Name) + "{Tag: " + strconv.Quote(e.TypeName) + "}"
+		return goTypeName(sum.Name) + "{Tag: " + fastQuote(e.TypeName) + "}"
 	}
 	var b strings.Builder
 	b.WriteString(goTypeName(sum.Name))
 	b.WriteString("{Tag: ")
-	b.WriteString(strconv.Quote(v.Name))
+	b.WriteString(fastQuote(v.Name))
 	for _, f := range v.Fields {
 		var init *ast.FieldInit
 		for i := range e.Fields {
