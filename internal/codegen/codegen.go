@@ -1108,7 +1108,7 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 	// Fast path for simple literals — skip compileExpr entirely.
 	switch val := d.Value.(type) {
 	case *ast.IntLit:
-		g.writeLine(declPrefix + target + "=" + fmt.Sprintf("%d", val.Value))
+		g.writeLine(declPrefix + target + "=" + itoa64(val.Value))
 		return
 	case *ast.BoolLit:
 		v := "0"
@@ -1131,7 +1131,7 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 	}
 	v := g.compileExpr(d.Value)
 	g.writeLines(v.prologue)
-	g.writeLine(fmt.Sprintf("%s%s=%s", declPrefix, target, v.assignmentRHS()))
+	g.writeLine(declPrefix + target + "=" + v.assignmentRHS())
 }
 
 // emitOptVarDecl emits both the value and the __null sidecar for an
@@ -1145,8 +1145,8 @@ func (g *Generator) emitOptVarDecl(d *ast.VarDecl, target, declPrefix string) {
 		// RHS is a non-optional value being auto-wrapped. It is never null.
 		nullCheck = "0"
 	}
-	g.writeLine(fmt.Sprintf("%s%s__null=$((%s))", declPrefix, target, nullCheck))
-	g.writeLine(fmt.Sprintf("%s%s=%s", declPrefix, target, v.assignmentRHS()))
+	g.writeLine(declPrefix + target + "__null=$((" + nullCheck + "))")
+	g.writeLine(declPrefix + target + "=" + v.assignmentRHS())
 }
 
 // isOptionalTypeAnn reports whether a type annotation is `T?`.
@@ -1974,9 +1974,9 @@ func (g *Generator) emitSumCopy(targetPrefix, declPrefix string, sum *types.Sum,
 	for _, lf := range sumLeaves(sum) {
 		src := v.value + "__" + lf.Path
 		dst := targetPrefix + "__" + lf.Path
-		g.writeLine(fmt.Sprintf(`%s%s="${%s}"`, declPrefix, dst, src))
+		g.writeLine(declPrefix + dst + `="${` + src + `}"`)
 		if _, isOpt := lf.Type.(*types.Optional); isOpt {
-			g.writeLine(fmt.Sprintf(`%s%s__null="${%s__null}"`, declPrefix, dst, src))
+			g.writeLine(declPrefix + dst + `__null="${` + src + `__null}"`)
 		}
 	}
 }
@@ -2001,9 +2001,9 @@ func (g *Generator) emitRecordCopy(targetPrefix, declPrefix string, rec *types.R
 	for _, lf := range recordLeaves(rec) {
 		src := v.value + "__" + lf.Path
 		dst := targetPrefix + "__" + lf.Path
-		g.writeLine(fmt.Sprintf(`%s%s="${%s}"`, declPrefix, dst, src))
+		g.writeLine(declPrefix + dst + `="${` + src + `}"`)
 		if _, isOpt := lf.Type.(*types.Optional); isOpt {
-			g.writeLine(fmt.Sprintf(`%s%s__null="${%s__null}"`, declPrefix, dst, src))
+			g.writeLine(declPrefix + dst + `__null="${` + src + `__null}"`)
 		}
 	}
 }
