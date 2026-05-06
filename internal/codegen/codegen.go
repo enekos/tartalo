@@ -459,9 +459,19 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 // --- low-level emit helpers -------------------------------------------------
 
 func (g *Generator) writeLine(s string) {
-	for i := 0; i < g.indent; i++ {
-		g.out.WriteByte(' ')
-		g.out.WriteByte(' ')
+	switch g.indent {
+	case 0:
+	case 1:
+		g.out.WriteString("  ")
+	case 2:
+		g.out.WriteString("    ")
+	case 3:
+		g.out.WriteString("      ")
+	default:
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteByte(' ')
+			g.out.WriteByte(' ')
+		}
 	}
 	g.out.WriteString(s)
 	g.out.WriteByte('\n')

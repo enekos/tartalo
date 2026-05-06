@@ -303,9 +303,7 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 		g.out.WriteString(" := ")
 		g.out.WriteString(rhs)
 	}
-	g.out.WriteByte('\n')
-	g.writeIndent()
-	g.out.WriteString("_ = tt_")
+	g.out.WriteString("; _ = tt_")
 	g.out.WriteString(d.Name)
 	g.out.WriteByte('\n')
 }
