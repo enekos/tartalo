@@ -345,7 +345,10 @@ func (g *Generator) compileArrayLit(e *ast.ArrayLit) string {
 		elemTy = types.String
 	}
 	var b strings.Builder
-	b.WriteString("[]" + g.goType(elemTy) + "{")
+	b.Grow(len(e.Elems) * 12)
+	b.WriteString("[]")
+	b.WriteString(g.goType(elemTy))
+	b.WriteString("{")
 	for i, el := range e.Elems {
 		if i > 0 {
 			b.WriteString(", ")
