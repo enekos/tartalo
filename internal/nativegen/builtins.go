@@ -64,6 +64,33 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 		}
 		return fn + "(" + argExpr + ")"
 	}
+	if len(e.Args) == 2 {
+		arg0 := g.compileExpr(e.Args[0])
+		arg1 := g.compileExpr(e.Args[1])
+		if ft != nil && len(ft.Params) > 0 && g.info.Types[e.Args[0]] != ft.Params[0] {
+			arg0 = g.coerce(arg0, g.info.Types[e.Args[0]], ft.Params[0])
+		}
+		if ft != nil && len(ft.Params) > 1 && g.info.Types[e.Args[1]] != ft.Params[1] {
+			arg1 = g.coerce(arg1, g.info.Types[e.Args[1]], ft.Params[1])
+		}
+		totalLen := len(fn) + 1 + len(arg0) + 2 + len(arg1) + 1
+		if totalLen <= 64 {
+			var buf [64]byte
+			n := copy(buf[:], fn)
+			buf[n] = '('
+			n++
+			n += copy(buf[n:], arg0)
+			buf[n] = ','
+			n++
+			buf[n] = ' '
+			n++
+			n += copy(buf[n:], arg1)
+			buf[n] = ')'
+			n++
+			return string(buf[:n])
+		}
+		return fn + "(" + arg0 + ", " + arg1 + ")"
+	}
 	var b strings.Builder
 	b.Grow(len(fn) + len(e.Args)*16)
 	b.WriteString(fn)
