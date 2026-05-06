@@ -184,11 +184,15 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 
 	// Pass 1: type declarations across all modules. Records used as parameters
 	// or fields must be in scope before any function body that uses them.
+	hasGlobals := false
 	for _, m := range modules {
 		g.currentModule = m
 		for _, d := range m.File.Decls {
-			if td, ok := d.(*ast.TypeDecl); ok {
-				g.emitTypeDecl(td)
+			switch d := d.(type) {
+			case *ast.TypeDecl:
+				g.emitTypeDecl(d)
+			case *ast.VarDecl:
+				hasGlobals = true
 			}
 		}
 	}
@@ -206,18 +210,6 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 
 	// Pass 3: globals. Tartalo evaluates these in module order before main(),
 	// so we wrap them in a synthesized __ttInit() called from main().
-	hasGlobals := false
-	for _, m := range modules {
-		for _, d := range m.File.Decls {
-			if _, ok := d.(*ast.VarDecl); ok {
-				hasGlobals = true
-				break
-			}
-		}
-		if hasGlobals {
-			break
-		}
-	}
 	if hasGlobals {
 		g.declareGlobals(modules)
 		g.out.WriteByte('\n')
