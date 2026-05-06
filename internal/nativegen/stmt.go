@@ -542,7 +542,7 @@ func joinComma(ss []string) string {
 func patternLiteral(p *ast.LiteralPattern) string {
 	switch lit := p.Lit.(type) {
 	case *ast.IntLit:
-		return "int64(" + strconv.FormatInt(lit.Value, 10) + ")"
+		return int64Lit(lit.Value)
 	case *ast.BoolLit:
 		if lit.Value {
 			return "true"
