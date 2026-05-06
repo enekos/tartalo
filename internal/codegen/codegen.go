@@ -607,11 +607,6 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 		g.currentFuncDefers = nil
 		g.currentFuncHasDefers = false
 	}
-	defer func() {
-		g.currentReturnType = prevRet
-		g.currentFuncDefers = prevDefers
-		g.currentFuncHasDefers = prevHasDefers
-	}()
 	// Each parameter may consume one or more positional sh args:
 	//   - record: one per field (recursing on optional fields below)
 	//   - optional: two (value, then __null flag)
@@ -667,6 +662,9 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 			g.emitDeferHelper(g.currentFuncDefers[d], d)
 		}
 	}
+	g.currentReturnType = prevRet
+	g.currentFuncDefers = prevDefers
+	g.currentFuncHasDefers = prevHasDefers
 }
 
 // hasDeferIn reports whether the block tree transitively contains any
