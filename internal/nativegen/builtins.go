@@ -74,19 +74,25 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 // compileBuiltin lowers each registered builtin to a Go expression. Most are
 // thin wrappers around stdlib calls or runtime helpers in runtime.go.
 func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string {
+	var argsArr [4]string
 	var args []string
-	if len(e.Args) > 0 {
+	if len(e.Args) > 4 {
 		args = make([]string, len(e.Args))
-		for i, a := range e.Args {
-			args[i] = g.compileExpr(a)
-		}
+	} else if len(e.Args) > 0 {
+		args = argsArr[:len(e.Args)]
 	}
+	for i, a := range e.Args {
+		args[i] = g.compileExpr(a)
+	}
+	var argTypesArr [4]types.Type
 	var argTypes []types.Type
-	if len(e.Args) > 0 {
+	if len(e.Args) > 4 {
 		argTypes = make([]types.Type, len(e.Args))
-		for i, a := range e.Args {
-			argTypes[i] = g.info.Types[a]
-		}
+	} else if len(e.Args) > 0 {
+		argTypes = argTypesArr[:len(e.Args)]
+	}
+	for i, a := range e.Args {
+		argTypes[i] = g.info.Types[a]
 	}
 	switch sym.Name {
 

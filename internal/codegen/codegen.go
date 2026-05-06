@@ -2651,8 +2651,7 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		}
 		// Optional parameter: value then null flag.
 		if _, isOpt := paramTy.(*types.Optional); isOpt {
-			callLine.WriteByte(' ')
-			callLine.WriteByte('"')
+			callLine.WriteString(` "`)
 			callLine.WriteString(av.shString())
 			callLine.WriteByte('"')
 			nullArg := av.nullCheck
@@ -2664,8 +2663,7 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 			callLine.WriteString(fmt.Sprintf(`"$((%s))"`, nullArg))
 			continue
 		}
-		callLine.WriteByte(' ')
-		callLine.WriteByte('"')
+		callLine.WriteString(` "`)
 		callLine.WriteString(av.shString())
 		callLine.WriteByte('"')
 	}
