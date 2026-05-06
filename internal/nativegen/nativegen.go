@@ -426,6 +426,20 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
+func itoa64(n int64) string {
+	if n < 10 {
+		return string(byte('0' + byte(n)))
+	}
+	var buf [16]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
 // addImport flags a stdlib package as needed by the emitted program. The
 // `import (...)` block is emitted at the very end, sorted, so the order in
 // which builtins request packages doesn't matter.

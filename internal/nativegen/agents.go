@@ -2,7 +2,6 @@ package nativegen
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -277,7 +276,7 @@ func (g *Generator) emitAgentRuntime() {
 			if !isStringToStringNative(a.Decl) {
 				continue
 			}
-			g.writeLine(fmt.Sprintf("case %q:", a.Name))
+			g.writeLine("case " + fastQuote(a.Name) + ":")
 			g.indent++
 			g.writeLine("return " + a.GoName + "(input)")
 			g.indent--
@@ -307,7 +306,7 @@ func (g *Generator) emitAgentRuntime() {
 			if !isStringToStringNative(t.Decl) {
 				continue
 			}
-			g.writeLine(fmt.Sprintf("case %q:", t.Name))
+			g.writeLine("case " + fastQuote(t.Name) + ":")
 			g.indent++
 			g.writeLine("return " + t.GoName + "(input)")
 			g.indent--

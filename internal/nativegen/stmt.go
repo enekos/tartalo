@@ -1,7 +1,6 @@
 package nativegen
 
 import (
-	"fmt"
 	"strconv"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -84,7 +83,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	}
 	defer func() { g.currentAgent = prevAgent }()
 	if fd.Kind == ast.FuncKindAgent && fd.Budget > 0 {
-		g.writeLine(fmt.Sprintf("_tt_budget := int64(%d)", fd.Budget))
+		g.writeLine("_tt_budget := int64(" + itoa64(fd.Budget) + ")")
 		g.writeLine("_ = _tt_budget")
 	}
 	if useNamedRet {
