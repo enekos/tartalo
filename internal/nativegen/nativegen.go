@@ -307,8 +307,21 @@ func goFieldName(name string) string {
 }
 
 func (g *Generator) writeLine(s string) {
-	for i := 0; i < g.indent; i++ {
+	switch g.indent {
+	case 0:
+	case 1:
 		g.out.WriteByte('\t')
+	case 2:
+		g.out.WriteByte('\t')
+		g.out.WriteByte('\t')
+	case 3:
+		g.out.WriteByte('\t')
+		g.out.WriteByte('\t')
+		g.out.WriteByte('\t')
+	default:
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteByte('\t')
+		}
 	}
 	g.out.WriteString(s)
 	g.out.WriteByte('\n')

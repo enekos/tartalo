@@ -1116,23 +1116,52 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 	// Fast path for simple literals — skip compileExpr entirely.
 	switch val := d.Value.(type) {
 	case *ast.IntLit:
-		g.writeLine(declPrefix + target + "=" + itoa64(val.Value))
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteString("  ")
+		}
+		g.out.WriteString(declPrefix)
+		g.out.WriteString(target)
+		g.out.WriteByte('=')
+		g.out.WriteString(itoa64(val.Value))
+		g.out.WriteByte('\n')
 		return
 	case *ast.BoolLit:
-		v := "0"
-		if val.Value {
-			v = "1"
+		for i := 0; i < g.indent; i++ {
+			g.out.WriteString("  ")
 		}
-		g.writeLine(declPrefix + target + "=" + v)
+		g.out.WriteString(declPrefix)
+		g.out.WriteString(target)
+		g.out.WriteByte('=')
+		if val.Value {
+			g.out.WriteByte('1')
+		} else {
+			g.out.WriteByte('0')
+		}
+		g.out.WriteByte('\n')
 		return
 	case *ast.StringLit:
 		if len(val.Parts) == 0 {
-			g.writeLine(declPrefix + target + `=""`)
+			for i := 0; i < g.indent; i++ {
+				g.out.WriteString("  ")
+			}
+			g.out.WriteString(declPrefix)
+			g.out.WriteString(target)
+			g.out.WriteString(`=""`)
+			g.out.WriteByte('\n')
 			return
 		}
 		if len(val.Parts) == 1 {
 			if chunk, ok := val.Parts[0].(*ast.StringChunk); ok {
-				g.writeLine(declPrefix + target + `="` + escapeForDoubleQuoted(chunk.Value) + `"`)
+				for i := 0; i < g.indent; i++ {
+					g.out.WriteString("  ")
+				}
+				g.out.WriteString(declPrefix)
+				g.out.WriteString(target)
+				g.out.WriteByte('=')
+				g.out.WriteByte('"')
+				g.out.WriteString(escapeForDoubleQuoted(chunk.Value))
+				g.out.WriteByte('"')
+				g.out.WriteByte('\n')
 				return
 			}
 		}
