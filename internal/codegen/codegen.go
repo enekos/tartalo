@@ -141,6 +141,32 @@ type Generator struct {
 	// Builtins that check mock state branch on this flag — production
 	// scripts stay free of any test-only code.
 	testMode bool
+
+	// Agent-platform feature flags. Each is set the first time a builtin that
+	// needs the corresponding runtime helper is lowered, so the emitted
+	// script only carries the runtime it actually uses.
+	usesLLM        bool
+	usesApproval   bool
+	usesTrace      bool
+	usesSpawnAgent bool
+
+	// agents is every FuncDecl whose Kind is FuncKindAgent across all
+	// modules being emitted, in declaration order. Drives the
+	// __tt_spawn_agent case dispatcher.
+	agents []agentRef
+
+	// toolSchemasJSON is the precomputed JSON string for toolSchemas().
+	// Built once during emission so every call to toolSchemas() is O(1).
+	toolSchemasJSON string
+}
+
+// agentRef is a (user-name, sh-name, decl) triple used to drive the
+// spawn-agent dispatcher. ShName is the actual sh function name from
+// checker.MangledName so cross-module agents resolve correctly.
+type agentRef struct {
+	Name   string
+	ShName string
+	Decl   *ast.FuncDecl
 }
 
 func New(info *checker.TypeInfo) *Generator {
@@ -229,8 +255,16 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		g.writeLine(`__tt_mock_args=""`)
 		g.writeLine(`__tt_mock_stdin_set=0`)
 		g.writeLine(`__tt_mock_stdin=""`)
+		g.writeLine(`__tt_mock_llm=""`)
+		g.writeLine(`__tt_mock_llm_calls=""`)
 		g.writeLine("")
 	}
+
+	// Agent-platform pre-pass: collect every agent declaration and build the
+	// static tool/agent schema string. Doing this up front means emitFunc can
+	// freely reference agents in any order, and toolSchemas() lowers to a
+	// constant variable expansion.
+	g.collectAgentsAndSchemas(modules)
 
 	// Pre-pass: scan every function body for defer statements so the global
 	// __tt_run_defers helper can be emitted up front (function definitions
@@ -262,6 +296,10 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 			"",
 		})
 	}
+
+	// Agent-platform: emit the static tool schema constant and any runtime
+	// helpers (llm/approval/trace/spawnAgent) used by this program.
+	g.emitAgentRuntime()
 
 	// Pass 1: function definitions, in topological order (a function may call
 	// any other function declared in any loaded module).
@@ -3116,6 +3154,20 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		return g.compileMockArgs(args, prologue)
 	case "mockReadStdin":
 		return g.compileMockReadStdin(args, prologue)
+	case "llm":
+		return g.compileLlm(args, prologue)
+	case "approval":
+		return g.compileApproval(args, prologue)
+	case "trace":
+		return g.compileTrace(args, prologue)
+	case "spawnAgent":
+		return g.compileSpawnAgent(args, prologue)
+	case "toolSchemas":
+		return g.compileToolSchemas(prologue)
+	case "mockLlm":
+		return g.compileMockLlm(args, prologue)
+	case "mockLlmCalls":
+		return g.compileMockLlmCalls(prologue)
 	case "mockExec", "mockFetch", "mockReadFile",
 		"mockExecCalls", "mockFetchCalls", "mockReadFileCalls":
 		// Native already supports the full mock set; the sh backend ships

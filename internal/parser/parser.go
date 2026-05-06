@@ -151,7 +151,7 @@ func (p *Parser) errorf(pos token.Pos, format string, args ...any) {
 func (p *Parser) recoverToStmt() {
 	for !p.atEnd() {
 		switch p.peek().Kind {
-		case token.Let, token.Const, token.Func, token.If, token.For, token.Return,
+		case token.Let, token.Const, token.Func, token.Tool, token.Agent, token.If, token.For, token.Return,
 			token.Match, token.Type, token.Export, token.Test, token.RBrace, token.Semicolon:
 			return
 		}
@@ -170,6 +170,18 @@ func (p *Parser) parseDecl() ast.Decl {
 	switch p.peek().Kind {
 	case token.Func:
 		fd := p.parseFunc()
+		if fd != nil {
+			fd.IsExported = exported
+		}
+		return fd
+	case token.Tool:
+		fd := p.parseToolOrAgent(ast.FuncKindTool)
+		if fd != nil {
+			fd.IsExported = exported
+		}
+		return fd
+	case token.Agent:
+		fd := p.parseToolOrAgent(ast.FuncKindAgent)
 		if fd != nil {
 			fd.IsExported = exported
 		}
@@ -344,9 +356,30 @@ func (p *Parser) parseVarDecl() *ast.VarDecl {
 }
 
 func (p *Parser) parseFunc() *ast.FuncDecl {
-	p.advance() // func
-	name := p.expect(token.Ident, "function declaration")
-	p.expect(token.LParen, "function declaration")
+	return p.parseFuncLike("function declaration", ast.FuncKindPlain)
+}
+
+// parseToolOrAgent shares the function-declaration shape with parseFunc but
+// records the kind on the AST so the checker/codegen can branch on it.
+// Tool/agent bodies may begin with metadata calls — desc("...") and
+// budget(N) — which are pulled off and stored on the FuncDecl after parsing.
+func (p *Parser) parseToolOrAgent(kind ast.FuncKind) *ast.FuncDecl {
+	ctx := "tool declaration"
+	if kind == ast.FuncKindAgent {
+		ctx = "agent declaration"
+	}
+	fd := p.parseFuncLike(ctx, kind)
+	if fd == nil {
+		return nil
+	}
+	p.extractToolMetadata(fd)
+	return fd
+}
+
+func (p *Parser) parseFuncLike(ctx string, kind ast.FuncKind) *ast.FuncDecl {
+	p.advance() // func | tool | agent
+	name := p.expect(token.Ident, ctx)
+	p.expect(token.LParen, ctx)
 
 	var params []ast.Param
 	if p.peek().Kind != token.RParen {
@@ -364,18 +397,114 @@ func (p *Parser) parseFunc() *ast.FuncDecl {
 			}
 		}
 	}
-	p.expect(token.RParen, "function declaration")
-	p.expect(token.Colon, "function declaration")
+	p.expect(token.RParen, ctx)
+	p.expect(token.Colon, ctx)
 	ret := p.parseTypeExpr()
+
+	// Postfix effect annotations: `: T !net !fs:read !ai`.
+	var effects []string
+	for p.peek().Kind == token.Bang {
+		p.advance() // !
+		eff := p.parseEffectName(ctx)
+		if eff != "" {
+			effects = append(effects, eff)
+		}
+	}
+
 	body := p.parseBlock()
 
 	return &ast.FuncDecl{
 		NamePos: name.Pos,
 		Name:    name.Value,
+		Kind:    kind,
 		Params:  params,
 		Result:  ret,
+		Effects: effects,
 		Body:    body,
 	}
+}
+
+// parseEffectName reads `name` or `name:tag` after a leading bang.
+func (p *Parser) parseEffectName(ctx string) string {
+	t := p.expect(token.Ident, ctx+" effect")
+	name := t.Value
+	if _, ok := p.accept(token.Colon); ok {
+		tag := p.expect(token.Ident, ctx+" effect tag")
+		return name + ":" + tag.Value
+	}
+	return name
+}
+
+// extractToolMetadata scans the leading statements of a tool/agent body for
+// desc("...") and budget(N) calls and stores them on the decl.
+func (p *Parser) extractToolMetadata(fd *ast.FuncDecl) {
+	if fd.Body == nil {
+		return
+	}
+	stmts := fd.Body.Stmts
+	keep := stmts[:0]
+	for _, s := range stmts {
+		es, ok := s.(*ast.ExprStmt)
+		if !ok {
+			keep = append(keep, s)
+			continue
+		}
+		ce, ok := es.X.(*ast.CallExpr)
+		if !ok {
+			keep = append(keep, s)
+			continue
+		}
+		ident, ok := ce.Callee.(*ast.Ident)
+		if !ok {
+			keep = append(keep, s)
+			continue
+		}
+		switch ident.Name {
+		case "desc":
+			if len(ce.Args) == 1 {
+				if str, ok := plainStringLit(ce.Args[0]); ok {
+					fd.Description = str
+					continue
+				}
+			}
+			p.errorf(ident.Pos(), `desc() takes a single string literal`)
+			continue
+		case "budget":
+			if len(ce.Args) == 1 {
+				if n, ok := plainIntLit(ce.Args[0]); ok {
+					fd.Budget = n
+					continue
+				}
+			}
+			p.errorf(ident.Pos(), `budget() takes a single integer literal`)
+			continue
+		}
+		keep = append(keep, s)
+	}
+	fd.Body.Stmts = keep
+}
+
+func plainStringLit(e ast.Expr) (string, bool) {
+	sl, ok := e.(*ast.StringLit)
+	if !ok {
+		return "", false
+	}
+	if len(sl.Parts) != 1 {
+		return "", false
+	}
+	chunk, ok := sl.Parts[0].(*ast.StringChunk)
+	if !ok {
+		return "", false
+	}
+	return chunk.Value, true
+}
+
+func plainIntLit(e ast.Expr) (int64, bool) {
+	il, ok := e.(*ast.IntLit)
+	if !ok {
+		return 0, false
+	}
+	return il.Value, true
 }
 
 func (p *Parser) parseTypeExpr() ast.TypeExpr {

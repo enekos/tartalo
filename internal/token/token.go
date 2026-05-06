@@ -40,6 +40,8 @@ const (
 	Null
 	True
 	False
+	Tool
+	Agent
 	TyString
 	TyNumber
 	TyFloat
@@ -93,6 +95,7 @@ var kindNames = map[Kind]string{
 	If: "if", Else: "else", For: "for", In: "in", Match: "match", Type: "type",
 	Import: "import", Export: "export", Test: "test", Defer: "defer",
 	Null: "null", True: "true", False: "false",
+	Tool: "tool", Agent: "agent",
 	TyString: "string", TyNumber: "number", TyFloat: "float", TyBool: "bool", TyVoid: "void",
 	Assign: "=", Plus: "+", Minus: "-", Star: "*", Slash: "/", Percent: "%",
 	Eq: "==", Neq: "!=", Lt: "<", Lte: "<=", Gt: ">", Gte: ">=",
@@ -160,6 +163,8 @@ var Keywords = map[string]Kind{
 	"null":   Null,
 	"true":   True,
 	"false":  False,
+	"tool":   Tool,
+	"agent":  Agent,
 	"string": TyString,
 	"number": TyNumber,
 	"float":  TyFloat,

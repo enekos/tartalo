@@ -2,7 +2,6 @@ package nativegen
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
 	"github.com/enekos/tartalo/internal/checker"
@@ -22,8 +21,6 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	if ft != nil {
 		g.currentReturnType = ft.Result
 	}
-	defer func() { g.currentReturnType = prevRet }()
-
 	g.out.WriteString("func ")
 	g.out.WriteString(g.goFuncName(g.currentModule, fd.Name))
 	g.out.WriteString("(")
@@ -113,6 +110,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	g.indent--
 	g.writeIndent()
 	g.out.WriteString("}\n")
+	g.currentReturnType = prevRet
 }
 
 // hasTryIn reports whether the block tree transitively contains a TryExpr.
@@ -373,7 +371,7 @@ func (g *Generator) emitIf(s *ast.IfStmt) {
 		// `else { if cond {...} }`.
 		if len(s.Else.Stmts) == 1 {
 			if inner, ok := s.Else.Stmts[0].(*ast.IfStmt); ok {
-				g.out.WriteString(strings.Repeat("\t", g.indent))
+				g.writeIndent()
 				g.out.WriteString("} else ")
 				g.emitIfTail(inner)
 				return
@@ -402,7 +400,7 @@ func (g *Generator) emitIfTail(s *ast.IfStmt) {
 	if s.Else != nil {
 		if len(s.Else.Stmts) == 1 {
 			if inner, ok := s.Else.Stmts[0].(*ast.IfStmt); ok {
-				g.out.WriteString(strings.Repeat("\t", g.indent))
+				g.writeIndent()
 				g.out.WriteString("} else ")
 				g.emitIfTail(inner)
 				return

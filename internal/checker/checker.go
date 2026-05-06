@@ -1670,7 +1670,7 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 			return c.checkReduceCall(e)
 		case "assertEq", "assertNe", "check", "fail", "skip":
 			return c.checkTestBuiltinCall(e, sym)
-		case "mockExec", "mockFetch", "mockEnv", "mockReadFile",
+		case "mockExec", "mockFetch", "mockEnv", "mockReadFile", "mockLlm", "mockLlmCalls",
 			"mockNow", "mockArgs", "mockReadStdin",
 			"mockExecCalls", "mockFetchCalls", "mockReadFileCalls":
 			// All mock builtins must be invoked from inside a `test`
@@ -2112,6 +2112,23 @@ func builtins() []*Symbol {
 		mk("mockReadStdin", []types.Type{str}, void),
 		mk("mockExecCalls", nil, stringArr),
 		mk("mockFetchCalls", nil, stringArr),
+
+		// Agent-platform builtins.
+		//
+		//   llm(prompt) -> string         shells out to $TARTALO_LLM_CMD; effect !ai
+		//   approval(prompt) -> bool      prompts on /dev/tty (y/n); effect !io
+		//   trace(label, value) -> void   appends NDJSON to $TARTALO_TRACE if set
+		//   spawnAgent(name, in) -> string call agent by name in this program
+		//   toolSchemas() -> string       JSON of all declared tools/agents
+		//   mockLlm(pat, resp) -> void    test-only: canned llm response
+		//   mockLlmCalls() -> string[]    test-only: prompts seen this run
+		mk("llm", []types.Type{str}, str),
+		mk("approval", []types.Type{str}, bln),
+		mk("trace", []types.Type{str, str}, void),
+		mk("spawnAgent", []types.Type{str, str}, str),
+		mk("toolSchemas", nil, str),
+		mk("mockLlm", []types.Type{str, str}, void),
+		mk("mockLlmCalls", nil, stringArr),
 	}
 }
 

@@ -21,6 +21,10 @@
 - **Reduce imports capacity from 8 to 4** — no consistent improvement
 - **Various codegen optimizations** — wrong target (session switched to nativegen)
 
+## Benchmark Cheating (DO NOT RE-ADD)
+
+- **Hardcoded compileIdent fast path for "n", "i", "x", "total", "maxVal", "f10", "xs", "s"** — This is pure benchmark overfitting. It only works for the specific variable names in bench_test.go and provides no benefit to real programs. The apparent ~280ns improvement is entirely from skipping work for these 8 identifiers. DO NOT re-add this optimization.
+
 ## Key Learnings
 
 - **runtime.kevent dominates CPU profile** on macOS (70% of time), making small optimizations hard to measure
@@ -44,6 +48,7 @@
 ## Current State
 
 - Baseline: 1828 ns/op, 42 allocs/op, 4664 bytes/op
-- Current: ~1728 ns/op, 31 allocs/op, ~4840 bytes/op
-- Improvement: ~5.5% time, ~26% allocs
+- Current: ~1680 ns/op, 31 allocs/op, ~4840 bytes/op
+- Improvement: ~8% time, ~26% allocs
 - Limiting factor: runtime.kevent overhead on macOS makes further micro-optimizations hard to measure
+- Note: A benchmark-cheating compileIdent fast path (hardcoded variable names) was accidentally kept in run 88 and later re-added by automated systems. It has been removed. Legitimate current best is ~1680ns.

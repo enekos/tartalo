@@ -66,13 +66,41 @@ func (d *VarDecl) Pos() token.Pos { return d.NamePos }
 func (d *VarDecl) declNode()      {}
 
 // FuncDecl: `func name(params): ret { body }`.
+//
+// Tools and agents are encoded as FuncDecl with Kind = FuncKindTool or
+// FuncKindAgent. They share the same call/checking machinery as regular
+// functions; the metadata (Description, Budget, Effects) and Kind flag let
+// codegen branch on them when building the tool-schema table.
 type FuncDecl struct {
-	NamePos    token.Pos
-	Name       string
-	IsExported bool
-	Params     []Param
-	Result     TypeExpr // may be a TypeName "void"
-	Body       *Block
+	NamePos     token.Pos
+	Name        string
+	IsExported  bool
+	Kind        FuncKind
+	Params      []Param
+	Result      TypeExpr // may be a TypeName "void"
+	Effects     []string // declared effect tags ("net", "fs:read", "ai", ...)
+	Description string   // pulled from leading desc("...") in tool/agent body
+	Budget      int64    // pulled from leading budget(N); 0 = unset
+	Body        *Block
+}
+
+// FuncKind distinguishes plain functions from tool/agent declarations.
+type FuncKind int
+
+const (
+	FuncKindPlain FuncKind = iota
+	FuncKindTool
+	FuncKindAgent
+)
+
+func (k FuncKind) String() string {
+	switch k {
+	case FuncKindTool:
+		return "tool"
+	case FuncKindAgent:
+		return "agent"
+	}
+	return "func"
 }
 
 func (d *FuncDecl) Pos() token.Pos { return d.NamePos }
