@@ -318,7 +318,11 @@ func (g *Generator) compileArrayLit(e *ast.ArrayLit) string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(g.coerce(g.compileExpr(el), g.info.Types[el], elemTy))
+		expr := g.compileExpr(el)
+		if g.info.Types[el] != elemTy {
+			expr = g.coerce(expr, g.info.Types[el], elemTy)
+		}
+		b.WriteString(expr)
 	}
 	b.WriteString("}")
 	return b.String()

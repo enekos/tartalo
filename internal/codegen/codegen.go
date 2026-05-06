@@ -2526,7 +2526,7 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 	n := len(call.Args)
 	argVals := make([]exprValue, 0, n)
 	argTypes := make([]types.Type, 0, n)
-	var prologue []string
+	prologue := make([]string, 0, 4)
 	for _, a := range call.Args {
 		av := g.compileExpr(a)
 		if len(av.prologue) > 0 {
