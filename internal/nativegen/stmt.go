@@ -656,13 +656,13 @@ func patternLiteral(p *ast.LiteralPattern) string {
 	case *ast.StringLit:
 		// Match arms only allow literal-only strings (no interpolation), so
 		// concatenating chunks reconstructs the original text.
-		var raw string
+		var b strings.Builder
 		for _, p := range lit.Parts {
 			if c, ok := p.(*ast.StringChunk); ok {
-				raw += c.Value
+				b.WriteString(c.Value)
 			}
 		}
-		return strconv.Quote(raw)
+		return fastQuote(b.String())
 	}
 	return "/* unknown pattern */"
 }
