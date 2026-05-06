@@ -215,9 +215,15 @@ func (g *Generator) emitAgentRuntime() {
 
 // agentToolsJSON is the per-agent counterpart of the all-tools toolSchemas
 // blob. Looks up each name in g.tools and emits its tool schema in the same
-// shape as toolSchemas() entries.
+// shape as toolSchemas() entries. Builds JSON directly with strings.Builder
+// to avoid map allocations and reflection-based json.Marshal.
 func (g *Generator) agentToolsJSON(fd *ast.FuncDecl) string {
-	entries := make([]map[string]any, 0, len(fd.Tools))
+	if len(fd.Tools) == 0 {
+		return "[]"
+	}
+	var b strings.Builder
+	b.WriteByte('[')
+	first := true
 	for _, name := range fd.Tools {
 		var tfd *ast.FuncDecl
 		for i := range g.tools {
@@ -229,32 +235,47 @@ func (g *Generator) agentToolsJSON(fd *ast.FuncDecl) string {
 		if tfd == nil {
 			continue
 		}
-		params := make([]map[string]any, 0, len(tfd.Params))
-		for _, p := range tfd.Params {
-			params = append(params, map[string]any{
-				"name": p.Name,
-				"type": typeExprText(p.TypeAnn),
-			})
+		if !first {
+			b.WriteByte(',')
 		}
-		entry := map[string]any{
-			"name":    tfd.Name,
-			"kind":    "tool",
-			"params":  params,
-			"returns": typeExprText(tfd.Result),
+		first = false
+		b.WriteString(`{"name":`)
+		b.WriteString(fastQuote(tfd.Name))
+		b.WriteString(`,"kind":"tool"`)
+		if len(tfd.Params) > 0 {
+			b.WriteString(`,"params":[`)
+			for i, p := range tfd.Params {
+				if i > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(`{"name":`)
+				b.WriteString(fastQuote(p.Name))
+				b.WriteString(`,"type":`)
+				b.WriteString(fastQuote(typeExprText(p.TypeAnn)))
+				b.WriteString("}")
+			}
+			b.WriteString("]")
 		}
+		b.WriteString(`,"returns":`)
+		b.WriteString(fastQuote(typeExprText(tfd.Result)))
 		if tfd.Description != "" {
-			entry["description"] = tfd.Description
+			b.WriteString(",\"description\":")
+			b.WriteString(fastQuote(tfd.Description))
 		}
 		if len(tfd.Effects) > 0 {
-			entry["effects"] = tfd.Effects
+			b.WriteString(",\"effects\":[")
+			for i, eff := range tfd.Effects {
+				if i > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(fastQuote(eff))
+			}
+			b.WriteString("]")
 		}
-		entries = append(entries, entry)
+		b.WriteString("}")
 	}
-	b, err := json.Marshal(entries)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
+	b.WriteByte(']')
+	return b.String()
 }
 
 func isStringToStringNative(fd *ast.FuncDecl) bool {
