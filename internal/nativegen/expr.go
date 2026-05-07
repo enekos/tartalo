@@ -232,7 +232,7 @@ func (g *Generator) compileIdent(e *ast.Ident) string {
 		// sum type with the matching tag set; payload slots stay zero.
 		if sym.IsVariant {
 			if sum, ok := sym.Type.(*types.Sum); ok {
-				return goTypeName(sum.Name) + "{Tag: " + fastQuote(sym.Name) + "}"
+				return "Tt_" + sum.Name + "{Tag: " + fastQuote(sym.Name) + "}"
 			}
 		}
 		// Top-level (function or global): use the module-mangled form.
@@ -499,7 +499,8 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 		return g.compileVariantLit(e, sum)
 	}
 	var b strings.Builder
-	b.WriteString(goTypeName(e.TypeName))
+	b.WriteString("Tt_")
+	b.WriteString(e.TypeName)
 	b.WriteString("{")
 	for i, f := range e.Fields {
 		if i > 0 {
@@ -524,10 +525,11 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 func (g *Generator) compileVariantLit(e *ast.RecordLit, sum *types.Sum) string {
 	v := sum.LookupVariant(e.TypeName)
 	if v == nil {
-		return goTypeName(sum.Name) + "{Tag: " + fastQuote(e.TypeName) + "}"
+		return "Tt_" + sum.Name + "{Tag: " + fastQuote(e.TypeName) + "}"
 	}
 	var b strings.Builder
-	b.WriteString(goTypeName(sum.Name))
+	b.WriteString("Tt_")
+	b.WriteString(sum.Name)
 	b.WriteString("{Tag: ")
 	b.WriteString(fastQuote(v.Name))
 	for _, f := range v.Fields {

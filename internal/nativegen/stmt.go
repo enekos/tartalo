@@ -102,7 +102,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 		g.indent++
 		g.writeLine("if te, ok := r.(_tt_tryErr); ok {")
 		g.indent++
-		g.writeLine("_tt_ret = " + goTypeName(retSum.Name) +
+		g.writeLine("_tt_ret = Tt_" + retSum.Name +
 			"{Tag: \"Err\", F_Err_error: te.err}")
 		g.writeLine("return")
 		g.indent--

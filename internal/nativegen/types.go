@@ -161,7 +161,7 @@ func (g *Generator) emitPredeclaredTypes() {
 func (g *Generator) emitTypeDecl(td *ast.TypeDecl) {
 	switch spec := td.Spec.(type) {
 	case *ast.RecordType:
-		g.writeLine("type " + goTypeName(td.Name) + " struct {")
+		g.writeLine("type Tt_" + td.Name + " struct {")
 		g.indent++
 		for _, f := range spec.Fields {
 			g.writeLine("F_" + f.Name + " " + g.goType(g.typeFromAnn(f.TypeAnn)))
@@ -179,7 +179,7 @@ func (g *Generator) emitTypeDecl(td *ast.TypeDecl) {
 // to avoid cross-variant collisions; only the tag's matching slots carry
 // meaningful values at runtime.
 func (g *Generator) emitSumTypeDecl(name string, spec *ast.SumType) {
-	g.writeLine("type " + goTypeName(name) + " struct {")
+	g.writeLine("type Tt_" + name + " struct {")
 	g.indent++
 	g.writeLine("Tag string")
 	for _, v := range spec.Variants {

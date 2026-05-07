@@ -224,10 +224,14 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 	// In test mode emit one Go function per `test "..."` declaration in the
 	// entry module, plus a slice of {name, fn} test cases for the harness.
 	var entry *loader.Module
-	for _, m := range modules {
-		if m.IsEntry {
-			entry = m
-			break
+	if len(modules) == 1 {
+		entry = modules[0]
+	} else {
+		for _, m := range modules {
+			if m.IsEntry {
+				entry = m
+				break
+			}
 		}
 	}
 	g.currentModule = entry
