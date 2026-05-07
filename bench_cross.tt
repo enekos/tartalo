@@ -1,0 +1,199 @@
+// Cross-target benchmark: exercises features available on both sh and native.
+// Designed to stress the compiler and runtime for parity and performance.
+
+type Point = { x: number, y: number }
+type Person = { name: string, age: number }
+
+type Shape =
+  Circle{r: number}
+  | Rectangle{w: number, h: number}
+  | Empty
+
+func id<T>(x: T): T {
+  return x
+}
+
+func first<T>(xs: T[]): T {
+  return xs[0]
+}
+
+func fib(n: number): number {
+  if n <= 1 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+
+func sumArray(xs: number[]): number {
+  let total = 0
+  for x in xs {
+    total = total + x
+  }
+  return total
+}
+
+func double(n: number): number { return n * 2 }
+func isEven(n: number): bool { return n % 2 == 0 }
+func add(a: number, b: number): number { return a + b }
+
+func buildStrings(n: number): string {
+  let result = ""
+  for i in 0..n {
+    result = result + "a"
+  }
+  return result
+}
+
+func work(n: number): number {
+  let result = 0
+  for i in 0..n {
+    if i % 2 == 0 {
+      result = result + i
+    } else {
+      result = result - i
+    }
+  }
+  return result
+}
+
+func dist(p: Point): number {
+  return p.x + p.y
+}
+
+func describe(p: Person): string {
+  return p.name + " is " + str(p.age)
+}
+
+func area(s: Shape): number {
+  match s {
+    Circle{r} => return r * r * 3
+    Rectangle{w, h} => return w * h
+    Empty => return 0
+  }
+  return -1
+}
+
+func maybe(b: bool): string? {
+  if b { return "yes" }
+  return null
+}
+
+func main(): void {
+  // Generics
+  let g1 = id("hello")
+  let g2 = id(42)
+  let nums: number[] = [10, 20, 30]
+  let fnum = first(nums)
+
+  // Recursion
+  let f10 = fib(10)
+
+  // Arrays and higher-order functions
+  let xs: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  let s = sumArray(xs)
+  let doubled = map(xs, double)
+  let evens = filter(xs, isEven)
+  let total = reduce(xs, 0, add)
+
+  // Strings
+  let str10 = buildStrings(10)
+  let greeting = "Hello, world!"
+  let uppered = upper(greeting)
+  let lowered = lower(greeting)
+  let trimmed = trim("  spaced  ")
+  let replaced = replace("a.b.c", ".", "/")
+  let parts = split("x,y,z", ",")
+  let joined = join(parts, "+")
+  let sliced = slice("abcdef", 1, 4)
+
+  // Records
+  let p = Point{ x: 10, y: 20 }
+  let d = dist(p)
+  let alice = Person{ name: "Alice", age: 30 }
+  let desc = describe(alice)
+
+  // Work loop
+  let w = work(100)
+
+  // Max loop
+  let maxVal = 0
+  for i in 0..100 {
+    if i > maxVal {
+      maxVal = i
+    }
+  }
+
+  // Pipeline
+  let piped = 3 |> double() |> add(1)
+
+  // Match / sum types
+  let a1 = area(Circle{r: 4})
+  let a2 = area(Rectangle{w: 5, h: 6})
+  let a3 = area(Empty)
+
+  // Optional
+  let opt1 = maybe(true) ?? "<none>"
+  let opt2 = maybe(false) ?? "<none>"
+
+  // String builder pattern
+  let sb = ""
+  for i in 0..5 {
+    sb = sb + str(i)
+  }
+
+  // Final validation and output
+  let ok = false
+  if g1 == "hello" {
+    if g2 == 42 {
+      if fnum == 10 {
+        if f10 == 55 {
+          if s == 55 {
+            if len(str10) == 10 {
+              if maxVal == 99 {
+                if d == 30 {
+                  if total == 55 {
+                    if w == -50 {
+                      if piped == 7 {
+                        if a1 == 48 {
+                          if a2 == 30 {
+                            if a3 == 0 {
+                              if opt1 == "yes" {
+                                if opt2 == "<none>" {
+                                  if uppered == "HELLO, WORLD!" {
+                                    if lowered == "hello, world!" {
+                                      if trimmed == "spaced" {
+                                        if replaced == "a/b/c" {
+                                          if joined == "x+y+z" {
+                                            if sliced == "bcd" {
+                                              if sb == "01234" {
+                                                if desc == "Alice is 30" {
+                                                  ok = true
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if ok {
+    echo("CROSS_TARGET_OK")
+  } else {
+    echo("CROSS_TARGET_FAIL")
+  }
+}

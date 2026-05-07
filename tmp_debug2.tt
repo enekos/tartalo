@@ -1,0 +1,19 @@
+func double(n: number): number { return n * 2 }
+func add(a: number, b: number): number { return a + b }
+func main(): void {
+  let piped = 3 |> double() |> add(1)
+  echo("piped=" + str(piped))
+  let w = work(100)
+  echo("w=" + str(w))
+}
+func work(n: number): number {
+  let result = 0
+  for i in 0..n {
+    if i % 2 == 0 {
+      result = result + i
+    } else {
+      result = result - i
+    }
+  }
+  return result
+}

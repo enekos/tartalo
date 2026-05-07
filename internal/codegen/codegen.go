@@ -17,6 +17,7 @@ package codegen
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -708,6 +709,10 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 
 // --- low-level emit helpers -------------------------------------------------
 
+// tempAssignPattern matches lines that assign to a tmp()-generated variable.
+// These must be local to the current function so recursive calls don't clobber them.
+var tempAssignPattern = regexp.MustCompile(`^__[a-zA-Z_][a-zA-Z0-9_]*[0-9]+(__[a-zA-Z_][a-zA-Z0-9_]*)*=`)
+
 func (g *Generator) writeLine(s string) {
 	switch g.indent {
 	case 0:
@@ -722,6 +727,14 @@ func (g *Generator) writeLine(s string) {
 			g.out.WriteByte(' ')
 			g.out.WriteByte(' ')
 		}
+	}
+	// Inside a function body (indent > 0), tmp-generated variables must be local
+	// so recursive calls don't overwrite the caller's temporaries. Skip lines that
+	// contain command substitutions to avoid shellcheck SC2155 and to preserve
+	// exit-code behaviour under set -e.
+	if g.indent > 0 && !strings.HasPrefix(s, "local ") && !strings.HasPrefix(s, "readonly ") &&
+		!strings.Contains(s, "$(") && !strings.Contains(s, "`") && tempAssignPattern.MatchString(s) {
+		s = "local " + s
 	}
 	g.out.WriteString(s)
 	g.out.WriteByte('\n')
