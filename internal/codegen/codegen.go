@@ -124,6 +124,19 @@ type Generator struct {
 	// as one-row-per-line strings.
 	usesRecordArrays bool
 
+	// usesUtf8 tracks whether any emitted expression needs the UTF-8
+	// rune-aware helpers (__tt_runelen, __tt_runeslice). Set by len/slice
+	// on string arguments and by byteLen/byteSlice not at all (they use
+	// inline byte semantics).
+	usesUtf8 bool
+
+	// pendingLambdas accumulates anonymous-function literals encountered
+	// during expression compilation. Each one is hoisted to a top-level
+	// sh function emitted at the end of emitModules, before the main
+	// invocation. Lambdas are emitted into the same module-mangling space
+	// as the enclosing function so name lookups are stable.
+	pendingLambdas []pendingLambda
+
 	// usesDefer is set when any function body in any module contains a defer
 	// statement; gates the emission of the global __tt_run_defers helper.
 	usesDefer bool
@@ -180,6 +193,16 @@ type agentRef struct {
 	Name   string
 	ShName string
 	Decl   *ast.FuncDecl
+}
+
+// pendingLambda is one hoisted anonymous-function literal awaiting emission.
+// The synthesized FuncDecl is fed back through emitFunc so all the regular
+// machinery (param fan-out, return-slot init, defer, etc.) works without
+// duplication.
+type pendingLambda struct {
+	shName string
+	decl   *ast.FuncDecl
+	module *loader.Module
 }
 
 func New(info *checker.TypeInfo) *Generator {
@@ -348,6 +371,11 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 	// site, including globals and main's own body.
 	g.emitAgentRuntime()
 
+	// Pass 3: hoist anonymous function literals discovered during Pass 1/2.
+	// Each compileFuncLit appends to g.pendingLambdas; we emit them as
+	// top-level functions here so they are defined before main runs.
+	g.emitPendingLambdas()
+
 	switch mode {
 	case EmitRun:
 		// If the entry module declared `main`, invoke it. Imported modules'
@@ -363,7 +391,7 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		g.emitTestHarness(entry)
 	}
 	result := g.out.String()
-	if g.needsArgv || g.usesRecordArrays {
+	if g.needsArgv || g.usesRecordArrays || g.usesUtf8 {
 		var cond strings.Builder
 		if g.usesRecordArrays {
 			cond.WriteString(`__tt_us=$(printf '\037')` + "\n")
@@ -371,10 +399,58 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		if g.needsArgv {
 			cond.WriteString(`__tt_argv=$(if [ $# -gt 0 ]; then for __tt_a in "$@"; do printf '%s\n' "$__tt_a"; done; fi)` + "\n")
 		}
+		if g.usesUtf8 {
+			cond.WriteString(utf8RuntimeHelpers)
+		}
 		result = result[:insertPos] + cond.String() + result[insertPos:]
 	}
 	return result
 }
+
+// utf8RuntimeHelpers is injected into the preamble when len(string) or
+// slice(string, ...) is used. It defines:
+//
+//   - __tt_runelen: counts UTF-8 codepoints by stripping continuation bytes
+//     (0x80-0xBF) and then counting the remaining bytes. Portable across
+//     macOS, busybox and GNU coreutils because every byte in the deleted
+//     range is a UTF-8 continuation byte; what survives is exactly one byte
+//     per codepoint.
+//
+//   - __tt_runeslice: walks the input one codepoint at a time using a
+//     precomputed byte-value table (awk has no ord() in POSIX), classifying
+//     each lead byte's UTF-8 length and copying the matching bytes from
+//     codepoint index a (inclusive) to b (exclusive).
+const utf8RuntimeHelpers = `__tt_runelen() {
+  if [ -z "$1" ]; then printf '0'; return; fi
+  printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' '
+}
+__tt_runeslice() {
+  __tt_rs_s="$1" __tt_rs_a="$2" __tt_rs_b="$3" LC_ALL=C awk '
+    BEGIN {
+      for (i = 1; i <= 255; i++) bt = bt sprintf("%c", i)
+      s = ENVIRON["__tt_rs_s"]
+      a = ENVIRON["__tt_rs_a"] + 0
+      b = ENVIRON["__tt_rs_b"] + 0
+      if (a < 0) a = 0
+      if (b <= a) { printf ""; exit }
+      cp = 0; i = 1; n = length(s); out = ""
+      while (i <= n && cp < b) {
+        c = substr(s, i, 1)
+        by = index(bt, c)
+        if (by == 0)        ln = 1
+        else if (by < 128)  ln = 1
+        else if (by < 192)  ln = 1
+        else if (by < 224)  ln = 2
+        else if (by < 240)  ln = 3
+        else                ln = 4
+        if (cp >= a) out = out substr(s, i, ln)
+        cp++
+        i += ln
+      }
+      printf "%s", out
+    }'
+}
+`
 
 // emitTestFunctions emits one sh function per `test "..."` declaration in the
 // entry module. Each is given a stable name (`__tt_test_<idx>`) so the
@@ -1739,8 +1815,87 @@ func (g *Generator) compileExpr(e ast.Expr) exprValue {
 		return g.compileUnwrap(e)
 	case *ast.TryExpr:
 		return g.compileTry(e)
+	case *ast.CastExpr:
+		return g.compileCast(e)
+	case *ast.FuncLit:
+		return g.compileFuncLit(e)
 	}
 	return exprValue{value: fmt.Sprintf("# unsupported expr: %T", e), form: formStr}
+}
+
+// compileFuncLit lowers an anonymous function literal. Each lambda is
+// hoisted to a synthesized top-level sh function whose name becomes the
+// expression's value, so call sites and existing function-value pipelines
+// (map/filter/reduce/spawnAgent/callTool) keep working unchanged.
+//
+// On the sh target, captured outer locals are not preserved across function
+// boundaries — sh's `local` provides dynamic scoping which only works when
+// the lambda is invoked from the same dynamic context that defined it
+// (e.g., immediately, via map). A closure that escapes its defining frame
+// will read uninitialised free vars at runtime; the native target captures
+// natively and has no such restriction.
+func (g *Generator) compileFuncLit(e *ast.FuncLit) exprValue {
+	synth := g.tmp("lam")
+	mangled := checker.MangledName(g.currentModule, synth)
+	ftype, _ := g.info.Types[e].(*types.Func)
+	decl := &ast.FuncDecl{
+		NamePos: e.KwPos,
+		Name:    synth,
+		Kind:    ast.FuncKindPlain,
+		Params:  e.Params,
+		Result:  e.Result,
+		Body:    e.Body,
+	}
+	if g.info.Decls != nil {
+		g.info.Decls[mangled] = &checker.Symbol{
+			Name:    synth,
+			Type:    ftype,
+			IsFunc:  true,
+			Module:  g.currentModule,
+			DeclPos: e.KwPos,
+		}
+	}
+	g.pendingLambdas = append(g.pendingLambdas, pendingLambda{
+		shName: synth,
+		decl:   decl,
+		module: g.currentModule,
+	})
+	return exprValue{value: shName(mangled), form: formStr}
+}
+
+// emitPendingLambdas writes out every hoisted lambda function. Called from
+// emitModules after the regular declarations and before the test/main
+// invocation footer.
+func (g *Generator) emitPendingLambdas() {
+	for _, lam := range g.pendingLambdas {
+		prevMod := g.currentModule
+		g.currentModule = lam.module
+		g.emitFunc(lam.decl)
+		g.currentModule = prevMod
+	}
+}
+
+// compileCast lowers `expr as TargetRec`. The checker has already verified
+// that the source is a record whose fields cover the target's fields. We
+// allocate a fresh prefix and copy each target leaf from the source's
+// matching slot.
+func (g *Generator) compileCast(e *ast.CastExpr) exprValue {
+	tgt, _ := g.info.Types[e].(*types.Record)
+	if tgt == nil {
+		// Checker should have rejected this; emit a comment for safety.
+		v := g.compileExpr(e.Operand)
+		return v
+	}
+	srcV := g.compileExpr(e.Operand)
+	prologue := append([]string{}, srcV.prologue...)
+	out := g.tmp("cast")
+	for _, lf := range recordLeaves(tgt) {
+		prologue = append(prologue, fmt.Sprintf(`%s__%s="${%s__%s}"`, out, lf.Path, srcV.value, lf.Path))
+		if _, isOpt := lf.Type.(*types.Optional); isOpt {
+			prologue = append(prologue, fmt.Sprintf(`%s__%s__null="${%s__%s__null}"`, out, lf.Path, srcV.value, lf.Path))
+		}
+	}
+	return exprValue{prologue: prologue, value: out, form: formRecord}
 }
 
 // compileTry lowers `expr?`. If the operand carries the Err tag, the
@@ -1946,6 +2101,10 @@ func (g *Generator) compileUnwrap(e *ast.UnwrapExpr) exprValue {
 // non-empty, fields are written directly into `prefix__<f>=...` (used when
 // the literal is the immediate RHS of a record-typed declaration / return).
 // Otherwise a fresh temp prefix is allocated and returned as the value.
+//
+// When the literal carries a spread (`Name{...src, foo: bar}`), the spread
+// expression's leaves are copied into the target prefix first so that
+// explicit field overrides win on the second pass.
 func (g *Generator) compileRecordLit(e *ast.RecordLit, prefix string) exprValue {
 	// `Foo{...}` may be a sum-variant construction rather than a record
 	// literal; the checker stamps the result type with the parent sum.
@@ -1960,7 +2119,13 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit, prefix string) exprValue 
 		prefix = g.tmp("rec")
 	}
 	var prologue []string
-	g.appendRecordLitFields(&prologue, rec, e, prefix)
+	spreadPrefix := ""
+	if e.Spread != nil {
+		sv := g.compileExpr(e.Spread)
+		prologue = append(prologue, sv.prologue...)
+		spreadPrefix = sv.value
+	}
+	g.appendRecordLitFields(&prologue, rec, e, prefix, spreadPrefix)
 	return exprValue{prologue: prologue, value: prefix, form: formRecord}
 }
 
@@ -2040,7 +2205,10 @@ func (g *Generator) compileUnitVariant(sum *types.Sum, variantName, prefix strin
 // appendRecordLitFields writes the per-field initializers for `e` into the
 // shell prefix `prefix`. When a field is itself a record, it recurses (record
 // literal RHS) or copies leaf-by-leaf (any other record-valued expression).
-func (g *Generator) appendRecordLitFields(prologue *[]string, rec *types.Record, e *ast.RecordLit, prefix string) {
+//
+// When spreadPrefix is non-empty, fields not explicitly overridden in `e`
+// are copied from `spreadPrefix__<field>` rather than zero-initialized.
+func (g *Generator) appendRecordLitFields(prologue *[]string, rec *types.Record, e *ast.RecordLit, prefix, spreadPrefix string) {
 	for _, f := range rec.Fields {
 		var init *ast.FieldInit
 		for i := range e.Fields {
@@ -2052,6 +2220,19 @@ func (g *Generator) appendRecordLitFields(prologue *[]string, rec *types.Record,
 		fieldVar := prefix + "__" + f.Name
 		if subRec, ok := f.Type.(*types.Record); ok {
 			if init == nil {
+				if spreadPrefix != "" {
+					// Spread: copy all leaves of this sub-record from the
+					// source prefix.
+					for _, lf := range recordLeaves(subRec) {
+						*prologue = append(*prologue, fmt.Sprintf(
+							`%s__%s="${%s__%s__%s}"`, fieldVar, lf.Path, spreadPrefix, f.Name, lf.Path))
+						if _, isOpt := lf.Type.(*types.Optional); isOpt {
+							*prologue = append(*prologue, fmt.Sprintf(
+								`%s__%s__null="${%s__%s__%s__null}"`, fieldVar, lf.Path, spreadPrefix, f.Name, lf.Path))
+						}
+					}
+					continue
+				}
 				// The checker forbids missing fields, but be defensive: zero
 				// every leaf so the generated script doesn't reference unset
 				// vars under `set -u`.
@@ -2064,7 +2245,7 @@ func (g *Generator) appendRecordLitFields(prologue *[]string, rec *types.Record,
 				continue
 			}
 			if subLit, ok := init.Value.(*ast.RecordLit); ok {
-				g.appendRecordLitFields(prologue, subRec, subLit, fieldVar)
+				g.appendRecordLitFields(prologue, subRec, subLit, fieldVar, "")
 				continue
 			}
 			v := g.compileExpr(init.Value)
@@ -2080,6 +2261,13 @@ func (g *Generator) appendRecordLitFields(prologue *[]string, rec *types.Record,
 			continue
 		}
 		if init == nil {
+			if spreadPrefix != "" {
+				*prologue = append(*prologue, fmt.Sprintf(`%s="${%s__%s}"`, fieldVar, spreadPrefix, f.Name))
+				if _, isOpt := f.Type.(*types.Optional); isOpt {
+					*prologue = append(*prologue, fmt.Sprintf(`%s__null="${%s__%s__null}"`, fieldVar, spreadPrefix, f.Name))
+				}
+				continue
+			}
 			*prologue = append(*prologue, fmt.Sprintf(`%s=""`, fieldVar))
 			if _, isOpt := f.Type.(*types.Optional); isOpt {
 				*prologue = append(*prologue, fmt.Sprintf(`%s__null=1`, fieldVar))
@@ -3151,18 +3339,14 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 				fmt.Sprintf(`if [ -z "$%s" ]; then %s=0; else %s=$(printf '%%s\n' "$%s" | awk 'END{print NR}'); fi`,
 					argTmp, t, t, argTmp))
 		} else {
-			// For a simple string variable we can read ${#name} directly;
-			// otherwise snapshot into a temp first.
-			v := args[0].value
-			if args[0].form == formStr && args[0].nullCheck == "" && len(args[0].prologue) == 0 &&
-				strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") && !strings.Contains(v[2:len(v)-1], "{") {
-				name := v[2 : len(v)-1]
-				prologue = append(prologue, fmt.Sprintf("%s=${#%s}", t, name))
-			} else {
-				argTmp := g.tmp("s")
-				prologue = append(prologue, fmt.Sprintf("%s=%s", argTmp, args[0].assignmentRHS()))
-				prologue = append(prologue, fmt.Sprintf("%s=${#%s}", t, argTmp))
-			}
+			// String length is rune-aware (UTF-8 codepoints). Empty-string
+			// short-circuit avoids the helper invocation in the common case.
+			g.usesUtf8 = true
+			argTmp := g.tmp("s")
+			prologue = append(prologue, fmt.Sprintf("%s=%s", argTmp, args[0].assignmentRHS()))
+			prologue = append(prologue, fmt.Sprintf(
+				`if [ -z "$%s" ]; then %s=0; else %s=$(__tt_runelen "$%s"); fi`,
+				argTmp, t, t, argTmp))
 		}
 		return exprValue{prologue: prologue, value: t, form: formArith}
 	case "env":
@@ -3247,6 +3431,19 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		return g.compileContains(args, prologue, "*\"$%s\"")
 	case "slice":
 		return g.compileSlice(args, prologue)
+	case "byteLen":
+		// `${#var}` is locale-aware in bash (counts runes under a UTF-8
+		// locale), so route byteLen through `LC_ALL=C wc -c` for a true
+		// byte count regardless of the host locale.
+		t := g.tmp("blen")
+		argTmp := g.tmp("bl_s")
+		prologue = append(prologue, fmt.Sprintf("%s=%s", argTmp, args[0].assignmentRHS()))
+		prologue = append(prologue, fmt.Sprintf(
+			`%s=$(printf '%%s' "$%s" | LC_ALL=C wc -c | tr -d ' ')`,
+			t, argTmp))
+		return exprValue{prologue: prologue, value: t, form: formArith}
+	case "byteSlice":
+		return g.compileByteSlice(args, prologue)
 	case "trimStart":
 		return g.compileTrimEdge(args, prologue, "start")
 	case "trimEnd":
@@ -3736,12 +3933,29 @@ func (g *Generator) compileContains(args []exprValue, prologue []string, pattern
 	return exprValue{prologue: prologue, value: t, form: formArith}
 }
 
+// compileSlice lowers `slice(s, a, b)` with rune-aware semantics: a and b
+// are codepoint indices, half-open. Falls through to the runtime helper
+// __tt_runeslice; see emitUtf8Helpers for the implementation.
 func (g *Generator) compileSlice(args []exprValue, prologue []string) exprValue {
+	g.usesUtf8 = true
 	t := g.tmp("slc")
 	sVar := g.tmp("slc_s")
 	prologue = append(prologue, fmt.Sprintf("%s=%s", sVar, args[0].assignmentRHS()))
 	prologue = append(prologue, fmt.Sprintf(
-		`%s=$(%s="$%s" awk -v a=%s -v b=%s 'BEGIN { s=ENVIRON["%s"]; if (a<0) a=0; if (b>length(s)) b=length(s); if (b<=a) { printf ""; exit }; printf "%%s", substr(s, a+1, b-a) }')`,
+		`%s=$(__tt_runeslice "$%s" %s %s)`,
+		t, sVar, asArithExpansion(args[1]), asArithExpansion(args[2])))
+	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
+}
+
+// compileByteSlice lowers `byteSlice(s, a, b)` with byte-based semantics:
+// awk's substr/length operate on bytes when LC_ALL=C, so this is what the
+// previous (pre-UTF-8) implementation of slice() did.
+func (g *Generator) compileByteSlice(args []exprValue, prologue []string) exprValue {
+	t := g.tmp("bsl")
+	sVar := g.tmp("bsl_s")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", sVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`%s=$(%s="$%s" LC_ALL=C awk -v a=%s -v b=%s 'BEGIN { s=ENVIRON["%s"]; if (a<0) a=0; if (b>length(s)) b=length(s); if (b<=a) { printf ""; exit }; printf "%%s", substr(s, a+1, b-a) }')`,
 		t,
 		sVar, sVar,
 		asArithExpansion(args[1]), asArithExpansion(args[2]),

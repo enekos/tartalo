@@ -812,6 +812,24 @@ func (p *printer) printExprNoParens(e ast.Expr) {
 	case *ast.UnwrapExpr:
 		p.printExpr(x.Operand, precCall)
 		p.write("!")
+	case *ast.CastExpr:
+		p.printExpr(x.Operand, precCall)
+		p.write(" as ")
+		p.printType(x.TypeAnn)
+	case *ast.FuncLit:
+		p.write("func(")
+		for i, param := range x.Params {
+			if i > 0 {
+				p.write(", ")
+			}
+			p.write(param.Name)
+			p.write(": ")
+			p.printType(param.TypeAnn)
+		}
+		p.write("): ")
+		p.printType(x.Result)
+		p.write(" ")
+		p.printBlock(x.Body)
 	case *ast.ArrayLit:
 		p.printArrayLit(x)
 	case *ast.RecordLit:
@@ -890,22 +908,32 @@ func (p *printer) printArrayLit(a *ast.ArrayLit) {
 }
 
 func (p *printer) printRecordLit(r *ast.RecordLit) {
-	if len(r.Fields) == 0 {
+	if len(r.Fields) == 0 && r.Spread == nil {
 		p.write(r.TypeName)
 		p.write("{}")
 		return
 	}
-	fieldLines := make([]int, len(r.Fields))
-	for i, f := range r.Fields {
-		fieldLines[i] = f.NamePos.Line
+	fieldLines := make([]int, 0, len(r.Fields)+1)
+	if r.Spread != nil {
+		fieldLines = append(fieldLines, r.Spread.Pos().Line)
+	}
+	for _, f := range r.Fields {
+		fieldLines = append(fieldLines, f.NamePos.Line)
 	}
 	if !spansMultipleLines(r.LBrace.Line, fieldLines) {
 		p.write(r.TypeName)
 		p.write("{")
-		for i, f := range r.Fields {
-			if i > 0 {
+		first := true
+		if r.Spread != nil {
+			p.write("...")
+			p.printExpr(r.Spread, precLowest)
+			first = false
+		}
+		for _, f := range r.Fields {
+			if !first {
 				p.write(", ")
 			}
+			first = false
 			p.write(f.Name)
 			p.write(": ")
 			p.printExpr(f.Value, precLowest)
@@ -918,6 +946,15 @@ func (p *printer) printRecordLit(r *ast.RecordLit) {
 	p.nl()
 	p.indent++
 	prevLine := r.LBrace.Line
+	if r.Spread != nil {
+		p.advanceTo(r.Spread.Pos().Line)
+		p.write("...")
+		p.printExpr(r.Spread, precLowest)
+		p.write(",")
+		p.trailingOn(r.Spread.Pos().Line)
+		p.nl()
+		prevLine = r.Spread.Pos().Line
+	}
 	for _, f := range r.Fields {
 		if f.NamePos.Line > prevLine+1 && p.lastSrcLine > 0 {
 			p.blankLine()

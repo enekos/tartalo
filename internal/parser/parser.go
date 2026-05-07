@@ -360,6 +360,40 @@ func (p *Parser) parseFunc() *ast.FuncDecl {
 	return p.parseFuncLike("function declaration", ast.FuncKindPlain)
 }
 
+// parseFuncLit parses an anonymous function literal in expression position.
+// Same parameter / return-type / body shape as a regular function, just
+// without a name and with no exported flag.
+func (p *Parser) parseFuncLit() *ast.FuncLit {
+	kw := p.advance() // func
+	p.expect(token.LParen, "function literal")
+	var params []ast.Param
+	if p.peek().Kind != token.RParen {
+		for {
+			pname := p.expect(token.Ident, "function literal parameter list")
+			p.expect(token.Colon, "function literal parameter list")
+			pty := p.parseTypeExpr()
+			params = append(params, ast.Param{
+				NamePos: pname.Pos,
+				Name:    pname.Value,
+				TypeAnn: pty,
+			})
+			if _, ok := p.accept(token.Comma); !ok {
+				break
+			}
+		}
+	}
+	p.expect(token.RParen, "function literal")
+	p.expect(token.Colon, "function literal")
+	ret := p.parseTypeExpr()
+	body := p.parseBlock()
+	return &ast.FuncLit{
+		KwPos:  kw.Pos,
+		Params: params,
+		Result: ret,
+		Body:   body,
+	}
+}
+
 // parseToolOrAgent shares the function-declaration shape with parseFunc but
 // records the kind on the AST so the checker/codegen can branch on it.
 // Tool/agent bodies may begin with metadata calls — desc("...") and
@@ -1018,6 +1052,13 @@ func (p *Parser) parseCall() ast.Expr {
 			// would be the Coalesce token), so reaching here is unambiguous.
 			q := p.advance()
 			expr = &ast.TryExpr{OpPos: q.Pos, Operand: expr}
+		case token.As:
+			// Postfix `expr as Type` is an explicit type cast. We bind it at
+			// the same level as other postfix ops so chained calls like
+			// `f().x as Person` group as `(f().x) as Person`.
+			kw := p.advance()
+			ty := p.parseTypeExpr()
+			expr = &ast.CastExpr{KwPos: kw.Pos, Operand: expr, TypeAnn: ty}
 		default:
 			return expr
 		}
@@ -1069,6 +1110,11 @@ func (p *Parser) parsePrimary() ast.Expr {
 		return p.parseCmd()
 	case token.LBracket:
 		return p.parseArrayLit()
+	case token.Func:
+		// Anonymous function literal: `func(x: T): R { body }`. Its shape
+		// mirrors a function declaration minus the name; the AST node is
+		// FuncLit so the checker/codegen can branch on it.
+		return p.parseFuncLit()
 	}
 	p.errorf(t.Pos, "unexpected %s in expression", t.Kind)
 	// advance to avoid infinite loops on bad input
@@ -1080,10 +1126,13 @@ func (p *Parser) parsePrimary() ast.Expr {
 
 // looksLikeRecordLit peeks past an open brace to decide if the upcoming
 // `{...}` is a record literal body. Returns true when the next non-`{` tokens
-// are `}` (empty literal) or `Ident :` (first field).
+// are `}` (empty literal), `Ident :` (first field), or `...` (spread source).
 func (p *Parser) looksLikeRecordLit(offsetAfterLBrace int) bool {
 	t := p.peekAhead(offsetAfterLBrace)
 	if t.Kind == token.RBrace {
+		return true
+	}
+	if t.Kind == token.Ellipsis {
 		return true
 	}
 	if t.Kind == token.Ident && p.peekAhead(offsetAfterLBrace+1).Kind == token.Colon {
@@ -1098,7 +1147,25 @@ func (p *Parser) parseRecordLitBody(lbracePos token.Pos, typeName string, namePo
 		TypeName: typeName,
 		LBrace:   lbracePos,
 	}
+	// Optional leading `...source` spread: copies every field of `source`
+	// into the literal; subsequent named fields override individual entries.
+	if dots, ok := p.accept(token.Ellipsis); ok {
+		lit.SpreadPos = dots.Pos
+		lit.Spread = p.parseExpr()
+		if _, ok := p.accept(token.Comma); !ok {
+			rb := p.expect(token.RBrace, "record literal")
+			lit.RBrace = rb.Pos
+			return lit
+		}
+	}
 	for p.peek().Kind != token.RBrace && !p.atEnd() {
+		if p.peek().Kind == token.Ellipsis {
+			p.errorf(p.peek().Pos, "record spread must appear at the start of the literal")
+			p.advance()
+			_ = p.parseExpr()
+			_, _ = p.accept(token.Comma)
+			continue
+		}
 		nameTok := p.expect(token.Ident, "record literal field")
 		p.expect(token.Colon, "record literal field")
 		val := p.parseExpr()

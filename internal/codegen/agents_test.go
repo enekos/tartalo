@@ -2,6 +2,7 @@ package codegen_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -375,8 +376,8 @@ test "unmocked llm fails" {
 // local httptest server via TARTALO_KIMI_BASE_URL so no real network call
 // is made.
 func TestLlm_KimiProvider(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not on PATH; required by the shell-target Kimi helper")
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not on PATH; required by the shell-target Kimi helper")
 	}
 	var gotAuth, gotPath, gotBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -408,11 +409,66 @@ func TestLlm_KimiProvider(t *testing.T) {
 	if gotPath != "/chat/completions" {
 		t.Errorf("path = %q, want /chat/completions", gotPath)
 	}
-	if !strings.Contains(gotBody, `"model": "moonshot-v1-8k"`) {
+	if !strings.Contains(gotBody, `"model":"moonshot-v1-8k"`) {
 		t.Errorf("body missing model field:\n%s", gotBody)
 	}
-	if !strings.Contains(gotBody, `"content": "hello"`) {
+	if !strings.Contains(gotBody, `"content":"hello"`) {
 		t.Errorf("body missing prompt content:\n%s", gotBody)
+	}
+}
+
+// TestLlm_KimiStreaming verifies that TARTALO_LLM_STREAM=1 routes llm()
+// through the SSE path: the request body carries "stream":true, each
+// delta.content chunk is mirrored to stderr as it arrives, and the
+// accumulated content is what the function call returns.
+func TestLlm_KimiStreaming(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not on PATH; required by the shell-target Kimi helper")
+	}
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"choices":[{"delta":{"role":"assistant"}}]}`,
+			`{"choices":[{"delta":{"content":"hi"}}]}`,
+			`{"choices":[{"delta":{"content":" from"}}]}`,
+			`{"choices":[{"delta":{"content":" stream"}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	src := `func main(): void { echo(llm("hello")) }`
+	out, code := runShellWith(t, compileBuild(t, src), map[string]string{
+		"TARTALO_LLM_PROVIDER":  "kimi",
+		"KIMI_API_KEY":          "test-key",
+		"TARTALO_KIMI_BASE_URL": server.URL,
+		"TARTALO_KIMI_MODEL":    "moonshot-v1-8k",
+		"TARTALO_LLM_STREAM":    "1",
+	})
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if !strings.Contains(gotBody, `"stream":true`) {
+		t.Errorf("body missing stream flag:\n%s", gotBody)
+	}
+	// echo() prints the accumulated return; combined output also includes
+	// the per-delta stderr mirror, so the phrase appears at least once.
+	if !strings.Contains(out, "hi from stream") {
+		t.Errorf("expected accumulated content in output, got:\n%s", out)
 	}
 }
 

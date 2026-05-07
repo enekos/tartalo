@@ -220,6 +220,43 @@ echo(p.addr.city + " #" + str(len(p.tags)))
   array fields. The row-based encoding uses newlines to separate elements,
   which collides with the newline-joined array representation.
 
+### Record spread
+
+A record literal may begin with a `...source` spread that copies every field
+from `source` (which must have the same record type as the literal). Any
+named fields after the spread override the corresponding fields from the
+source:
+
+```tartalo
+type Person = { name: string, age: number }
+
+let alice: Person = Person{name: "Alice", age: 30}
+let older: Person = Person{...alice, age: 31}
+```
+
+The spread must be the first entry in the literal. Cross-type spread
+(copying fields from a structurally-similar but different record type) is
+not allowed — use `as` instead.
+
+### Type casts
+
+`expr as TargetRecord` reinterprets a record value as a different record
+type when the target's field set is a subset of the source's, with each
+shared field's type assignable from source to target. This is useful for
+narrowing wide records into a purpose-built shape:
+
+```tartalo
+type RawUser   = { name: string, age: number, email: string }
+type ShortUser = { name: string, age: number }
+
+let raw: RawUser = RawUser{name: "Alice", age: 30, email: "a@x"}
+let short: ShortUser = raw as ShortUser
+```
+
+Casts are restricted to record-to-record conversions in v0; primitives,
+arrays, and sums use their existing builtins (`str`, `num`, `floatOf`,
+`intOf`).
+
 ## Arrays of records
 
 `Person[]` is supported when each leaf of the element record is a primitive
@@ -527,7 +564,8 @@ A command in statement position runs for side effects:
 - `eprint(s: string): void` — print line to stderr
 - `str(n: number | float | bool): string` — convert a scalar to its string representation
 - `num(s: string): number` — string → int (errors at runtime if not numeric)
-- `len(s | T[]): number` — string byte-length or array element count
+- `len(s | T[]): number` — UTF-8 codepoint (rune) count for strings; element
+  count for arrays. For raw byte length use `byteLen`.
 - `env(name: string): string?` — read env var (`null` if unset, empty string if set to `""`)
 - `exit(code: number): void` — exit with code
 
@@ -540,7 +578,14 @@ A command in statement position runs for side effects:
 - `contains(s, sub: string): bool`
 - `startsWith(s, prefix: string): bool`
 - `endsWith(s, suffix: string): bool`
-- `slice(s: string, start, end: number): string` — half-open `[start, end)`, 0-based
+- `slice(s: string, start, end: number): string` — half-open `[start, end)`,
+  0-based; `start` and `end` are UTF-8 codepoint indices, so the result is
+  always a valid UTF-8 string.
+- `byteLen(s: string): number` — raw byte length (POSIX `wc -c` semantics).
+- `byteSlice(s: string, start, end: number): string` — half-open byte-index
+  slice. May return an invalid UTF-8 substring when cutting through a
+  multi-byte sequence; prefer `slice` unless you specifically need bytes
+  (e.g., for binary protocols).
 - `split(s, sep: string): string[]`
 - `join(arr: string[], sep: string): string`
 
@@ -653,6 +698,35 @@ func square(n: number): number { return n * n }
 let f: func(number): number = square
 echo(str(f(7)))
 ```
+
+### Anonymous functions (closures)
+
+Function literals can appear in any expression position:
+
+```tartalo
+let dbl: func(number): number = func(x: number): number { return x + x }
+let xs: number[] = [1, 2, 3, 4]
+let squares: number[] = map(xs, func(x: number): number { return x * x })
+```
+
+Lambdas may capture variables from the enclosing scope:
+
+```tartalo
+func main(): void {
+  let n: number = 10
+  let xs: number[] = [1, 2, 3]
+  let added: number[] = map(xs, func(x: number): number { return x + n })
+}
+```
+
+**Target compatibility note**: on the native target, captures work just
+like Go's closures — including for closures that escape their defining
+function (`func makeAdder(n) { return func(x) { return x + n } }`). On the
+sh target, captures work via dynamic scoping, which is fine for the common
+case where the lambda runs *while* the defining frame is still live (e.g.,
+inside `map`). A closure that escapes its defining frame on the sh target
+will read uninitialised free variables at runtime; if you need escaping
+closures, use `--target=native`.
 
 ### Process / time
 
@@ -772,7 +846,7 @@ Future work will enforce them via a compile-time `--caps=` capability set.
 
 | Builtin | Type | Effect | Notes |
 |---|---|---|---|
-| `llm(prompt: string): string` | `(string) → string` | `!ai` | Dispatches on `$TARTALO_LLM_PROVIDER`. `kimi` (or `moonshot`) calls Moonshot's OpenAI-compatible chat/completions API using `$KIMI_API_KEY` (overridable via `$TARTALO_KIMI_BASE_URL` / `$TARTALO_KIMI_MODEL`). Anything else pipes the prompt to `$TARTALO_LLM_CMD` (default `claude -p`). The shell target needs `python3` for the kimi path; the native target uses Go's `net/http` directly. In test mode every call must be matched by `mockLlm` or the test fails. |
+| `llm(prompt: string): string` | `(string) → string` | `!ai` | Dispatches on `$TARTALO_LLM_PROVIDER`. `kimi` (or `moonshot`) calls Moonshot's OpenAI-compatible chat/completions API using `$KIMI_API_KEY` (overridable via `$TARTALO_KIMI_BASE_URL` / `$TARTALO_KIMI_MODEL`). Set `$TARTALO_LLM_STREAM=1` to switch the kimi path to SSE: deltas are mirrored to stderr as they arrive, and the assembled content is still what the call returns. Anything else pipes the prompt to `$TARTALO_LLM_CMD` (default `claude -p`). The shell target needs `curl` for the kimi path; the native target uses Go's `net/http` directly. In test mode every call must be matched by `mockLlm` or the test fails. |
 | `approval(prompt: string): bool` | `(string) → bool` | `!io` | Prints prompt on stderr, reads y/n from `/dev/tty` (falls back to stdin). Returns true for y/Y/yes, else false. |
 | `trace(label: string, value: string): void` | `(string,string) → void` | `!fs:write` | Appends one NDJSON record `{ts, label, value}` to `$TARTALO_TRACE` if set; no-op otherwise. |
 | `spawnAgent(name: string, input: string): string` | `(string,string) → string` | inherits | Calls a declared agent by name through a compile-time-built `case` dispatcher. No eval, no string-to-function lookup. Aborts with a clear error on unknown names. Restricted to `(string) → string` agents. |

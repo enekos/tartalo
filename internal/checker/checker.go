@@ -1410,9 +1410,261 @@ func (c *Checker) inferExpr(e ast.Expr) types.Type {
 		return c.checkUnwrap(e)
 	case *ast.TryExpr:
 		return c.checkTry(e)
+	case *ast.CastExpr:
+		return c.checkCast(e)
+	case *ast.FuncLit:
+		return c.checkFuncLit(e)
 	}
 	c.errorf(e.Pos(), "unhandled expression type %T", e)
 	return types.Invalid
+}
+
+// checkFuncLit type-checks an anonymous function literal and records its
+// free variables — names referenced inside the body that resolve to a
+// binding in the enclosing function (i.e., a non-global, non-builtin,
+// non-top-level-function symbol). The codegen consults FreeVars to decide
+// whether the lambda is a pure-function hoist or requires a closure cell.
+func (c *Checker) checkFuncLit(e *ast.FuncLit) types.Type {
+	params := make([]types.Type, len(e.Params))
+	for i, p := range e.Params {
+		params[i] = c.resolveTypeExpr(p.TypeAnn)
+	}
+	ret := c.resolveTypeExpr(e.Result)
+	saved := c.current
+	savedRet := c.currentRet
+	c.current = newScope(saved)
+	c.currentRet = ret
+	for i, p := range e.Params {
+		paramSym := &Symbol{
+			Name:    p.Name,
+			Type:    params[i],
+			IsParam: true,
+			DeclPos: p.NamePos,
+		}
+		if !c.current.define(paramSym) {
+			c.errorf(p.NamePos, "duplicate parameter %q in function literal", p.Name)
+		}
+	}
+	c.checkBlock(e.Body)
+	c.current = saved
+	c.currentRet = savedRet
+
+	// Compute free variables: walk the body for identifier references whose
+	// resolved symbol was declared OUTSIDE the lambda body's source span,
+	// is neither a builtin, a top-level function, nor a module-level global,
+	// and isn't one of the lambda's own parameters.
+	bodyStart := e.Body.LBrace
+	bodyEnd := e.Body.RBrace
+	ownParams := make(map[string]bool, len(e.Params))
+	for _, p := range e.Params {
+		ownParams[p.Name] = true
+	}
+	seen := map[string]bool{}
+	collectFreeVars(e.Body, c.info, bodyStart, bodyEnd, ownParams, seen, &e.FreeVars)
+	return &types.Func{Params: params, Result: ret}
+}
+
+// collectFreeVars walks the lambda body and appends every identifier whose
+// declaration falls outside [start, end] and which represents a captured
+// local (not a global, builtin, or top-level function, and not one of the
+// lambda's own parameters). Duplicates are suppressed via `seen`.
+func collectFreeVars(b *ast.Block, info *TypeInfo, start, end token.Pos, ownParams map[string]bool, seen map[string]bool, out *[]string) {
+	if b == nil {
+		return
+	}
+	for _, s := range b.Stmts {
+		walkStmtFreeVars(s, info, start, end, ownParams, seen, out)
+	}
+}
+
+func walkStmtFreeVars(s ast.Stmt, info *TypeInfo, start, end token.Pos, ownParams map[string]bool, seen map[string]bool, out *[]string) {
+	switch s := s.(type) {
+	case *ast.DeclStmt:
+		walkExprFreeVars(s.Decl.Value, info, start, end, ownParams, seen, out)
+	case *ast.ExprStmt:
+		walkExprFreeVars(s.X, info, start, end, ownParams, seen, out)
+	case *ast.AssignStmt:
+		walkExprFreeVars(s.Value, info, start, end, ownParams, seen, out)
+	case *ast.FieldAssignStmt:
+		walkExprFreeVars(s.Target, info, start, end, ownParams, seen, out)
+		walkExprFreeVars(s.Value, info, start, end, ownParams, seen, out)
+	case *ast.ReturnStmt:
+		walkExprFreeVars(s.Value, info, start, end, ownParams, seen, out)
+	case *ast.IfStmt:
+		walkExprFreeVars(s.Cond, info, start, end, ownParams, seen, out)
+		collectFreeVars(s.Then, info, start, end, ownParams, seen, out)
+		collectFreeVars(s.Else, info, start, end, ownParams, seen, out)
+	case *ast.ForStmt:
+		walkExprFreeVars(s.Iter, info, start, end, ownParams, seen, out)
+		collectFreeVars(s.Body, info, start, end, ownParams, seen, out)
+	case *ast.MatchStmt:
+		walkExprFreeVars(s.Subject, info, start, end, ownParams, seen, out)
+		for _, arm := range s.Cases {
+			collectFreeVars(arm.Body, info, start, end, ownParams, seen, out)
+		}
+	case *ast.Block:
+		collectFreeVars(s, info, start, end, ownParams, seen, out)
+	case *ast.DeferStmt:
+		collectFreeVars(s.Body, info, start, end, ownParams, seen, out)
+	case *ast.ParallelStmt:
+		collectFreeVars(s.Body, info, start, end, ownParams, seen, out)
+	case *ast.TaskStmt:
+		collectFreeVars(s.Body, info, start, end, ownParams, seen, out)
+	}
+}
+
+func walkExprFreeVars(e ast.Expr, info *TypeInfo, start, end token.Pos, ownParams map[string]bool, seen map[string]bool, out *[]string) {
+	if e == nil {
+		return
+	}
+	switch e := e.(type) {
+	case *ast.Ident:
+		sym := info.Uses[e]
+		if sym == nil {
+			return
+		}
+		if sym.IsBuiltin || sym.IsFunc || sym.Module != nil {
+			return
+		}
+		if ownParams[sym.Name] && sym.IsParam {
+			return
+		}
+		if !sym.IsParam && !isPosBefore(sym.DeclPos, start) && !isPosAfter(sym.DeclPos, end) {
+			// Declared inside the lambda body — local, not free.
+			return
+		}
+		if seen[sym.Name] {
+			return
+		}
+		seen[sym.Name] = true
+		*out = append(*out, sym.Name)
+	case *ast.CallExpr:
+		walkExprFreeVars(e.Callee, info, start, end, ownParams, seen, out)
+		for _, a := range e.Args {
+			walkExprFreeVars(a, info, start, end, ownParams, seen, out)
+		}
+	case *ast.BinaryExpr:
+		walkExprFreeVars(e.Lhs, info, start, end, ownParams, seen, out)
+		walkExprFreeVars(e.Rhs, info, start, end, ownParams, seen, out)
+	case *ast.UnaryExpr:
+		walkExprFreeVars(e.Operand, info, start, end, ownParams, seen, out)
+	case *ast.IndexExpr:
+		walkExprFreeVars(e.Target, info, start, end, ownParams, seen, out)
+		walkExprFreeVars(e.Index, info, start, end, ownParams, seen, out)
+	case *ast.FieldExpr:
+		walkExprFreeVars(e.Target, info, start, end, ownParams, seen, out)
+	case *ast.CoalesceExpr:
+		walkExprFreeVars(e.Lhs, info, start, end, ownParams, seen, out)
+		walkExprFreeVars(e.Rhs, info, start, end, ownParams, seen, out)
+	case *ast.UnwrapExpr:
+		walkExprFreeVars(e.Operand, info, start, end, ownParams, seen, out)
+	case *ast.TryExpr:
+		walkExprFreeVars(e.Operand, info, start, end, ownParams, seen, out)
+	case *ast.CastExpr:
+		walkExprFreeVars(e.Operand, info, start, end, ownParams, seen, out)
+	case *ast.ArrayLit:
+		for _, x := range e.Elems {
+			walkExprFreeVars(x, info, start, end, ownParams, seen, out)
+		}
+	case *ast.RecordLit:
+		walkExprFreeVars(e.Spread, info, start, end, ownParams, seen, out)
+		for _, f := range e.Fields {
+			walkExprFreeVars(f.Value, info, start, end, ownParams, seen, out)
+		}
+	case *ast.StringLit:
+		for _, p := range e.Parts {
+			walkExprFreeVars(p, info, start, end, ownParams, seen, out)
+		}
+	case *ast.CmdLit:
+		for _, p := range e.Parts {
+			walkExprFreeVars(p, info, start, end, ownParams, seen, out)
+		}
+	case *ast.RangeExpr:
+		walkExprFreeVars(e.Start, info, start, end, ownParams, seen, out)
+		walkExprFreeVars(e.End, info, start, end, ownParams, seen, out)
+	case *ast.FuncLit:
+		// Nested lambda: its own free-var set is already populated by its
+		// own checkFuncLit pass; lift those that escape the outer lambda
+		// into the outer's free-var set as well, except those that are the
+		// outer lambda's own params.
+		for _, name := range e.FreeVars {
+			if ownParams[name] {
+				continue
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			*out = append(*out, name)
+		}
+	}
+}
+
+func isPosBefore(a, b token.Pos) bool {
+	if a.File != b.File {
+		return false
+	}
+	if a.Line != b.Line {
+		return a.Line < b.Line
+	}
+	return a.Col < b.Col
+}
+
+func isPosAfter(a, b token.Pos) bool {
+	if a.File != b.File {
+		return false
+	}
+	if a.Line != b.Line {
+		return a.Line > b.Line
+	}
+	return a.Col > b.Col
+}
+
+// checkCast validates `expr as TypeName`. The cast is structural for record
+// types: every field of the target must exist in the source with an
+// assignable type. Casts to the same record type are a no-op (allowed).
+// Casting to or from a primitive is rejected — use the str/num/floatOf
+// builtins for those conversions.
+func (c *Checker) checkCast(e *ast.CastExpr) types.Type {
+	srcT := c.checkExpr(e.Operand)
+	tgtT := c.resolveTypeExpr(e.TypeAnn)
+	if srcT == types.Invalid || tgtT == nil || tgtT == types.Invalid {
+		return types.Invalid
+	}
+	tgtRec, isRec := tgtT.(*types.Record)
+	if !isRec {
+		c.errorf(e.KwPos,
+			"`as` casts are only supported to record types in v0, got %s",
+			types.Format(tgtT))
+		return types.Invalid
+	}
+	if types.Equal(srcT, tgtT) {
+		return tgtT
+	}
+	srcRec, ok := srcT.(*types.Record)
+	if !ok {
+		c.errorf(e.KwPos,
+			"cannot cast %s to record %s; only record-to-record casts are allowed",
+			types.Format(srcT), tgtRec.Name)
+		return types.Invalid
+	}
+	for _, tf := range tgtRec.Fields {
+		sf := srcRec.Lookup(tf.Name)
+		if sf == nil {
+			c.errorf(e.KwPos,
+				"cannot cast %s to %s: source has no field %q",
+				srcRec.Name, tgtRec.Name, tf.Name)
+			return types.Invalid
+		}
+		if !types.IsAssignable(sf.Type, tf.Type) {
+			c.errorf(e.KwPos,
+				"cannot cast %s to %s: field %q is %s in source but %s in target",
+				srcRec.Name, tgtRec.Name, tf.Name,
+				types.Format(sf.Type), types.Format(tf.Type))
+			return types.Invalid
+		}
+	}
+	return tgtT
 }
 
 // checkTry validates `expr?`. Operand must be a Result-shaped sum (variants
@@ -1498,6 +1750,9 @@ func (c *Checker) checkRecordLit(e *ast.RecordLit) types.Type {
 	resolved := c.resolveTypeName(e.TypeName)
 	if resolved == nil {
 		c.errorf(e.NamePos, "unknown type %q", e.TypeName)
+		if e.Spread != nil {
+			c.checkExpr(e.Spread)
+		}
 		for _, f := range e.Fields {
 			c.checkExpr(f.Value)
 		}
@@ -1507,6 +1762,9 @@ func (c *Checker) checkRecordLit(e *ast.RecordLit) types.Type {
 		c.errorf(e.NamePos,
 			"cannot construct sum type %q directly; use one of its variants",
 			e.TypeName)
+		if e.Spread != nil {
+			c.checkExpr(e.Spread)
+		}
 		for _, f := range e.Fields {
 			c.checkExpr(f.Value)
 		}
@@ -1516,6 +1774,16 @@ func (c *Checker) checkRecordLit(e *ast.RecordLit) types.Type {
 	if !ok {
 		c.errorf(e.NamePos, "%q is not a record type", e.TypeName)
 		return types.Invalid
+	}
+	// A spread source must have the same record type as the literal so
+	// every field is guaranteed to be present and well-typed.
+	if e.Spread != nil {
+		st := c.checkExpr(e.Spread)
+		if st != types.Invalid && !types.Equal(st, rec) {
+			c.errorf(e.SpreadPos,
+				"record spread source must have type %s, got %s",
+				rec.Name, types.Format(st))
+		}
 	}
 	seen := map[string]bool{}
 	for _, init := range e.Fields {
@@ -1538,9 +1806,13 @@ func (c *Checker) checkRecordLit(e *ast.RecordLit) types.Type {
 				init.Name, types.Format(f.Type), types.Format(got))
 		}
 	}
-	for _, f := range rec.Fields {
-		if !seen[f.Name] {
-			c.errorf(e.LBrace, "record literal is missing field %q", f.Name)
+	// A spread fills any field not explicitly overridden, so the
+	// "missing field" check only fires when no spread is present.
+	if e.Spread == nil {
+		for _, f := range rec.Fields {
+			if !seen[f.Name] {
+				c.errorf(e.LBrace, "record literal is missing field %q", f.Name)
+			}
 		}
 	}
 	return rec
@@ -2318,6 +2590,11 @@ func builtins() []*Symbol {
 		mk("startsWith", []types.Type{str, str}, bln),
 		mk("endsWith", []types.Type{str, str}, bln),
 		mk("slice", []types.Type{str, num, num}, str),
+		// Byte-level counterparts of len/slice. `len`/`slice` operate on
+		// UTF-8 codepoints; `byteLen`/`byteSlice` retain byte semantics for
+		// callers that need them (e.g. binary protocols).
+		mk("byteLen", []types.Type{str}, num),
+		mk("byteSlice", []types.Type{str, num, num}, str),
 		mk("trimStart", []types.Type{str}, str),
 		mk("trimEnd", []types.Type{str}, str),
 		mk("repeat", []types.Type{str, num}, str),

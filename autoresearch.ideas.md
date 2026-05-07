@@ -16,6 +16,10 @@
 - **Replace json.Marshal with direct strings.Builder in agentToolsJSON** — eliminates map[string]any allocations and reflection overhead for per-agent tool schemas
 - **Replace json.Marshal with direct strings.Builder in initAgentPlatform** — eliminates map[string]any allocations and reflection overhead for toolSchemasJSON
 - **Combine Pass 1 and Pass 2 into single loop per module** — eliminates redundant AST traversal over all declarations
+- **Inline goFuncName in emitFunc and emitProgram main() call** — avoids string allocation for every function declaration
+- **Inline goFieldName in emitFieldAssign, compileRecordLit, compileField, emitTypeDecl** — avoids string allocation for every field access/assignment/literal; ~1600ns suite improvement
+- **Inline goTypeName in emitTypeDecl, emitSumTypeDecl, compileRecordLit, compileVariantLit, emitFunc** — avoids string allocation for type names
+- **Optimize entry module lookup for single-module programs** — fast path `modules[0]` avoids loop for the common case
 
 ## Completed (discarded) — Complex Scripts Session
 
@@ -25,6 +29,13 @@
 - **hasAgents check before initAgentPlatform** — adds an extra scan that doesn't improve performance
 - **Cache agentToolsJSON per agent** — correct but effect too small to measure on macOS due to high variance; better to optimize the JSON building itself
 - **Use strings.Builder for function types in goType** — adds overhead for the common case of 0-2 parameters; no improvement
+- **Simplify estimation loop to totalDecls*500** — less accurate, over-allocates for scripts with many type/var declarations
+- **Switch-based writeLine** — worse than if-chain; hurts branch prediction
+- **strings.IndexByte in fastQuote** — function call overhead exceeds savings from manual loop
+- **file.Grow(g.out.Len()+1024)** — no improvement, possibly hurts cache
+- **Pre-allocate agents/tools slices in New** — adds allocation overhead for scripts without agents; allocs increased
+- **fastQuote lookup table for single-char strings** — init() allocates 128 strings; lookup not faster than stack buffer
+- **Stack buffer for tmp() names** — no improvement; string concat for short names is already efficient
 
 ## Key Learnings — Complex Scripts Session
 
@@ -37,6 +48,10 @@
 - **json.Marshal with map[string]any is extremely allocation-heavy** — replacing it with direct strings.Builder in agentToolsJSON and initAgentPlatform yielded the two biggest single improvements in this session
 - **Reflection-based JSON encoding dominates profiles** — encoding/json.mapEncoder.encode and reflect.copyVal were top allocators before the direct JSON builder optimization
 - **Combining loops saves iteration overhead** — Pass 1+2 combination saved ~500ns by eliminating one full AST traversal
+- **Inlining string-building helpers avoids heap allocation** — goFuncName, goFieldName, goTypeName all allocate via `string(buf[:n])`; inlining the prefix directly into Builder writes eliminates this allocation
+- **Stack buffer `string(buf[:n])` always allocates** — the `string()` call copies from stack to heap; the only way to avoid it is to not return a string (write directly to output)
+- **Conditional predeclared types based on flags is buggy** — user-defined functions can return predeclared types without calling the corresponding builtins, so flag-based gating misses cases
+- **Benchmark variance correlates with system temperature** — after many benchmark runs, CPU throttling causes 2-3x inflation in individual script times; suite metric is more resilient
 
 ## Remaining Opportunities (high effort / marginal gain)
 
@@ -50,8 +65,8 @@
 ## Current State — Complex Scripts
 
 - Baseline: 53,821 ns/op, 806 allocs/op, 138,755 bytes/op
-- Best: ~41,355 ns/op, 696 allocs/op, 127,305 bytes/op
-- Improvement: ~23.2% time, ~13.6% allocs, ~8.3% bytes
-- Best individual script improvements: agent_demo -42.4%, mega -17.3%, numpy -18.6%, pandas -17.5%
-- Confidence: 5.9× noise floor
+- Best: ~40,362 ns/op, 657 allocs/op, 126,970 bytes/op
+- Improvement: ~25.0% time, ~18.5% allocs, ~8.5% bytes
+- Best individual script improvements: agent_demo -41.5%, mega -16.3%, numpy -18.9%, pandas -18.3%
+- Confidence: 5.6× noise floor
 - Limiting factor: macOS scheduler noise makes sub-1% changes hard to distinguish

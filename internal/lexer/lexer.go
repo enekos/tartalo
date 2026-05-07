@@ -342,7 +342,12 @@ func (l *Lexer) lexPunct() {
 	case '.':
 		if l.peek() == '.' {
 			l.advance()
-			l.emitAt(token.DotDot, "..", p)
+			if l.peek() == '.' {
+				l.advance()
+				l.emitAt(token.Ellipsis, "...", p)
+			} else {
+				l.emitAt(token.DotDot, "..", p)
+			}
 		} else {
 			l.emitAt(token.Dot, ".", p)
 		}

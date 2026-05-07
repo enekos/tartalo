@@ -85,8 +85,118 @@ func (g *Generator) compileExpr(e ast.Expr) string {
 		return g.compileUnwrap(e)
 	case *ast.TryExpr:
 		return g.compileTry(e)
+	case *ast.CastExpr:
+		return g.compileCast(e)
+	case *ast.FuncLit:
+		return g.compileFuncLit(e)
 	}
 	return "/* unsupported expr */ nil"
+}
+
+// compileFuncLit lowers an anonymous function literal as an inline Go
+// closure. Tartalo's locals map 1:1 to Go locals, so any free variables
+// referenced in the body are captured naturally by the resulting Go func
+// literal — no explicit capture list is needed. The literal's body is
+// emitted into a temporary buffer so it can be spliced into the outer
+// expression as a string.
+func (g *Generator) compileFuncLit(e *ast.FuncLit) string {
+	paramTypes := make([]types.Type, len(e.Params))
+	for i, p := range e.Params {
+		paramTypes[i] = g.typeFromAnn(p.TypeAnn)
+	}
+	retType := g.typeFromAnn(e.Result)
+
+	var sig strings.Builder
+	sig.WriteString("func(")
+	for i, p := range e.Params {
+		if i > 0 {
+			sig.WriteString(", ")
+		}
+		sig.WriteString("tt_")
+		sig.WriteString(p.Name)
+		sig.WriteByte(' ')
+		sig.WriteString(g.goType(paramTypes[i]))
+	}
+	sig.WriteByte(')')
+	if retType != nil && retType != types.Void {
+		sig.WriteByte(' ')
+		sig.WriteString(g.goType(retType))
+	}
+	sig.WriteString(" {\n")
+
+	body := g.captureOutput(func() {
+		prevRet := g.currentReturnType
+		g.currentReturnType = retType
+		g.indent++
+		for _, s := range e.Body.Stmts {
+			g.emitStmt(s)
+		}
+		g.indent--
+		g.currentReturnType = prevRet
+	})
+	sig.WriteString(body)
+	for i := 0; i < g.indent; i++ {
+		sig.WriteByte('\t')
+	}
+	sig.WriteByte('}')
+	return sig.String()
+}
+
+// captureOutput runs fn with a clean output buffer and returns the text
+// produced. The previous content is restored after fn returns. Used to
+// embed a nested emission (e.g., a function literal's body) into the
+// surrounding expression as a string.
+func (g *Generator) captureOutput(fn func()) string {
+	saved := g.out.String()
+	g.out.Reset()
+	fn()
+	captured := g.out.String()
+	g.out.Reset()
+	g.out.WriteString(saved)
+	return captured
+}
+
+// compileCast lowers `expr as TargetRec` for the native backend. The checker
+// has verified that the source record's fields cover the target's, so we
+// emit a target-typed struct literal that copies each target field from the
+// source. The `coerce` helper handles per-field optional-wrap / float
+// widening when the target's field type is wider than the source's.
+func (g *Generator) compileCast(e *ast.CastExpr) string {
+	tgt, ok := g.info.Types[e].(*types.Record)
+	if !ok {
+		return g.compileExpr(e.Operand)
+	}
+	srcExpr := g.compileExpr(e.Operand)
+	srcRec, _ := g.info.Types[e.Operand].(*types.Record)
+	if srcRec == nil {
+		return srcExpr
+	}
+	// Bind the source to a local once so a complex operand isn't recomputed
+	// per field; emit as a Go IIFE returning a fresh target-typed struct.
+	var b strings.Builder
+	b.WriteString("func() Tt_")
+	b.WriteString(tgt.Name)
+	b.WriteString(" { _tt_src := ")
+	b.WriteString(srcExpr)
+	b.WriteString("; return Tt_")
+	b.WriteString(tgt.Name)
+	b.WriteString("{")
+	for i, tf := range tgt.Fields {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("F_")
+		b.WriteString(tf.Name)
+		b.WriteString(": ")
+		sf := srcRec.Lookup(tf.Name)
+		var sfTy types.Type
+		if sf != nil {
+			sfTy = sf.Type
+		}
+		b.WriteString(g.coerce("_tt_src.F_"+tf.Name, sfTy, tf.Type))
+	}
+	b.WriteString("} }()")
+	return b.String()
 }
 
 // compileTry renders `expr?` as a Go IIFE: when the operand's Tag is "Err",
@@ -497,6 +607,32 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 	// only the active variant's payload slots populated.
 	if sum, ok := g.info.Types[e].(*types.Sum); ok {
 		return g.compileVariantLit(e, sum)
+	}
+	// Spread: render `Name{...src, foo: bar}` as a Go IIFE that takes the
+	// source struct as a base and overwrites the explicit fields. Equivalent
+	// to (and cheaper than) materialising every field of the source.
+	if e.Spread != nil {
+		var b strings.Builder
+		b.WriteString("func() Tt_")
+		b.WriteString(e.TypeName)
+		b.WriteString(" { _tt_v := ")
+		b.WriteString(g.compileExpr(e.Spread))
+		b.WriteString("; ")
+		for _, f := range e.Fields {
+			var fieldTy types.Type
+			if rec, ok := g.info.Types[e].(*types.Record); ok {
+				if fld := rec.Lookup(f.Name); fld != nil {
+					fieldTy = fld.Type
+				}
+			}
+			b.WriteString("_tt_v.F_")
+			b.WriteString(f.Name)
+			b.WriteString(" = ")
+			b.WriteString(g.coerce(g.compileExpr(f.Value), g.info.Types[f.Value], fieldTy))
+			b.WriteString("; ")
+		}
+		b.WriteString("return _tt_v }()")
+		return b.String()
 	}
 	var b strings.Builder
 	b.WriteString("Tt_")

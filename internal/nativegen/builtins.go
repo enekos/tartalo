@@ -152,7 +152,19 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("strings")
 		return "func() int64 { v, _ := strconv.ParseInt(strings.TrimSpace(" + args[0] + "), 10, 64); return v }()"
 	case "len":
+		// `len` on strings counts UTF-8 codepoints (runes); on arrays,
+		// counts elements. The checker accepts either; we dispatch on the
+		// argument type.
+		if argTypes != nil && argTypes[0] == types.String {
+			g.addImport("unicode/utf8")
+			return "int64(utf8.RuneCountInString(" + args[0] + "))"
+		}
 		return "int64(len(" + args[0] + "))"
+	case "byteLen":
+		return "int64(len(" + args[0] + "))"
+	case "byteSlice":
+		return "func() string { _s := " + args[0] + "; _i := int(" + args[1] + "); _j := int(" + args[2] +
+			"); if _i < 0 { _i = 0 }; if _j > len(_s) { _j = len(_s) }; if _i > _j { _i = _j }; return _s[_i:_j] }()"
 	case "env":
 		g.usesRuntimeEnv = true
 		g.usesRuntimePtr = true
@@ -199,8 +211,9 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("strings")
 		return "strings.Join(" + args[0] + ", " + args[1] + ")"
 	case "slice":
-		return "func() string { _s := " + args[0] + "; _i := int(" + args[1] + "); _j := int(" + args[2] +
-			"); if _i < 0 { _i = 0 }; if _j > len(_s) { _j = len(_s) }; if _i > _j { _i = _j }; return _s[_i:_j] }()"
+		// Rune-aware half-open slice [a, b) over codepoint indices.
+		return "func() string { _r := []rune(" + args[0] + "); _i := int(" + args[1] + "); _j := int(" + args[2] +
+			"); if _i < 0 { _i = 0 }; if _j > len(_r) { _j = len(_r) }; if _i > _j { _i = _j }; return string(_r[_i:_j]) }()"
 	case "trimStart":
 		g.addImport("strings")
 		return "strings.TrimLeft(" + args[0] + ", \" \\t\\r\\n\")"

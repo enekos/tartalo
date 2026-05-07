@@ -594,15 +594,22 @@ type TryExpr struct {
 func (e *TryExpr) Pos() token.Pos { return e.Operand.Pos() }
 func (e *TryExpr) exprNode()      {}
 
-// RecordLit: `Name{ f1: e1, f2: e2 }`. We use the Go-style typed-literal form
-// rather than bare `{...}` because it avoids ambiguity with statement blocks
-// that follow control-flow keywords (e.g. `for x in iter { ... }`).
+// RecordLit: `Name{ f1: e1, f2: e2 }`, optionally with a leading spread:
+// `Name{ ...source, f2: override }`. The Spread expression, when non-nil,
+// must evaluate to a value of the same record type; explicit Fields override
+// the corresponding fields from the spread source.
+//
+// We use the Go-style typed-literal form rather than bare `{...}` because it
+// avoids ambiguity with statement blocks that follow control-flow keywords
+// (e.g. `for x in iter { ... }`).
 type RecordLit struct {
-	NamePos  token.Pos
-	TypeName string
-	LBrace   token.Pos
-	RBrace   token.Pos
-	Fields   []FieldInit
+	NamePos   token.Pos
+	TypeName  string
+	LBrace    token.Pos
+	RBrace    token.Pos
+	SpreadPos token.Pos // position of `...` if Spread != nil
+	Spread    Expr      // optional source record to copy fields from; nil if absent
+	Fields    []FieldInit
 }
 
 func (e *RecordLit) Pos() token.Pos { return e.NamePos }
@@ -614,3 +621,35 @@ type FieldInit struct {
 	Name    string
 	Value   Expr
 }
+
+// CastExpr: `expr as TypeName`. Performs an explicit type conversion. For v0
+// the only meaningful cast is between record types whose shapes are
+// compatible (target's field set is a subset of the source's, with each
+// shared field's type assignable from source to target).
+type CastExpr struct {
+	KwPos   token.Pos
+	Operand Expr
+	TypeAnn TypeExpr
+}
+
+func (e *CastExpr) Pos() token.Pos { return e.Operand.Pos() }
+func (e *CastExpr) exprNode()      {}
+
+// FuncLit is an anonymous function literal — a lambda usable in any
+// expression position. Same shape as FuncDecl but without a name; the
+// codegen hoists each FuncLit to a uniquely-named top-level function. The
+// FreeVars slice is populated by the checker with names referenced inside
+// the body that resolve to a binding in the enclosing scope (excluding
+// globals and other top-level function references). Sh codegen rejects a
+// FuncLit with non-empty FreeVars; the native target captures naturally
+// via Go's closure semantics.
+type FuncLit struct {
+	KwPos    token.Pos
+	Params   []Param
+	Result   TypeExpr
+	Body     *Block
+	FreeVars []string
+}
+
+func (e *FuncLit) Pos() token.Pos { return e.KwPos }
+func (e *FuncLit) exprNode()      {}

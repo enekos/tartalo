@@ -80,8 +80,10 @@ const (
 	Comma
 	Colon
 	Semicolon
-	Dot    // .
-	DotDot // ..
+	Dot      // .
+	DotDot   // ..
+	Ellipsis // ...
+	As       // as (cast operator)
 
 	// string interpolation framing
 	InterpStart // ${
@@ -106,7 +108,8 @@ var kindNames = map[Kind]string{
 	Pipe: "|", Pipeline: "|>", Arrow: "=>", Bang: "!",
 	LParen: "(", RParen: ")", LBrace: "{", RBrace: "}",
 	LBracket: "[", RBracket: "]",
-	Comma: ",", Colon: ":", Semicolon: ";", Dot: ".", DotDot: "..",
+	Comma: ",", Colon: ":", Semicolon: ";", Dot: ".", DotDot: "..", Ellipsis: "...",
+	As:          "as",
 	InterpStart: "${", InterpEnd: "}",
 }
 
@@ -170,6 +173,7 @@ var Keywords = map[string]Kind{
 	"agent":    Agent,
 	"parallel": Parallel,
 	"task":     Task,
+	"as":       As,
 	"string":   TyString,
 	"number":   TyNumber,
 	"float":    TyFloat,
