@@ -505,7 +505,8 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(goFieldName(f.Name))
+		b.WriteString("F_")
+		b.WriteString(f.Name)
 		b.WriteString(": ")
 		// Auto-wrap to optional / widen to float when needed.
 		var fieldTy types.Type
@@ -552,7 +553,7 @@ func (g *Generator) compileVariantLit(e *ast.RecordLit, sum *types.Sum) string {
 }
 
 func (g *Generator) compileField(e *ast.FieldExpr) string {
-	return "(" + g.compileExpr(e.Target) + ")." + goFieldName(e.Name)
+	return "(" + g.compileExpr(e.Target) + ").F_" + e.Name
 }
 
 func (g *Generator) compileCoalesce(e *ast.CoalesceExpr) string {

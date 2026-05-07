@@ -41,7 +41,8 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 		} else {
 			pt = g.typeFromAnn(p.TypeAnn)
 		}
-		g.out.WriteString(g.goLocalName(p.Name))
+		g.out.WriteString("tt_")
+		g.out.WriteString(p.Name)
 		g.out.WriteString(" ")
 		g.out.WriteString(g.goType(pt))
 	default:
@@ -49,7 +50,8 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 			if i > 0 {
 				g.out.WriteString(", ")
 			}
-			g.out.WriteString(g.goLocalName(p.Name))
+			g.out.WriteString("tt_")
+			g.out.WriteString(p.Name)
 			g.out.WriteString(" ")
 			var pt types.Type
 			if ft != nil && i < len(ft.Params) {
@@ -395,8 +397,8 @@ func (g *Generator) emitFieldAssign(s *ast.FieldAssignStmt) {
 	rhs = g.coerce(rhs, g.info.Types[s.Value], fieldTy)
 	g.writeIndent()
 	g.out.WriteString(g.compileExpr(s.Target))
-	g.out.WriteString(".")
-	g.out.WriteString(goFieldName(s.Name))
+	g.out.WriteString(".F_")
+	g.out.WriteString(s.Name)
 	g.out.WriteString(" = ")
 	g.out.WriteString(rhs)
 	g.out.WriteByte('\n')
@@ -487,18 +489,17 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 	case *ast.RangeExpr:
 		start := g.compileExpr(iter.Start)
 		end := g.compileExpr(iter.End)
-		v := g.goLocalName(s.Var)
 		g.writeIndent()
-		g.out.WriteString("for ")
-		g.out.WriteString(v)
+		g.out.WriteString("for tt_")
+		g.out.WriteString(s.Var)
 		g.out.WriteString(" := ")
 		g.out.WriteString(start)
-		g.out.WriteString("; ")
-		g.out.WriteString(v)
+		g.out.WriteString("; tt_")
+		g.out.WriteString(s.Var)
 		g.out.WriteString(" < ")
 		g.out.WriteString(end)
-		g.out.WriteString("; ")
-		g.out.WriteString(v)
+		g.out.WriteString("; tt_")
+		g.out.WriteString(s.Var)
 		g.out.WriteString("++ {")
 		g.out.WriteByte('\n')
 		g.indent++
@@ -511,12 +512,11 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 		// Iteration over an array/slice or a string-of-lines.
 		// Distinguish by the iterator's type: array → range slice, string → split.
 		t := g.info.Types[s.Iter]
-		v := g.goLocalName(s.Var)
 		switch t.(type) {
 		case *types.Array:
 			g.writeIndent()
-			g.out.WriteString("for _, ")
-			g.out.WriteString(v)
+			g.out.WriteString("for _, tt_")
+			g.out.WriteString(s.Var)
 			g.out.WriteString(" := range ")
 			g.out.WriteString(g.compileExpr(s.Iter))
 			g.out.WriteString(" {")
@@ -529,7 +529,7 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 			g.writeLine(tmp + " := " + g.compileExpr(s.Iter))
 			g.writeLine("if " + tmp + " != \"\" {")
 			g.indent++
-			g.writeLine("for _, " + v + " := range strings.Split(" + tmp + ", \"\\n\") {")
+			g.writeLine("for _, tt_" + s.Var + " := range strings.Split(" + tmp + ", \"\\n\") {")
 		}
 		g.indent++
 		for _, st := range s.Body.Stmts {

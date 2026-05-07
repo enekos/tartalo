@@ -164,7 +164,7 @@ func (g *Generator) emitTypeDecl(td *ast.TypeDecl) {
 		g.writeLine("type " + goTypeName(td.Name) + " struct {")
 		g.indent++
 		for _, f := range spec.Fields {
-			g.writeLine(goFieldName(f.Name) + " " + g.goType(g.typeFromAnn(f.TypeAnn)))
+			g.writeLine("F_" + f.Name + " " + g.goType(g.typeFromAnn(f.TypeAnn)))
 		}
 		g.indent--
 		g.writeLine("}")
