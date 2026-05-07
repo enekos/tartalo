@@ -130,6 +130,22 @@ type TestDecl struct {
 func (d *TestDecl) Pos() token.Pos { return d.KwPos }
 func (d *TestDecl) declNode()      {}
 
+// EvalDecl: `eval "name" { body }`. A top-level LLM-evaluation declaration.
+// The body is a void block run by the eval harness; inside, `score(label,
+// value)` accumulates labeled metrics and `expect(label, threshold)` asserts
+// that the mean of a label meets a minimum bar. The harness prints a
+// per-eval report and exits non-zero if any expectation fails. Only the
+// native target supports evals; the sh backend silently skips them.
+type EvalDecl struct {
+	KwPos   token.Pos
+	NamePos token.Pos
+	Name    string
+	Body    *Block
+}
+
+func (d *EvalDecl) Pos() token.Pos { return d.KwPos }
+func (d *EvalDecl) declNode()      {}
+
 // TypeDecl: `type Name = TypeExpr`. v0 only allows record types on the RHS.
 type TypeDecl struct {
 	NamePos    token.Pos

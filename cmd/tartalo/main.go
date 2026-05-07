@@ -48,6 +48,8 @@ func run(args []string) error {
 		return cmdCheck(rest)
 	case "test":
 		return cmdTest(rest)
+	case "eval":
+		return cmdEval(rest)
 	case "fmt":
 		return cmdFmt(rest)
 	case "bench":
@@ -68,6 +70,7 @@ func printUsage(w io.Writer) {
   tartalo build <file.tt> [-o <out>] [--target=sh|native] [--goos=<os>] [--goarch=<arch>] [--no-verify] [--trace]
   tartalo run   [--target=sh|native] [--no-verify] [--trace] <file.tt> [-- args...]
   tartalo test  [--target=sh|native] [--no-verify] <file.tt>   # run all `+"`test \"...\" { ... }`"+` declarations
+  tartalo eval  <file-or-dir>                                # run all `+"`eval \"...\" { ... }`"+` declarations (native target)
   tartalo check <file.tt>             # type-check without emitting sh
   tartalo fmt   [-l|-d|-w] <file.tt>...   # format source (default: rewrite in place)
   tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]   # time compile phases (and run) over N iterations
@@ -150,6 +153,11 @@ func nativeBuildToTemp(input string, mode nativegen.EmitMode, opts nativegen.Bui
 	switch mode {
 	case nativegen.EmitTest:
 		if err := nativegen.BuildTest(modules, info, opts); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	case nativegen.EmitEval:
+		if err := nativegen.BuildEval(modules, info, opts); err != nil {
 			cleanup()
 			return "", nil, err
 		}
@@ -484,6 +492,131 @@ func discoverTestFiles(dir string) ([]string, error) {
 	}
 	sort.Strings(found)
 	return found, nil
+}
+
+// cmdEval implements `tartalo eval`. Mirrors `tartalo test` but only on the
+// native target — LLM evals don't make sense in pure sh, and the eval
+// harness uses Go-only constructs (sort.Slice, time.Duration, etc.). Accepts
+// either a single file or a directory; the latter walks recursively and
+// runs every .tt file containing at least one `eval "..."` declaration.
+func cmdEval(args []string) error {
+	var input string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-h" || a == "--help":
+			fmt.Println("usage: tartalo eval <file-or-dir>")
+			return nil
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("eval: unknown flag %q", a)
+		default:
+			if input != "" {
+				return fmt.Errorf("eval: expected exactly one input file or directory")
+			}
+			input = a
+		}
+	}
+	if input == "" {
+		return fmt.Errorf("eval: expected an input file or directory")
+	}
+	if info, err := os.Stat(input); err == nil && info.IsDir() {
+		return runEvalDir(input)
+	}
+	bin, cleanup, err := nativeBuildToTemp(input, nativegen.EmitEval, nativegen.BuildOptions{})
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	cmd := exec.Command(bin)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.ExitCode())
+		}
+		return err
+	}
+	return nil
+}
+
+// runEvalDir is the eval counterpart of runTestDir. Same walk rules; one
+// file at a time so a parse error in one suite doesn't block the others.
+func runEvalDir(dir string) error {
+	files, err := discoverEvalFiles(dir)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "no .tt files with `eval \"...\"` declarations under "+dir)
+		return nil
+	}
+	totalFails := 0
+	for _, f := range files {
+		fmt.Println("=== " + f)
+		if err := runOneEvalFile(f); err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				totalFails++
+				continue
+			}
+			return err
+		}
+	}
+	fmt.Println()
+	if totalFails > 0 {
+		fmt.Printf("%d file(s) failed out of %d\n", totalFails, len(files))
+		os.Exit(1)
+	}
+	fmt.Printf("all %d file(s) passed\n", len(files))
+	return nil
+}
+
+func discoverEvalFiles(dir string) ([]string, error) {
+	evalDecl := regexp.MustCompile(`(?m)^\s*eval\s+"`)
+	var found []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			name := filepath.Base(path)
+			if path != dir && (strings.HasPrefix(name, ".") || name == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(info.Name(), ".tt") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if evalDecl.Match(src) {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(found)
+	return found, nil
+}
+
+func runOneEvalFile(input string) error {
+	bin, cleanup, err := nativeBuildToTemp(input, nativegen.EmitEval, nativegen.BuildOptions{})
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	cmd := exec.Command(bin)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // runOneTestFile compiles + executes a single test file and returns the

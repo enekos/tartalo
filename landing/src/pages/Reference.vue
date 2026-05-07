@@ -670,6 +670,8 @@ const toc = [
   { id: "json", label: "json", sub: true },
   { id: "test", label: "test framework", sub: true },
   { id: "mocks", label: "mocks", sub: true },
+  { id: "evals", label: "evals", sub: true },
+  { id: "scoring", label: "scoring metrics", sub: true },
   { id: ids.operators, label: "Operators" },
   { id: ids.model, label: "Compilation model" },
 ];
@@ -830,6 +832,34 @@ const builtins = [
       { sig: "mockNow(secs: number): void", desc: "freeze the clock so <code>now()</code> returns <code>secs</code>" },
       { sig: "mockArgs(xs: string[]): void", desc: "replace the result of <code>args()</code> for this test" },
       { sig: "mockReadStdin(s: string): void", desc: "replace the result of <code>readStdin()</code> for this test" },
+    ],
+  },
+  {
+    id: "evals",
+    title: "Evals",
+    intro:
+      "<code>eval \"...\" { ... }</code> is the LLM-accuracy sibling of <code>test</code>. Bodies record numeric metrics with <code>score(label, value)</code> and gate the eval on the mean with <code>expect(label, threshold)</code>. The runner prints a per-eval scorecard — gated metrics first with ✓/✗, ungated metrics with ·, plus sample count and duration — and exits non-zero on any failed gate. Eval bodies inherit the test-builtin context so <code>check</code>, <code>fail</code>, and every mock setter (notably <code>mockLlm</code>) work the same way they do in <code>test</code> blocks. Native target only — invoke with <code>tartalo eval &lt;file-or-dir&gt;</code>; sh builds skip eval declarations silently.",
+    items: [
+      { sig: "score(label: string, value: float): void", desc: "append <code>value</code> to a labeled bucket; the runner reports the mean across all calls with the same label. Accepts a <code>number</code> for <code>value</code> and widens." },
+      { sig: "expect(label: string, threshold: float): void", desc: "at end-of-eval, assert <code>mean(label) ≥ threshold</code>. Fails the eval (and the binary's exit code) if the mean is lower or no samples were recorded." },
+    ],
+  },
+  {
+    id: "scoring",
+    title: "Scoring metrics",
+    intro:
+      "Callable anywhere; especially useful inside <code>eval</code> bodies. The float-returning ones land in <code>[0.0, 1.0]</code> so they compose with <code>score(...)</code> directly. Pick the metric that matches the task: classification or short-form QA → <code>exactMatch</code> / <code>f1Tokens</code>; fuzzy text → <code>jaccard</code> / <code>levenshteinRatio</code>; generation / translation → <code>bleu</code>; summarisation → <code>rougeL</code>; embeddings → <code>cosineSimilarity</code>.",
+    items: [
+      { sig: "jaccard(a: string, b: string): float", desc: "word-set Jaccard similarity. Splits both strings on whitespace; comparison is byte-for-byte. Lowercase the inputs (<code>jaccard(lower(a), lower(b))</code>) for case-folded matching." },
+      { sig: "exactMatch(a: string, b: string): float", desc: "<code>1.0</code> if <code>a == b</code>, else <code>0.0</code>." },
+      { sig: "containsScore(text: string, terms: string[]): float", desc: "fraction of <code>terms</code> that occur as substrings in <code>text</code>. Empty <code>terms</code> returns <code>1.0</code>." },
+      { sig: "f1Tokens(predicted: string, expected: string): float", desc: "single-pair token-level F1 (the SQuAD metric). Tokenises both strings on whitespace; F1 over the resulting word sets." },
+      { sig: "f1Score(predicted: string[], expected: string[]): float", desc: "element-wise token F1 averaged across the two arrays. Mismatched lengths scale by the longer side. Use when you've collected many <code>(pred, ref)</code> pairs and want one number out." },
+      { sig: "levenshtein(a: string, b: string): number", desc: "raw edit distance, counted in unicode codepoints (not bytes). Returns <code>0</code> for equal strings, <code>len(a)</code> against the empty string." },
+      { sig: "levenshteinRatio(a: string, b: string): float", desc: "Levenshtein normalised to <code>[0.0, 1.0]</code> via <code>1 - dist / max(len)</code>. Equal strings score <code>1.0</code>." },
+      { sig: "bleu(hypothesis: string, reference: string): float", desc: "sentence-level BLEU-4 with the standard brevity penalty and add-1 smoothing on each n-gram precision. Useful for translation / open-ended generation." },
+      { sig: "rougeL(hypothesis: string, reference: string): float", desc: "F1 derived from the longest common subsequence between the two token streams. Standard for summarisation; insensitive to word order beyond the LCS." },
+      { sig: "cosineSimilarity(a: float[], b: float[]): float", desc: "cosine of the angle between two embedding vectors. Returns <code>0.0</code> against an all-zero vector rather than <code>NaN</code>. Lengths needn't match — extras on the longer vector contribute to its norm only." },
     ],
   },
 ];

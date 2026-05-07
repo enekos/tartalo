@@ -1,0 +1,73 @@
+// LLM eval example. Each `eval "..." { ... }` block records labeled metrics
+// with `score(...)`; `expect(...)` gates the eval on the mean. The harness
+// uses `mockLlm` here so the example runs hermetically — drop the mocks to
+// drive a real model.
+//
+// Run: tartalo eval examples/eval.tt
+
+type Case = {
+  input: string,
+  expected: string,
+}
+
+eval "sentiment classification" {
+  mockLlm("love", "positive")
+  mockLlm("terrible", "negative")
+  mockLlm("okay", "neutral")
+
+  let cases: Case[] = [
+    Case{input: "I love it", expected: "positive"},
+    Case{input: "It's terrible", expected: "negative"},
+    Case{input: "It is okay", expected: "neutral"},
+  ]
+
+  for c in cases {
+    let pred = lower(llm("One word — positive/negative/neutral: " + c.input))
+    score("exact_match", exactMatch(pred, c.expected))
+    score("contains", containsScore(pred, [c.expected]))
+  }
+
+  expect("exact_match", 0.8)
+  expect("contains", 1.0)
+}
+
+eval "summary contains key terms" {
+  mockLlm(".*", "the policy raises rates and tightens lending standards")
+
+  let summary = llm("Summarize: The Federal Reserve announced a rate hike and stricter lending rules.")
+  let mustHave: string[] = ["rates", "lending"]
+
+  score("key_terms", containsScore(summary, mustHave))
+  score("jaccard", jaccard(lower(summary), "rates lending tightens"))
+
+  expect("key_terms", 1.0)
+}
+
+eval "f1 over a batch" {
+  let preds: string[] = ["red apple", "green pear", "blue plum"]
+  let truth: string[] = ["red apple", "yellow pear", "blue plum"]
+  score("f1", f1Score(preds, truth))
+  expect("f1", 0.7)
+}
+
+eval "string-pair metric tour" {
+  // A grab-bag of the per-pair metrics, run on a single hypothesis. Useful
+  // as a reference when picking which scoring function fits a task.
+  let hyp = "the cat sat on the mat"
+  let ref = "the cat sat on a mat"
+
+  score("jaccard", jaccard(hyp, ref))
+  score("f1_tokens", f1Tokens(hyp, ref))
+  score("levenshtein_ratio", levenshteinRatio(hyp, ref))
+  score("bleu", bleu(hyp, ref))
+  score("rougeL", rougeL(hyp, ref))
+}
+
+eval "embedding similarity" {
+  // cosineSimilarity treats inputs as vectors, so it's the right tool when
+  // you've embedded both candidate and reference and just want their angle.
+  let pred: float[] = [0.10, 0.90, 0.05]
+  let gold: float[] = [0.12, 0.88, 0.06]
+  score("cos", cosineSimilarity(pred, gold))
+  expect("cos", 0.95)
+}

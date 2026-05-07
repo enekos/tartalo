@@ -205,12 +205,17 @@ func (p *Parser) parseDecl() ast.Decl {
 			p.errorf(p.peek().Pos, "test declarations cannot be exported")
 		}
 		return p.parseTest()
+	case token.Eval:
+		if exported {
+			p.errorf(p.peek().Pos, "eval declarations cannot be exported")
+		}
+		return p.parseEval()
 	}
 	t := p.peek()
 	if exported {
-		p.errorf(t.Pos, "`export` must be followed by func/type/let/const (test cannot be exported), got %s", t.Kind)
+		p.errorf(t.Pos, "`export` must be followed by func/type/let/const (test/eval cannot be exported), got %s", t.Kind)
 	} else {
-		p.errorf(t.Pos, "expected declaration (let/const/func/type/test/export/import), got %s", t.Kind)
+		p.errorf(t.Pos, "expected declaration (let/const/func/type/test/eval/export/import), got %s", t.Kind)
 	}
 	p.recoverToStmt()
 	return nil
@@ -260,6 +265,52 @@ func (p *Parser) parseTest() *ast.TestDecl {
 			return td
 		default:
 			p.errorf(t.Pos, "unexpected %s in test name", t.Kind)
+			p.advance()
+		}
+	}
+}
+
+// parseEval parses `eval "name" { body }`. The name must be a plain string
+// literal — same rule as parseTest. Mirrors parseTest closely; only the
+// returned decl type and the diagnostic strings differ.
+func (p *Parser) parseEval() *ast.EvalDecl {
+	kw := p.advance() // eval
+	ed := &ast.EvalDecl{KwPos: kw.Pos}
+	if p.peek().Kind != token.StringStart {
+		p.errorf(p.peek().Pos, `expected string literal after "eval", got %s`, p.peek().Kind)
+		if p.peek().Kind == token.LBrace {
+			ed.Body = p.parseBlock()
+		}
+		return ed
+	}
+	start := p.advance() // StringStart
+	ed.NamePos = start.Pos
+	var nameParts []string
+	hadInterp := false
+	for {
+		t := p.peek()
+		switch t.Kind {
+		case token.StringPart:
+			p.advance()
+			nameParts = append(nameParts, t.Value)
+		case token.InterpStart:
+			hadInterp = true
+			p.advance()
+			_ = p.parseExpr()
+			p.expect(token.InterpEnd, "eval name")
+		case token.StringEnd:
+			p.advance()
+			ed.Name = strings.Join(nameParts, "")
+			if hadInterp {
+				p.errorf(start.Pos, "eval names cannot contain interpolations")
+			}
+			ed.Body = p.parseBlock()
+			return ed
+		case token.EOF:
+			p.errorf(t.Pos, "unexpected end of file in eval name")
+			return ed
+		default:
+			p.errorf(t.Pos, "unexpected %s in eval name", t.Kind)
 			p.advance()
 		}
 	}

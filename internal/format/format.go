@@ -245,6 +245,8 @@ func (p *printer) printDecl(d ast.Decl) {
 		p.printTypeDecl(x)
 	case *ast.TestDecl:
 		p.printTest(x)
+	case *ast.EvalDecl:
+		p.printEval(x)
 	default:
 		p.write(fmt.Sprintf("/* unknown decl %T */", d))
 		p.nl()
@@ -377,6 +379,15 @@ func (p *printer) printTest(td *ast.TestDecl) {
 	p.write(escString(td.Name))
 	p.write("\" ")
 	p.printBlock(td.Body)
+	p.trailingOn(p.lastSrcLine)
+	p.nl()
+}
+
+func (p *printer) printEval(ed *ast.EvalDecl) {
+	p.write("eval \"")
+	p.write(escString(ed.Name))
+	p.write("\" ")
+	p.printBlock(ed.Body)
 	p.trailingOn(p.lastSrcLine)
 	p.nl()
 }

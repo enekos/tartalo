@@ -323,7 +323,7 @@ func (g *Generator) emitAgentRuntimeAppendix(out *strings.Builder) {
 	if g.usesAgentLLM {
 		out.WriteString(runtimeLLM)
 		out.WriteString(runtimeKimi)
-		if g.emitMode == EmitTest {
+		if g.emitMode == EmitTest || g.emitMode == EmitEval {
 			out.WriteString(dispatcherLLMTest)
 			if g.usesMockLlm {
 				out.WriteString(mockSettersLLM)

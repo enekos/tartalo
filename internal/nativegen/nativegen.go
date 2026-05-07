@@ -93,6 +93,7 @@ type Generator struct {
 	usesRuntimeHigherOrder bool
 	usesRuntimeFetch       bool
 	usesRuntimeTestState   bool
+	usesRuntimeEvalState   bool
 	usesRuntimeEnv         bool
 	usesRuntimeNow         bool
 	usesRuntimeTry         bool
@@ -136,12 +137,13 @@ type Generator struct {
 
 // EmitMode selects the program shape: EmitRun produces a `main()` that calls
 // the user's main; EmitTest produces a runner that drives every `test "..."`
-// declaration in the entry module.
+// declaration in the entry module; EmitEval drives every `eval "..."`.
 type EmitMode int
 
 const (
 	EmitRun EmitMode = iota
 	EmitTest
+	EmitEval
 )
 
 // New returns a Generator ready to emit a Go program for the given type info.
@@ -167,6 +169,15 @@ func (g *Generator) EmitModulesTest(modules []*loader.Module) string {
 	return g.emitProgram(modules)
 }
 
+// EmitModulesEval is the eval-mode counterpart: every `eval "..." { ... }`
+// declaration in the entry module is compiled to a Go function and the
+// runtime eval harness drives them, prints a per-eval scorecard, and exits
+// non-zero if any expect(...) gate failed.
+func (g *Generator) EmitModulesEval(modules []*loader.Module) string {
+	g.emitMode = EmitEval
+	return g.emitProgram(modules)
+}
+
 func (g *Generator) emitProgram(modules []*loader.Module) string {
 	// Estimate output size from AST complexity to right-size the Builder
 	// buffer and avoid incremental growth/reallocation.
@@ -187,10 +198,10 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 		estimated = 2048
 	}
 	g.out.Grow(estimated)
-	// Test mode always emits the mock state struct, which references
+	// Test/eval mode always emits the mock state struct, which references
 	// *regexp.Regexp. Pre-register the import so it lands in the import
 	// block (writeRuntimeTo runs after writeImportsTo).
-	if g.emitMode == EmitTest {
+	if g.emitMode == EmitTest || g.emitMode == EmitEval {
 		g.addImport("regexp")
 	}
 	g.initAgentPlatform(modules)
@@ -279,6 +290,9 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 	if g.emitMode == EmitTest {
 		g.emitTestFunctions(entry)
 	}
+	if g.emitMode == EmitEval {
+		g.emitEvalFunctions(entry)
+	}
 
 	g.emitAgentRuntime()
 
@@ -296,6 +310,8 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 		}
 	case EmitTest:
 		g.emitTestRunnerCall(entry)
+	case EmitEval:
+		g.emitEvalRunnerCall(entry)
 	}
 	g.indent--
 	g.writeLine("}")

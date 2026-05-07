@@ -83,6 +83,7 @@ tartalo build <file.tt> [-o <out>] [--target=sh|native] [--goos=<os>] [--goarch=
 tartalo run   [--target=sh|native] [--no-verify] [--trace] <file.tt> [-- args...]
 tartalo check <file.tt>...                                       # type-check only, no codegen
 tartalo test  [--target=sh|native] [--no-verify] <file-or-dir>   # run every `test "..."` block, recursively for a dir
+tartalo eval  <file-or-dir>                                      # run every `eval "..."` block (native target)
 tartalo fmt   [-l|-d|-w] <file.tt>...                            # format source (default: rewrite in place)
 tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]          # time compile phases (and runtime) over N iterations
 tartalo lsp                                                      # speak Language Server Protocol over stdio
@@ -152,3 +153,49 @@ mode is on by default for `exec`/`fetch`/`readFile` — once a rule is
 registered, an unmatched real call fails the test. See SPEC.md for the full
 table. Native target supports the full mock set; the sh backend ships with
 the four name/value-style mocks (env / now / args / readStdin).
+
+## Evals
+
+`eval "..." { ... }` is a sibling of `test`, designed for grading LLM
+output. A library of scoring builtins covers the common cases —
+- string-pair: `jaccard`, `exactMatch`, `containsScore`, `f1Tokens`,
+  `levenshtein` / `levenshteinRatio`, `bleu`, `rougeL`
+- batch / vector: `f1Score` (over arrays), `cosineSimilarity` (for
+  embeddings)
+
+Each returns a float you record with `score(label, value)`; gate the eval
+on the mean with `expect(label, threshold)`. The runner prints a compact
+scorecard with the mean per label, the threshold pass-count, and a final
+summary.
+
+```tartalo
+eval "classify sentiment" {
+  mockLlm("love",     "positive")
+  mockLlm("terrible", "negative")
+
+  let cases = [
+    {input: "I love it",     expected: "positive"},
+    {input: "It's terrible", expected: "negative"},
+  ]
+  for c in cases {
+    let pred = lower(llm(c.input))
+    score("exact", exactMatch(pred, c.expected))
+  }
+  expect("exact", 1.0)
+}
+```
+
+```
+$ tartalo eval sentiment.tt
+running 1 eval(s) in sentiment.tt
+
+✓ eval "classify sentiment"
+  ✓ exact  1.00  (2/2 above 1.00, mean of 2)
+  2 sample(s) · 0s
+
+1 passed (1 total)
+```
+
+Evals are native-only — the harness needs Go's clock and most real evals
+end up calling `llm()`. See SPEC.md for the full builtin catalogue and
+output format.

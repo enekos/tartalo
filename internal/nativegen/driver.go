@@ -41,6 +41,13 @@ func BuildTest(modules []*loader.Module, info *checker.TypeInfo, opts BuildOptio
 	return buildWithMode(modules, info, opts, EmitTest)
 }
 
+// BuildEval is the eval-mode counterpart: the binary runs every `eval
+// "..." { ... }` declaration in the entry module, prints a scorecard,
+// and exits non-zero if any expect(...) gate fails.
+func BuildEval(modules []*loader.Module, info *checker.TypeInfo, opts BuildOptions) error {
+	return buildWithMode(modules, info, opts, EmitEval)
+}
+
 func buildWithMode(modules []*loader.Module, info *checker.TypeInfo, opts BuildOptions, mode EmitMode) error {
 	if opts.Output == "" {
 		return errors.New("nativegen: BuildOptions.Output is required")
@@ -51,9 +58,12 @@ func buildWithMode(modules []*loader.Module, info *checker.TypeInfo, opts BuildO
 
 	g := New(info)
 	var src string
-	if mode == EmitTest {
+	switch mode {
+	case EmitTest:
 		src = g.EmitModulesTest(modules)
-	} else {
+	case EmitEval:
+		src = g.EmitModulesEval(modules)
+	default:
 		src = g.EmitModules(modules)
 	}
 
@@ -119,4 +129,9 @@ func EmitSource(modules []*loader.Module, info *checker.TypeInfo) string {
 // EmitSourceTest is the test-mode counterpart of EmitSource.
 func EmitSourceTest(modules []*loader.Module, info *checker.TypeInfo) string {
 	return New(info).EmitModulesTest(modules)
+}
+
+// EmitSourceEval is the eval-mode counterpart of EmitSource.
+func EmitSourceEval(modules []*loader.Module, info *checker.TypeInfo) string {
+	return New(info).EmitModulesEval(modules)
 }

@@ -254,6 +254,12 @@ const features = [
     body:
       "No bashisms. No [[ ]], no arrays-as-arrays, no process substitution. The .sh runs anywhere /bin/sh runs — macOS, Alpine, BusyBox.",
   },
+  {
+    icon: "⌬",
+    title: "LLM evals built in",
+    body:
+      "eval \"...\" { ... } blocks score model output against jaccard, BLEU, ROUGE-L, F1, Levenshtein, cosine — gate on a threshold and tartalo eval prints a scorecard.",
+  },
 ];
 
 const exRecords = `type Person = {
@@ -327,6 +333,9 @@ tartalo check ./examples/*.tt
 
 # run test declarations
 tartalo test hello.tt
+
+# grade LLM output against built-in metrics
+tartalo eval suite.tt
 
 # format source
 tartalo fmt -w ./examples/*.tt`;

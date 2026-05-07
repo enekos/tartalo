@@ -157,6 +157,13 @@ type Checker struct {
 	// and use `check(...)` at the call site.
 	inTest bool
 
+	// inEval is true while checking an `eval "..." { ... }` body. The eval
+	// builtins `score` / `expect` require this; test-only assertion builtins
+	// (`check`, `assertEq`, `fail`, `skip`, mock setters) are also accepted
+	// here so eval authors can sanity-check intermediate values and stub the
+	// LLM during development.
+	inEval bool
+
 	narrows []map[string]types.Type
 
 	// expectedType carries an outer context type into a call expression — used
@@ -301,6 +308,7 @@ func (c *Checker) Check(modules []*loader.Module) (*TypeInfo, []error) {
 	// effectively void parameterless functions, just not addressable as
 	// callable values.
 	seenTestNames := map[*loader.Module]map[string]token.Pos{}
+	seenEvalNames := map[*loader.Module]map[string]token.Pos{}
 	for _, m := range modules {
 		c.currentMod = m
 		c.current = c.envs[m].scope
@@ -320,6 +328,16 @@ func (c *Checker) Check(modules []*loader.Module) (*TypeInfo, []error) {
 					seenTestNames[m][d.Name] = d.NamePos
 				}
 				c.checkTestBody(d, m)
+			case *ast.EvalDecl:
+				if seenEvalNames[m] == nil {
+					seenEvalNames[m] = map[string]token.Pos{}
+				}
+				if prev, ok := seenEvalNames[m][d.Name]; ok {
+					c.errorf(d.NamePos, "duplicate eval name %q (previous at %s)", d.Name, prev)
+				} else {
+					seenEvalNames[m][d.Name] = d.NamePos
+				}
+				c.checkEvalBody(d, m)
 			}
 		}
 	}
@@ -341,6 +359,26 @@ func (c *Checker) checkTestBody(td *ast.TestDecl, m *loader.Module) {
 	c.current = saved
 	c.currentRet = savedRet
 	c.inTest = savedInTest
+}
+
+// checkEvalBody walks an eval declaration body. Same shape as a test body —
+// void, no params — but with `c.inEval = true` (which also unlocks the
+// test-only assertion/mock builtins) so `score` / `expect` are accepted.
+func (c *Checker) checkEvalBody(ed *ast.EvalDecl, m *loader.Module) {
+	env := c.envs[m]
+	saved := c.current
+	savedRet := c.currentRet
+	savedInTest := c.inTest
+	savedInEval := c.inEval
+	c.current = newScope(env.scope)
+	c.currentRet = types.Void
+	c.inTest = true
+	c.inEval = true
+	c.checkBlock(ed.Body)
+	c.current = saved
+	c.currentRet = savedRet
+	c.inTest = savedInTest
+	c.inEval = savedInEval
 }
 
 // resolveTypeImports brings exported type names from dep modules into m's
@@ -916,10 +954,12 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	saved := c.current
 	savedRet := c.currentRet
 	savedInTest := c.inTest
+	savedInEval := c.inEval
 	savedGenScope := c.genericScope
 	c.current = newScope(env.scope)
 	c.currentRet = ft.Result
 	c.inTest = false
+	c.inEval = false
 	// Re-bind type-parameter names to the same *types.TypeVars used for the
 	// signature so that any type annotation inside the body (e.g.
 	// `let x: T = ...`) resolves to the same opaque type.
@@ -946,6 +986,7 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	c.current = saved
 	c.currentRet = savedRet
 	c.inTest = savedInTest
+	c.inEval = savedInEval
 	c.genericScope = savedGenScope
 }
 
@@ -2154,6 +2195,8 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 			return c.checkWriteCsvCall(e)
 		case "assertEq", "assertNe", "check", "fail", "skip":
 			return c.checkTestBuiltinCall(e, sym)
+		case "score", "expect":
+			return c.checkEvalBuiltinCall(e, sym)
 		case "mockExec", "mockFetch", "mockEnv", "mockReadFile", "mockLlm", "mockLlmCalls",
 			"mockNow", "mockArgs", "mockReadStdin",
 			"mockExecCalls", "mockFetchCalls", "mockReadFileCalls":
@@ -2659,6 +2702,32 @@ func (c *Checker) checkTestBuiltinCall(e *ast.CallExpr, sym *Symbol) types.Type 
 	return types.Void
 }
 
+// checkEvalBuiltinCall handles `score(label, value)` and `expect(label,
+// threshold)`. Both are eval-only and both accept either `float` or `number`
+// for the second argument — the runtime widens to float so eval authors can
+// pass a literal `0` or an integer count without ceremony.
+func (c *Checker) checkEvalBuiltinCall(e *ast.CallExpr, sym *Symbol) types.Type {
+	if !c.inEval {
+		c.errorf(e.LParenPos, "%s may only be called inside an `eval \"...\" { ... }` body", sym.Name)
+	}
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "%s expects 2 arguments (label, value), got %d", sym.Name, len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Void
+	}
+	lt := c.checkExpr(e.Args[0])
+	if lt != types.Invalid && lt != types.String {
+		c.errorf(e.Args[0].Pos(), "%s: label must be a string, got %s", sym.Name, types.Format(lt))
+	}
+	vt := c.checkExpr(e.Args[1])
+	if vt != types.Invalid && vt != types.Float && vt != types.Number {
+		c.errorf(e.Args[1].Pos(), "%s: value must be a float or number, got %s", sym.Name, types.Format(vt))
+	}
+	return types.Void
+}
+
 func isAssertableScalar(t types.Type) bool {
 	switch t {
 	case types.String, types.Number, types.Bool, types.Float:
@@ -2908,6 +2977,42 @@ func builtins() []*Symbol {
 		mk("check", []types.Type{bln}, void),
 		mk("fail", []types.Type{str}, void),
 		mk("skip", []types.Type{str}, void),
+
+		// Eval-only builtins.
+		//
+		//   score(label, value)         accumulate a labeled metric
+		//   expect(label, threshold)    assert mean(label) >= threshold
+		//
+		// score-and-expect always speak floats so the harness can compute a
+		// stable mean regardless of how the user produced the value (a
+		// jaccard score, an exactMatch indicator, a manual ratio, etc.).
+		mk("score", []types.Type{str, flt}, void),
+		mk("expect", []types.Type{str, flt}, void),
+
+		// LLM-eval scoring builtins (callable anywhere; especially useful
+		// inside `eval` bodies). The float-returning ones land in [0.0,
+		// 1.0] so they compose cleanly with `score(...)`.
+		//
+		//   jaccard(a, b)                       word-set similarity, 0..1
+		//   exactMatch(a, b)                    1.0 if a == b else 0.0
+		//   containsScore(text, terms)          fraction of terms found in text
+		//   f1Score(predicted, expected)        batch token-level F1 over two arrays
+		//   f1Tokens(predicted, expected)       single-pair token-level F1 (SQuAD-style)
+		//   levenshtein(a, b)                   raw edit distance (integer)
+		//   levenshteinRatio(a, b)              1 - dist/max(len), 0..1
+		//   bleu(hypothesis, reference)         BLEU-4 with brevity penalty, 0..1
+		//   rougeL(hypothesis, reference)       F1 of longest-common-subseq, 0..1
+		//   cosineSimilarity(a, b)              vector cosine for float[] embeddings
+		mk("jaccard", []types.Type{str, str}, flt),
+		mk("exactMatch", []types.Type{str, str}, flt),
+		mk("containsScore", []types.Type{str, stringArr}, flt),
+		mk("f1Score", []types.Type{stringArr, stringArr}, flt),
+		mk("f1Tokens", []types.Type{str, str}, flt),
+		mk("levenshtein", []types.Type{str, str}, num),
+		mk("levenshteinRatio", []types.Type{str, str}, flt),
+		mk("bleu", []types.Type{str, str}, flt),
+		mk("rougeL", []types.Type{str, str}, flt),
+		mk("cosineSimilarity", []types.Type{&types.Array{Elem: types.Float}, &types.Array{Elem: types.Float}}, flt),
 
 		// Mock builtins — only legal inside `test "..." { ... }` bodies.
 		// Each mockX matches against future calls to the corresponding real

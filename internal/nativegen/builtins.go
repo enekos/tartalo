@@ -570,6 +570,51 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.usesRuntimeTestState = true
 		return "_tt_skip(" + args[0] + ")"
 
+	// --- eval-only builtins (legal inside `eval "..." { ... }`) ---
+	case "score":
+		g.markUsesEvalState()
+		val := g.coerce(args[1], argTypes[1], types.Float)
+		return "_tt_score(" + args[0] + ", " + val + ")"
+	case "expect":
+		g.markUsesEvalState()
+		val := g.coerce(args[1], argTypes[1], types.Float)
+		return "_tt_expect(" + args[0] + ", " + val + ")"
+
+	// --- LLM scoring builtins (callable anywhere; the runtime helpers live
+	// in the eval harness so they're gated on usesRuntimeEvalState).
+	// markUsesEvalState ensures `math`/`strings` are imported so the whole
+	// harness compiles even in EmitRun mode where only one helper is used. ---
+	case "jaccard":
+		g.markUsesEvalState()
+		return "_tt_jaccard(" + args[0] + ", " + args[1] + ")"
+	case "exactMatch":
+		g.markUsesEvalState()
+		return "_tt_exactMatch(" + args[0] + ", " + args[1] + ")"
+	case "containsScore":
+		g.markUsesEvalState()
+		return "_tt_containsScore(" + args[0] + ", " + args[1] + ")"
+	case "f1Score":
+		g.markUsesEvalState()
+		return "_tt_f1Score(" + args[0] + ", " + args[1] + ")"
+	case "f1Tokens":
+		g.markUsesEvalState()
+		return "_tt_f1Tokens(" + args[0] + ", " + args[1] + ")"
+	case "levenshtein":
+		g.markUsesEvalState()
+		return "_tt_levenshtein(" + args[0] + ", " + args[1] + ")"
+	case "levenshteinRatio":
+		g.markUsesEvalState()
+		return "_tt_levenshteinRatio(" + args[0] + ", " + args[1] + ")"
+	case "bleu":
+		g.markUsesEvalState()
+		return "_tt_bleu(" + args[0] + ", " + args[1] + ")"
+	case "rougeL":
+		g.markUsesEvalState()
+		return "_tt_rougeL(" + args[0] + ", " + args[1] + ")"
+	case "cosineSimilarity":
+		g.markUsesEvalState()
+		return "_tt_cosineSimilarity(" + args[0] + ", " + args[1] + ")"
+
 	// --- mock setters / inspectors (test-only; checker enforces scope) ---
 	case "mockExec":
 		g.usesMockExec = true

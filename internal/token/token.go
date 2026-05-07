@@ -36,6 +36,7 @@ const (
 	Import
 	Export
 	Test
+	Eval
 	Defer
 	Null
 	True
@@ -97,7 +98,7 @@ var kindNames = map[Kind]string{
 	CmdStart: "CMD_START", CmdPart: "CMD_PART", CmdEnd: "CMD_END",
 	Let: "let", Const: "const", Func: "func", Return: "return",
 	If: "if", Else: "else", For: "for", In: "in", Match: "match", Type: "type",
-	Import: "import", Export: "export", Test: "test", Defer: "defer",
+	Import: "import", Export: "export", Test: "test", Eval: "eval", Defer: "defer",
 	Null: "null", True: "true", False: "false",
 	Tool: "tool", Agent: "agent",
 	Parallel: "parallel", Task: "task",
@@ -165,6 +166,7 @@ var Keywords = map[string]Kind{
 	"import":   Import,
 	"export":   Export,
 	"test":     Test,
+	"eval":     Eval,
 	"defer":    Defer,
 	"null":     Null,
 	"true":     True,

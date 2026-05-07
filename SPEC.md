@@ -852,6 +852,124 @@ ships with the four name/value-style mocks (env, now, args, readStdin);
 exec, fetch, and readFile mocks abort at runtime with a clear "use
 --target=native" message when reached.
 
+## Evals
+
+`eval "name" { ... }` declares an LLM accuracy/quality evaluation. It looks
+like a `test` block but the goal is different: instead of pass/fail
+assertions, an eval *records numeric metrics* about model output and prints
+a scorecard. The harness is built to keep the source readable as a spec —
+inputs, calls, and metrics live next to each other — and to keep the
+output skimmable.
+
+```tartalo
+type Case = {input: string, expected: string}
+
+eval "sentiment classification" {
+  let cases: Case[] = [
+    Case{input: "I love it",     expected: "positive"},
+    Case{input: "It's terrible", expected: "negative"},
+    Case{input: "It is okay",    expected: "neutral"},
+  ]
+
+  for c in cases {
+    let pred = lower(llm("One word — positive/negative/neutral: " + c.input))
+    score("exact_match", exactMatch(pred, c.expected))
+    score("contains",    containsScore(pred, [c.expected]))
+  }
+
+  expect("exact_match", 0.8)
+  expect("contains",    1.0)
+}
+```
+
+Output (with mocked LLM, three cases):
+
+```
+running 1 eval(s) in sentiment.tt
+
+✓ eval "sentiment classification"
+  ✓ exact_match  1.00  (3/3 above 0.80, mean of 3)
+  ✓ contains     1.00  (3/3 above 1.00, mean of 3)
+  3 sample(s) · 0s
+
+1 passed (1 total)
+```
+
+Run a file with `tartalo eval foo.tt`; pass a directory and `tartalo eval ./`
+walks it and runs every `.tt` containing at least one `eval` declaration.
+Evals are native-only — the harness uses Go's clock and sort, and most
+real evals call `llm()` (or some mocked variant) which compiles cleanly only
+on the native target. Sh builds silently skip eval declarations.
+
+#### Eval-only builtins
+
+These may only be called inside an `eval "..." { ... }` body.
+
+- `score(label: string, value: float): void` — append `value` to a labeled
+  bucket. Multiple calls with the same label accumulate; the harness reports
+  the mean. The second argument may be a `number` and is widened.
+- `expect(label: string, threshold: float): void` — at end of eval, assert
+  that `mean(label) >= threshold`. Emits a ✓/✗ row in the scorecard and
+  exits the binary non-zero if any expectation fails. Calling `expect` on
+  a label with no `score` samples fails.
+
+`eval` bodies inherit the test-builtin context: `check`, `assertEq`, `fail`,
+`skip`, and every mock setter (notably `mockLlm`) work the same way they do
+in `test` blocks. Use them to stub the LLM during development and to gate
+on per-sample preconditions.
+
+#### Scoring builtins
+
+Callable anywhere; especially useful in eval bodies. The float-returning
+ones land in `[0.0, 1.0]` so they compose with `score(...)` directly.
+
+**String-pair metrics**
+
+- `jaccard(a: string, b: string): float` — word-set Jaccard similarity.
+  Splits both strings on whitespace; comparison is byte-for-byte. Lowercase
+  the inputs (`jaccard(lower(a), lower(b))`) for case-folded matching.
+- `exactMatch(a: string, b: string): float` — `1.0` if `a == b`, else `0.0`.
+- `containsScore(text: string, terms: string[]): float` — fraction of `terms`
+  that occur as substrings in `text`. Empty `terms` returns `1.0`.
+- `f1Tokens(predicted: string, expected: string): float` — single-pair
+  token-level F1 (the SQuAD metric). Tokenises both strings on whitespace,
+  computes F1 over the resulting word sets.
+- `levenshtein(a: string, b: string): number` — raw Levenshtein edit
+  distance between two strings, counted in unicode codepoints (not bytes).
+  Returns `0` for equal strings, `len(a)` against the empty string, etc.
+- `levenshteinRatio(a: string, b: string): float` — Levenshtein normalised
+  to `[0.0, 1.0]` via `1 - dist / max(len)`. Equal strings score `1.0`.
+- `bleu(hypothesis: string, reference: string): float` — sentence-level
+  BLEU-4 with the standard brevity penalty and add-1 smoothing on each
+  n-gram precision. Useful for translation / open-ended generation evals.
+- `rougeL(hypothesis: string, reference: string): float` — F1 derived from
+  the longest-common-subsequence between the two token streams. Standard
+  for summarisation evals; insensitive to word order beyond the LCS.
+
+**Batch & vector metrics**
+
+- `f1Score(predicted: string[], expected: string[]): float` — element-wise
+  token-level F1 averaged across the two arrays. Mismatched lengths scale
+  by the longer side, so a missing prediction counts as a miss. Use when
+  you've collected many `(pred, ref)` pairs and want one number out.
+- `cosineSimilarity(a: float[], b: float[]): float` — cosine of the angle
+  between two embedding vectors. Returns `0.0` against an all-zero vector
+  rather than `NaN`. Lengths needn't match — extra components on the
+  longer vector contribute to its norm only.
+
+#### Output format
+
+The runner prints, per eval:
+
+- a `✓ eval "..."` / `✗ eval "..."` header
+- one row per metric label, sorted with gated metrics first:
+  - **gated** (covered by `expect`): `✓` or `✗`, label, mean, `(n above t, mean of N)`
+  - **ungated**: `·`, label, mean, `(mean of N)` (or `(no samples)`)
+- a sample-count + duration footer
+
+Followed by an aggregate summary line. Output goes to stdout; honours
+`NO_COLOR` and "stdout is not a TTY" the same way the test runner does.
+
 ## Agent platform
 
 Tartalo doubles as an agent platform. The wedge: agents distributed as a

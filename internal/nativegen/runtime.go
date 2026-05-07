@@ -83,11 +83,19 @@ func (g *Generator) writeRuntimeTo(out *strings.Builder) {
 	if g.usesRuntimeFetch {
 		out.WriteString(runtimeFetch)
 	}
-	if g.usesRuntimeTestState {
+	// The eval harness reuses `_tt_colors`, `_tt_testFailure`, and the
+	// assertion helpers (`_tt_check` / `_tt_assertEq` / ...) from the test
+	// harness, since `eval` bodies are allowed to call those. So whenever
+	// either harness is in use, emit the test harness; the eval harness
+	// adds the eval-only state and runner on top.
+	if g.usesRuntimeTestState || g.usesRuntimeEvalState {
 		out.WriteString(runtimeTestHarness)
 	}
+	if g.usesRuntimeEvalState {
+		out.WriteString(runtimeEvalHarness)
+	}
 	g.writeMockableDispatchers(out)
-	if g.emitMode == EmitTest {
+	if g.emitMode == EmitTest || g.emitMode == EmitEval {
 		out.WriteString(runtimeMockState)
 		g.writeMockSetters(out)
 	}
@@ -103,7 +111,7 @@ func (g *Generator) writeRuntimeTo(out *strings.Builder) {
 // (env/now/args/readStdin) the dispatcher returns the override or falls
 // back to the real impl.
 func (g *Generator) writeMockableDispatchers(out *strings.Builder) {
-	test := g.emitMode == EmitTest
+	test := g.emitMode == EmitTest || g.emitMode == EmitEval
 	if g.usesRuntimeExec {
 		if test {
 			out.WriteString(dispatcherExecTest)
@@ -192,6 +200,7 @@ func (g *Generator) anyRuntimeUsed() bool {
 		g.usesRuntimeFormatTime || g.usesRuntimeFloat || g.usesRuntimeVec ||
 		len(g.csvReaders) > 0 || len(g.csvWriters) > 0 ||
 		g.usesRuntimeHigherOrder || g.usesRuntimeFetch || g.usesRuntimeTestState ||
+		g.usesRuntimeEvalState ||
 		g.usesRuntimeEnv || g.usesRuntimeNow || g.usesRuntimeTry ||
 		g.usesAgentLLM || g.usesAgentApproval || g.usesAgentTrace ||
 		g.usesAgentSpawn
