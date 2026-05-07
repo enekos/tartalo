@@ -76,6 +76,7 @@ type FuncDecl struct {
 	Name        string
 	IsExported  bool
 	Kind        FuncKind
+	TypeParams  []TypeParam // empty for monomorphic functions
 	Params      []Param
 	Result      TypeExpr // may be a TypeName "void"
 	Effects     []string // declared effect tags ("net", "fs:read", "ai", ...)
@@ -83,6 +84,15 @@ type FuncDecl struct {
 	Budget      int64    // pulled from leading budget(N); 0 = unset
 	Tools       []string // names of tools this agent may invoke (uses clause)
 	Body        *Block
+}
+
+// TypeParam is one type parameter declared on a generic function:
+// `func f<T, U>(...)` produces TypeParams `[{T,...}, {U,...}]`. The parser
+// only records the name and source position; the checker creates a unique
+// *types.TypeVar per parameter.
+type TypeParam struct {
+	NamePos token.Pos
+	Name    string
 }
 
 // FuncKind distinguishes plain functions from tool/agent declarations.

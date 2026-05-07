@@ -264,6 +264,16 @@ func (p *printer) printFunc(fd *ast.FuncDecl) {
 		p.write("func ")
 	}
 	p.write(fd.Name)
+	if len(fd.TypeParams) > 0 {
+		p.write("<")
+		for i, tp := range fd.TypeParams {
+			if i > 0 {
+				p.write(", ")
+			}
+			p.write(tp.Name)
+		}
+		p.write(">")
+	}
 	p.write("(")
 	for i, par := range fd.Params {
 		if i > 0 {

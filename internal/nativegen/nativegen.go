@@ -55,6 +55,25 @@ type Generator struct {
 	// they need to know how to wrap the result.
 	currentReturnType types.Type
 
+	// currentSubst maps the *types.TypeVars of the generic function currently
+	// being emitted to the concrete types of the active instantiation. nil
+	// when emitting a non-generic function. typeOf / substType apply this
+	// substitution before returning a type so downstream lookups see only
+	// concrete types.
+	currentSubst map[*types.TypeVar]types.Type
+
+	// currentTypeNameSubst maps the source-level type-parameter NAME (the
+	// string the user wrote, e.g. "T") to its concrete type for the active
+	// instantiation. Lets typeFromAnn — which works on AST type annotations,
+	// not the checker's resolved type table — handle `let x: T = ...` inside
+	// a generic body without needing back-references to the checker.
+	currentTypeNameSubst map[string]types.Type
+
+	// genericInsts is the precomputed monomorphisation plan: for each generic
+	// FuncDecl, the unique substitutions discovered by walking call sites
+	// plus the mangled Go name each will be emitted under.
+	genericInsts map[*ast.FuncDecl][]nativeGenericInst
+
 	// flags toggled while walking — used to gate runtime helpers and imports.
 	usesRuntimeUnwrap      bool
 	usesRuntimePtr         bool
@@ -182,6 +201,12 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 	// types so this never breaks `go build`.
 	g.emitPredeclaredTypes()
 
+	// Generic monomorphisation plan: walk every call site to collect the
+	// distinct instantiations of each generic FuncDecl. Built before the
+	// function-emission pass so emitFunc can fan out a single generic decl
+	// into N concrete Go functions.
+	g.collectGenericInsts(modules)
+
 	// Pass 1+2: type declarations and function definitions. In Go, forward
 	// references within a package are allowed, so types and functions can be
 	// emitted in a single pass per module.
@@ -195,6 +220,22 @@ func (g *Generator) emitProgram(modules []*loader.Module) string {
 			case *ast.VarDecl:
 				hasGlobals = true
 			case *ast.FuncDecl:
+				if len(d.TypeParams) > 0 {
+					for _, inst := range g.genericInsts[d] {
+						g.currentSubst = inst.Subst
+						g.currentTypeNameSubst = make(map[string]types.Type, len(d.TypeParams))
+						for i, tp := range d.TypeParams {
+							if i < len(inst.Args) {
+								g.currentTypeNameSubst[tp.Name] = inst.Args[i]
+							}
+						}
+						g.emitFuncMono(d, inst)
+						g.currentSubst = nil
+						g.currentTypeNameSubst = nil
+						g.out.WriteByte('\n')
+					}
+					continue
+				}
 				g.emitFunc(d)
 				g.out.WriteByte('\n')
 			}
@@ -283,7 +324,7 @@ func (g *Generator) declareGlobals(modules []*loader.Module) {
 			if !ok {
 				continue
 			}
-			t := g.info.Types[vd.Value]
+			t := g.typeOf(vd.Value)
 			if ann := vd.TypeAnn; ann != nil {
 				if at := g.typeFromAnn(ann); at != nil {
 					t = at
@@ -301,13 +342,13 @@ func (g *Generator) declareGlobals(modules []*loader.Module) {
 func (g *Generator) emitGlobalInit(vd *ast.VarDecl) {
 	rhs := g.compileExpr(vd.Value)
 	target := g.goVarName(vd.Name)
-	t := g.info.Types[vd.Value]
+	t := g.typeOf(vd.Value)
 	if ann := vd.TypeAnn; ann != nil {
 		if at := g.typeFromAnn(ann); at != nil {
 			t = at
 		}
 	}
-	g.writeLine(target + " = " + g.coerce(rhs, g.info.Types[vd.Value], t))
+	g.writeLine(target + " = " + g.coerce(rhs, g.typeOf(vd.Value), t))
 }
 
 // goVarName mangles a value-namespace name (variable, parameter, function)

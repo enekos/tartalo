@@ -13,7 +13,7 @@ Tartalo is a small, statically-typed scripting language that compiles to **POSIX
 
 ## Non-goals (for v0)
 
-- Full TS/JS feature parity. No classes, no async, no generics yet.
+- Full TS/JS feature parity. No classes, no async.
 - Bash-isms (arrays, `[[ ]]`, process substitution). The output is plain `sh`.
 - Performance competitive with hand-tuned shell.
 
@@ -698,6 +698,64 @@ func square(n: number): number { return n * n }
 let f: func(number): number = square
 echo(str(f(7)))
 ```
+
+### Generic functions
+
+A function may declare one or more type parameters in `<...>` between its
+name and parameter list. Type parameters are unbounded — they accept any
+Tartalo type that's legal as an array element, function parameter, or
+record field — and the operations a generic body may apply to a value of
+type `T` are limited to passthrough (let / return / call), array
+construction (`[t1, t2]`), array indexing (`xs[i]`), and the optional
+operators (`x ?? d`, `x!`, `x == null`).
+
+```tartalo
+func id<T>(x: T): T { return x }
+func first<T>(xs: T[]): T { return xs[0] }
+func or<T>(x: T?, fallback: T): T { return x ?? fallback }
+
+func main(): void {
+  echo(id("hi"))
+  echo(str(first([10, 20, 30])))
+  let s: string? = "hello"
+  echo(or(s, "fallback"))
+}
+```
+
+Type arguments are **inferred** from the call site — Tartalo has no
+syntax for explicit type-argument lists. Every type parameter must be
+mentioned by at least one *parameter* type so the checker can deduce a
+binding from the supplied arguments; a type parameter that only appears
+in the return type (`func nope<T>(): T`) is rejected.
+
+The checker enforces the restrictions above by treating each `<T>` as an
+opaque type during body checking. Operations that would require knowing
+T's shape (arithmetic, ordering, field access, function calls, etc.)
+fail with a regular type-mismatch diagnostic.
+
+### Codegen sketch
+
+Both backends use **monomorphization**: each unique combination of type
+arguments produces one specialised copy of the function. Specialised
+names use the suffix `__gen__<arg1>__<arg2>...` so they're easy to spot
+in the generated output. Functions that the program never calls aren't
+emitted, which doubles as dead-code elimination for the generic
+declarations themselves.
+
+Generic calls inside another generic function compose via a
+fixed-point pass: the outer instantiation's substitution is applied to
+the inner call's recorded type arguments before the inner specialisation
+is selected.
+
+### v0 limitations
+
+- Generics on `tool` and `agent` declarations are rejected — those
+  carry compile-time schemas that must remain monomorphic.
+- No explicit type-argument syntax (`f<int>(x)`); inference only.
+- No bounded constraints — all type parameters are universally
+  quantified. Operations that need a particular shape (arithmetic,
+  comparison, callability) are not allowed.
+- No generic record / sum types.
 
 ### Anonymous functions (closures)
 

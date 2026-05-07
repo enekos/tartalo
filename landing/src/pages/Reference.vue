@@ -47,7 +47,7 @@
 
           <h3>Non-goals (for v0)</h3>
           <ul class="bullets">
-            <li>Full TS/JS feature parity. No classes, no async, no generics yet.</li>
+            <li>Full TS/JS feature parity. No classes, no async.</li>
             <li>Bash-isms (arrays, <code>[[ ]]</code>, process substitution). The output is plain <code>sh</code>.</li>
             <li>Performance competitive with hand-tuned shell.</li>
           </ul>
@@ -381,6 +381,38 @@
           </p>
         </section>
 
+        <!-- Generics -->
+        <section :id="ids.generics" ref="secRefs">
+          <h2>Generics</h2>
+          <p>
+            A function may declare one or more type parameters in <code>&lt;...&gt;</code>
+            between its name and parameter list. Type arguments are inferred from
+            the call site — there is no explicit type-argument syntax.
+          </p>
+          <CodeBlock :code="codeGenerics" />
+          <p>
+            Type parameters are unbounded: they accept any Tartalo type that's legal
+            as an array element, function parameter, or record field. The operations a
+            generic body may apply to a value of type <code>T</code> are limited to
+            passthrough (let / return / call), array construction, array indexing, and
+            the optional operators (<code>??</code>, <code>!</code>, <code>== null</code>).
+            Arithmetic, ordering, field access, and function calls on a bare <code>T</code>
+            are rejected.
+          </p>
+          <p>
+            Both backends use <strong>monomorphization</strong>: each unique combination
+            of type arguments produces one specialised copy of the function. Unused
+            generic functions are dead-code eliminated automatically.
+          </p>
+          <h3>Limitations</h3>
+          <ul class="bullets">
+            <li>No explicit type-argument syntax (<code>f&lt;int&gt;(x)</code>); inference only.</li>
+            <li>No bounded constraints — all type parameters are universally quantified.</li>
+            <li>No generic record or sum types.</li>
+            <li>Generics on <code>tool</code> and <code>agent</code> declarations are rejected.</li>
+          </ul>
+        </section>
+
         <!-- Functions -->
         <section :id="ids.functions" ref="secRefs">
           <h2>Functions</h2>
@@ -590,6 +622,7 @@ const ids = {
   lexical: "lexical",
   types: "types",
   declarations: "declarations",
+  generics: "generics",
   optionals: "optionals",
   records: "records",
   sums: "sums",
@@ -612,6 +645,7 @@ const toc = [
   { id: ids.lexical, label: "Lexical structure" },
   { id: ids.types, label: "Types" },
   { id: ids.declarations, label: "Declarations" },
+  { id: ids.generics, label: "Generics" },
   { id: ids.optionals, label: "Optional types" },
   { id: ids.records, label: "Records" },
   { id: ids.sums, label: "Tagged unions" },
@@ -738,7 +772,7 @@ const builtins = [
     id: "higher-order",
     title: "Higher-order",
     intro:
-      "Typed by hand in the checker (no generics yet). The function argument can be a reference to a top-level user-declared function (pass its name: map(xs, double)) or an inline function literal (map(xs, func(x: number): number { return x * x })). Builtins cannot be passed by reference.",
+      "The function argument can be a reference to a top-level user-declared function (pass its name: map(xs, double)) or an inline function literal (map(xs, func(x: number): number { return x * x })). Builtins cannot be passed by reference.",
     items: [
       { sig: "map(arr: T[], f: func(T): U): U[]" },
       { sig: "filter(arr: T[], pred: func(T): bool): T[]" },
@@ -830,6 +864,26 @@ let n = 42                  // number
 let big = n > 10            // bool`;
 
 const codeEmptyArr = `let xs: string[] = []`;
+
+const codeGenerics = `func id<T>(x: T): T {
+  return x
+}
+
+func first<T>(xs: T[]): T {
+  return xs[0]
+}
+
+func or<T>(x: T?, fallback: T): T {
+  return x ?? fallback
+}
+
+func main(): void {
+  echo(id("hello"))
+  echo(str(id(42)))
+
+  let nums: number[] = [10, 20, 30]
+  echo(str(first(nums)))
+}`;
 
 const codeOptionals = `let x: string? = "hi"        // non-null
 let y: string? = null        // null

@@ -35,6 +35,32 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 	} else {
 		fn = "tt_" + id.Name
 	}
+	// Generic call dispatch: the checker recorded inferred type
+	// arguments; resolve them through the active substitution (in case
+	// we're emitting from inside another generic) and rewrite the
+	// callee to the matching monomorphised name. The parameter type
+	// list `ft.Params` still mentions TypeVars at this point — substitute
+	// it too so coerce() sees concrete types.
+	if instArgs, ok := g.info.GenericInsts[e]; ok && len(instArgs) > 0 {
+		resolved := make([]types.Type, len(instArgs))
+		for i, a := range instArgs {
+			resolved[i] = g.substType(a)
+		}
+		fn = nativeGenericInstName(fn, resolved)
+		if ft != nil {
+			subst := make(map[*types.TypeVar]types.Type, len(ft.TypeParams))
+			for i, tv := range ft.TypeParams {
+				if i < len(resolved) {
+					subst[tv] = resolved[i]
+				}
+			}
+			newParams := make([]types.Type, len(ft.Params))
+			for i, p := range ft.Params {
+				newParams[i] = types.Substitute(p, subst)
+			}
+			ft = &types.Func{Params: newParams, Result: types.Substitute(ft.Result, subst)}
+		}
+	}
 	if len(e.Args) == 0 {
 		totalLen := len(fn) + 2
 		if totalLen <= 64 {
@@ -67,11 +93,11 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 	if len(e.Args) == 2 {
 		arg0 := g.compileExpr(e.Args[0])
 		arg1 := g.compileExpr(e.Args[1])
-		if ft != nil && len(ft.Params) > 0 && g.info.Types[e.Args[0]] != ft.Params[0] {
-			arg0 = g.coerce(arg0, g.info.Types[e.Args[0]], ft.Params[0])
+		if ft != nil && len(ft.Params) > 0 && g.typeOf(e.Args[0]) != ft.Params[0] {
+			arg0 = g.coerce(arg0, g.typeOf(e.Args[0]), ft.Params[0])
 		}
-		if ft != nil && len(ft.Params) > 1 && g.info.Types[e.Args[1]] != ft.Params[1] {
-			arg1 = g.coerce(arg1, g.info.Types[e.Args[1]], ft.Params[1])
+		if ft != nil && len(ft.Params) > 1 && g.typeOf(e.Args[1]) != ft.Params[1] {
+			arg1 = g.coerce(arg1, g.typeOf(e.Args[1]), ft.Params[1])
 		}
 		totalLen := len(fn) + 1 + len(arg0) + 2 + len(arg1) + 1
 		if totalLen <= 64 {
@@ -100,8 +126,8 @@ func (g *Generator) compileCall(e *ast.CallExpr) string {
 			b.WriteString(", ")
 		}
 		argExpr := g.compileExpr(a)
-		if ft != nil && i < len(ft.Params) && g.info.Types[a] != ft.Params[i] {
-			argExpr = g.coerce(argExpr, g.info.Types[a], ft.Params[i])
+		if ft != nil && i < len(ft.Params) && g.typeOf(a) != ft.Params[i] {
+			argExpr = g.coerce(argExpr, g.typeOf(a), ft.Params[i])
 		}
 		b.WriteString(argExpr)
 	}
@@ -130,7 +156,7 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		argTypes = argTypesArr[:len(e.Args)]
 	}
 	for i, a := range e.Args {
-		argTypes[i] = g.info.Types[a]
+		argTypes[i] = g.typeOf(a)
 	}
 	switch sym.Name {
 

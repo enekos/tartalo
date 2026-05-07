@@ -56,6 +56,11 @@ type TypeInfo struct {
 	Uses    map[*ast.Ident]*Symbol
 	Decls   map[string]*Symbol
 	Assigns map[*ast.AssignStmt]*Symbol
+	// GenericInsts records the inferred type arguments for each call to a
+	// generic function. The slice positions match the FuncDecl's TypeParams
+	// order. Nil/absent for calls to monomorphic functions. Codegen consults
+	// this map when monomorphizing.
+	GenericInsts map[*ast.CallExpr][]types.Type
 }
 
 func newTypeInfo() *TypeInfo {
@@ -64,10 +69,11 @@ func newTypeInfo() *TypeInfo {
 	// assignments. Pre-sizing avoids the doubling-rehash hop most maps hit
 	// while filling.
 	return &TypeInfo{
-		Types:   make(map[ast.Expr]types.Type, 32),
-		Uses:    make(map[*ast.Ident]*Symbol, 16),
-		Decls:   make(map[string]*Symbol, 8),
-		Assigns: make(map[*ast.AssignStmt]*Symbol, 4),
+		Types:        make(map[ast.Expr]types.Type, 32),
+		Uses:         make(map[*ast.Ident]*Symbol, 16),
+		Decls:        make(map[string]*Symbol, 8),
+		Assigns:      make(map[*ast.AssignStmt]*Symbol, 4),
+		GenericInsts: nil, // lazily allocated when a generic call is recorded
 	}
 }
 
@@ -158,6 +164,12 @@ type Checker struct {
 	// `let xs: T[] = readCsv(...)`. Set by checkVarDecl / checkAssignStmt
 	// before recursing into the initializer; nil otherwise.
 	expectedType types.Type
+
+	// genericScope maps a type-parameter name to its *types.TypeVar while
+	// resolving the signature or body of a generic function. Cleared between
+	// functions. resolveTypeExpr consults this map before falling back to the
+	// module's typeNames or the predeclared list.
+	genericScope map[string]*types.TypeVar
 }
 
 // sharedPredeclTypes and sharedBuiltinScope are built once at package init.
@@ -447,8 +459,16 @@ func (c *Checker) errorf(pos token.Pos, format string, args ...any) {
 	c.errs = append(c.errs, fmt.Errorf("%s: %s", pos, fmt.Sprintf(format, args...)))
 }
 
-// resolveTypeName walks a module's typeNames + the predeclared types.
+// resolveTypeName walks a module's typeNames + the predeclared types. While
+// checking a generic function, type-parameter names take precedence so that
+// `T` inside `func f<T>(...): T` resolves to the function's *types.TypeVar
+// rather than to a same-named record type from the surrounding module.
 func (c *Checker) resolveTypeName(name string) types.Type {
+	if c.genericScope != nil {
+		if v, ok := c.genericScope[name]; ok {
+			return v
+		}
+	}
 	if c.currentMod != nil {
 		if env := c.envs[c.currentMod]; env != nil {
 			if t, ok := env.typeNames[name]; ok {
@@ -801,14 +821,46 @@ func (c *Checker) resolveTypeExpr(te ast.TypeExpr) types.Type {
 
 func (c *Checker) declareFunc(fd *ast.FuncDecl, m *loader.Module) {
 	env := c.envs[m]
+
+	// Generic functions: allocate one *types.TypeVar per declared type
+	// parameter and seed the genericScope so the param/result type expressions
+	// resolve T to the same TypeVar throughout. The TypeVars themselves are
+	// stored on the resulting *types.Func so checkFuncBody can re-establish
+	// the same scope without re-allocating.
+	var typeVars []*types.TypeVar
+	if len(fd.TypeParams) > 0 {
+		typeVars = make([]*types.TypeVar, len(fd.TypeParams))
+		seen := map[string]bool{}
+		for i, tp := range fd.TypeParams {
+			if seen[tp.Name] {
+				c.errorf(tp.NamePos, "duplicate type parameter %q", tp.Name)
+			}
+			seen[tp.Name] = true
+			if _, isPrim := types.Lookup(tp.Name).(*types.Primitive); isPrim || types.Lookup(tp.Name) != nil {
+				c.errorf(tp.NamePos, "type parameter %q shadows a primitive type", tp.Name)
+			}
+			if _, predeclared := c.predeclTypes[tp.Name]; predeclared {
+				c.errorf(tp.NamePos, "type parameter %q shadows a predeclared type", tp.Name)
+			}
+			typeVars[i] = &types.TypeVar{Name: tp.Name}
+		}
+		c.genericScope = make(map[string]*types.TypeVar, len(typeVars))
+		for i, tv := range typeVars {
+			c.genericScope[fd.TypeParams[i].Name] = tv
+		}
+	}
+
 	params := make([]types.Type, len(fd.Params))
 	for i, p := range fd.Params {
 		params[i] = c.resolveTypeExpr(p.TypeAnn)
 	}
 	ret := c.resolveTypeExpr(fd.Result)
+
+	c.genericScope = nil
+
 	sym := &Symbol{
 		Name:     fd.Name,
-		Type:     &types.Func{Params: params, Result: ret},
+		Type:     &types.Func{Params: params, Result: ret, TypeParams: typeVars},
 		IsFunc:   true,
 		IsExport: fd.IsExported,
 		Module:   m,
@@ -864,9 +916,21 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	saved := c.current
 	savedRet := c.currentRet
 	savedInTest := c.inTest
+	savedGenScope := c.genericScope
 	c.current = newScope(env.scope)
 	c.currentRet = ft.Result
 	c.inTest = false
+	// Re-bind type-parameter names to the same *types.TypeVars used for the
+	// signature so that any type annotation inside the body (e.g.
+	// `let x: T = ...`) resolves to the same opaque type.
+	if len(ft.TypeParams) > 0 {
+		c.genericScope = make(map[string]*types.TypeVar, len(ft.TypeParams))
+		for i, tv := range ft.TypeParams {
+			c.genericScope[fd.TypeParams[i].Name] = tv
+		}
+	} else {
+		c.genericScope = nil
+	}
 	for i, p := range fd.Params {
 		paramSym := &Symbol{
 			Name:    p.Name,
@@ -882,6 +946,7 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	c.current = saved
 	c.currentRet = savedRet
 	c.inTest = savedInTest
+	c.genericScope = savedGenScope
 }
 
 // checkAgentToolList validates each name in an agent's `uses (...)` clause
@@ -2140,6 +2205,9 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 		}
 		return types.Invalid
 	}
+	if len(ft.TypeParams) > 0 {
+		return c.checkGenericCall(e, id, ft)
+	}
 	if len(e.Args) != len(ft.Params) {
 		c.errorf(e.LParenPos, "function %q expects %d argument(s), got %d", id.Name, len(ft.Params), len(e.Args))
 	}
@@ -2159,6 +2227,143 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 		c.checkExpr(e.Args[i])
 	}
 	return ft.Result
+}
+
+// checkGenericCall infers each *types.TypeVar in ft.TypeParams from the call's
+// argument types, substitutes the binding back into ft, and then performs the
+// usual assignability check on the (now monomorphic) signature. The inferred
+// type arguments are recorded on c.info.GenericInsts[e] in the same order as
+// ft.TypeParams so codegen can monomorphize.
+func (c *Checker) checkGenericCall(e *ast.CallExpr, id *ast.Ident, ft *types.Func) types.Type {
+	if len(e.Args) != len(ft.Params) {
+		c.errorf(e.LParenPos, "function %q expects %d argument(s), got %d", id.Name, len(ft.Params), len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	// Type-check arguments first so we have concrete types to unify against.
+	argTypes := make([]types.Type, len(e.Args))
+	for i, a := range e.Args {
+		argTypes[i] = c.checkExpr(a)
+	}
+	subst := map[*types.TypeVar]types.Type{}
+	for i, p := range ft.Params {
+		if argTypes[i] == types.Invalid {
+			continue
+		}
+		if !c.unify(p, argTypes[i], subst) {
+			c.errorf(e.Args[i].Pos(),
+				"argument %d to %q: expected %s, got %s",
+				i+1, id.Name, types.Format(p), types.Format(argTypes[i]))
+		}
+	}
+	// Verify every type parameter was inferred. With unbounded type params and
+	// no explicit type arguments at the call site, an uninferred TypeVar means
+	// the user wrote a function whose param types don't actually mention all
+	// of the type params (e.g. `func f<T>(): T`). Reject with a clear message.
+	for _, tv := range ft.TypeParams {
+		if _, ok := subst[tv]; !ok {
+			c.errorf(e.LParenPos,
+				"cannot infer type parameter %q for %q from arguments — generic functions in v0 require every type parameter to appear in a parameter type",
+				tv.Name, id.Name)
+			return types.Invalid
+		}
+	}
+	// Validate each substitution against the language's type-soundness rules
+	// (no array-of-optional, no array-of-array, etc.) so a legal call site
+	// can't bypass them via a generic.
+	for _, tv := range ft.TypeParams {
+		if !c.validTypeArg(subst[tv], e.LParenPos, tv) {
+			return types.Invalid
+		}
+	}
+	// Re-verify each argument with the substitution applied — catches
+	// inconsistent inferences (e.g. T inferred as both number and string from
+	// two parameters that both mention T).
+	for i, p := range ft.Params {
+		want := types.Substitute(p, subst)
+		if argTypes[i] != types.Invalid && !types.IsAssignable(argTypes[i], want) {
+			c.errorf(e.Args[i].Pos(),
+				"argument %d to %q: expected %s, got %s",
+				i+1, id.Name, types.Format(want), types.Format(argTypes[i]))
+		}
+	}
+	if c.info.GenericInsts == nil {
+		c.info.GenericInsts = map[*ast.CallExpr][]types.Type{}
+	}
+	args := make([]types.Type, len(ft.TypeParams))
+	for i, tv := range ft.TypeParams {
+		args[i] = subst[tv]
+	}
+	c.info.GenericInsts[e] = args
+	return types.Substitute(ft.Result, subst)
+}
+
+// unify walks param and arg in lock-step, recording a *types.TypeVar →
+// concrete-type mapping in subst. Returns false if the shapes don't match
+// or if a TypeVar is bound to two incompatible types.
+func (c *Checker) unify(param, arg types.Type, subst map[*types.TypeVar]types.Type) bool {
+	if tv, ok := param.(*types.TypeVar); ok {
+		if existing, ok := subst[tv]; ok {
+			return types.IsAssignable(arg, existing) || types.IsAssignable(existing, arg)
+		}
+		subst[tv] = arg
+		return true
+	}
+	switch p := param.(type) {
+	case *types.Array:
+		a, ok := arg.(*types.Array)
+		if !ok {
+			return false
+		}
+		return c.unify(p.Elem, a.Elem, subst)
+	case *types.Optional:
+		// `null` is assignable to any optional, including a generic one. We
+		// can't infer T from null alone, so leave subst untouched and let the
+		// missing-binding diagnostic fire later.
+		if arg == types.Null {
+			return true
+		}
+		a, ok := arg.(*types.Optional)
+		if !ok {
+			// Auto-wrap: `T` is assignable to `T?`. Unify the inner shape.
+			return c.unify(p.Elem, arg, subst)
+		}
+		return c.unify(p.Elem, a.Elem, subst)
+	case *types.Func:
+		a, ok := arg.(*types.Func)
+		if !ok {
+			return false
+		}
+		if len(p.Params) != len(a.Params) {
+			return false
+		}
+		for i := range p.Params {
+			if !c.unify(p.Params[i], a.Params[i], subst) {
+				return false
+			}
+		}
+		return c.unify(p.Result, a.Result, subst)
+	}
+	// Param has no TypeVars at this point; fall back to ordinary
+	// assignability for the leaf check.
+	return types.IsAssignable(arg, param)
+}
+
+// validTypeArg rejects type arguments that would produce an illegal
+// concrete signature after substitution (e.g. an array of optional, which
+// the codegen has no encoding for).
+func (c *Checker) validTypeArg(t types.Type, pos token.Pos, tv *types.TypeVar) bool {
+	if t == types.Void {
+		c.errorf(pos, "type parameter %q cannot be instantiated as void", tv.Name)
+		return false
+	}
+	if t == types.Null {
+		c.errorf(pos, "type parameter %q cannot be instantiated as null", tv.Name)
+		return false
+	}
+	return true
 }
 
 // isNumeric reports whether t is one of the numeric primitives (number/float).

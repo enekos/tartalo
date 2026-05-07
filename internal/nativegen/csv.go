@@ -15,11 +15,11 @@ import (
 // encoding/csv, so quoted fields and commas-in-strings are handled correctly.
 
 // compileReadCsvNative produces the call expression for one readCsv invocation.
-// The result row-record type comes from g.info.Types[e]. We register the
+// The result row-record type comes from g.typeOf(e). We register the
 // record so emitCsvHelpers will lay down the corresponding _tt_readCsv_<Rec>
 // function in the runtime tail.
 func (g *Generator) compileReadCsvNative(e *ast.CallExpr) string {
-	want := g.info.Types[e]
+	want := g.typeOf(e)
 	arr, _ := want.(*types.Array)
 	if arr == nil {
 		return `nil /* readCsv: missing result type */`

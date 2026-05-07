@@ -162,12 +162,12 @@ func (g *Generator) captureOutput(fn func()) string {
 // source. The `coerce` helper handles per-field optional-wrap / float
 // widening when the target's field type is wider than the source's.
 func (g *Generator) compileCast(e *ast.CastExpr) string {
-	tgt, ok := g.info.Types[e].(*types.Record)
+	tgt, ok := g.typeOf(e).(*types.Record)
 	if !ok {
 		return g.compileExpr(e.Operand)
 	}
 	srcExpr := g.compileExpr(e.Operand)
-	srcRec, _ := g.info.Types[e.Operand].(*types.Record)
+	srcRec, _ := g.typeOf(e.Operand).(*types.Record)
 	if srcRec == nil {
 		return srcExpr
 	}
@@ -224,7 +224,7 @@ func (g *Generator) compileCast(e *ast.CastExpr) string {
 // the sh backend's flow control would need a deeper rewrite.
 func (g *Generator) compileTry(e *ast.TryExpr) string {
 	g.usesRuntimeTry = true
-	sum, _ := g.info.Types[e.Operand].(*types.Sum)
+	sum, _ := g.typeOf(e.Operand).(*types.Sum)
 	if sum == nil {
 		return g.compileExpr(e.Operand)
 	}
@@ -358,7 +358,7 @@ func (g *Generator) compileIdent(e *ast.Ident) string {
 		// Flow narrowing: if checker recorded a non-optional type for this ident,
 		// the pointer is known non-nil — dereference it.
 		if _, isOpt := sym.Type.(*types.Optional); isOpt {
-			if narrowed := g.info.Types[e]; narrowed != nil && !types.IsOptional(narrowed) {
+			if narrowed := g.typeOf(e); narrowed != nil && !types.IsOptional(narrowed) {
 				return "(*tt_" + e.Name + ")"
 			}
 		}
@@ -391,7 +391,7 @@ func (g *Generator) compileStringLit(e *ast.StringLit) string {
 		case *ast.StringChunk:
 			b.WriteString(fastQuote(p.Value))
 		default:
-			t := g.info.Types[p]
+			t := g.typeOf(p)
 			b.WriteString(g.toString(g.compileExpr(p), t))
 		}
 	}
@@ -452,7 +452,7 @@ func (g *Generator) compileCmdLit(e *ast.CmdLit) string {
 		case *ast.StringChunk:
 			b.WriteString(fastQuote(p.Value))
 		default:
-			t := g.info.Types[p]
+			t := g.typeOf(p)
 			b.WriteString(g.toString(g.compileExpr(p), t))
 		}
 	}
@@ -504,9 +504,9 @@ func (g *Generator) compileBinary(e *ast.BinaryExpr) string {
 	case token.Percent:
 		return binExpr(lhs, "%", rhs)
 	case token.Eq:
-		return g.compileEq(lhs, rhs, g.info.Types[e.Lhs], g.info.Types[e.Rhs], false)
+		return g.compileEq(lhs, rhs, g.typeOf(e.Lhs), g.typeOf(e.Rhs), false)
 	case token.Neq:
-		return g.compileEq(lhs, rhs, g.info.Types[e.Lhs], g.info.Types[e.Rhs], true)
+		return g.compileEq(lhs, rhs, g.typeOf(e.Lhs), g.typeOf(e.Rhs), true)
 	case token.Lt:
 		return binExpr(lhs, "<", rhs)
 	case token.Lte:
@@ -564,13 +564,13 @@ func (g *Generator) compileEq(lhs, rhs string, lt, rt types.Type, neg bool) stri
 func (g *Generator) compileArrayLit(e *ast.ArrayLit) string {
 	// We need the element type to emit a typed slice. Prefer the checker's
 	// view; fall back to inferring from the first element.
-	t := g.info.Types[e]
+	t := g.typeOf(e)
 	var elemTy types.Type
 	if arr, ok := t.(*types.Array); ok {
 		elemTy = arr.Elem
 	}
 	if elemTy == nil && len(e.Elems) > 0 {
-		elemTy = g.info.Types[e.Elems[0]]
+		elemTy = g.typeOf(e.Elems[0])
 	}
 	if elemTy == nil {
 		// The checker would have rejected this in user code; emit something
@@ -587,8 +587,8 @@ func (g *Generator) compileArrayLit(e *ast.ArrayLit) string {
 			b.WriteString(", ")
 		}
 		expr := g.compileExpr(el)
-		if g.info.Types[el] != elemTy {
-			expr = g.coerce(expr, g.info.Types[el], elemTy)
+		if g.typeOf(el) != elemTy {
+			expr = g.coerce(expr, g.typeOf(el), elemTy)
 		}
 		b.WriteString(expr)
 	}
@@ -605,7 +605,7 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 	// Variant literal: the literal type the checker assigned is the parent
 	// sum, not a record. Render as a struct literal with the tag set and
 	// only the active variant's payload slots populated.
-	if sum, ok := g.info.Types[e].(*types.Sum); ok {
+	if sum, ok := g.typeOf(e).(*types.Sum); ok {
 		return g.compileVariantLit(e, sum)
 	}
 	// Spread: render `Name{...src, foo: bar}` as a Go IIFE that takes the
@@ -620,7 +620,7 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 		b.WriteString("; ")
 		for _, f := range e.Fields {
 			var fieldTy types.Type
-			if rec, ok := g.info.Types[e].(*types.Record); ok {
+			if rec, ok := g.typeOf(e).(*types.Record); ok {
 				if fld := rec.Lookup(f.Name); fld != nil {
 					fieldTy = fld.Type
 				}
@@ -628,7 +628,7 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 			b.WriteString("_tt_v.F_")
 			b.WriteString(f.Name)
 			b.WriteString(" = ")
-			b.WriteString(g.coerce(g.compileExpr(f.Value), g.info.Types[f.Value], fieldTy))
+			b.WriteString(g.coerce(g.compileExpr(f.Value), g.typeOf(f.Value), fieldTy))
 			b.WriteString("; ")
 		}
 		b.WriteString("return _tt_v }()")
@@ -647,12 +647,12 @@ func (g *Generator) compileRecordLit(e *ast.RecordLit) string {
 		b.WriteString(": ")
 		// Auto-wrap to optional / widen to float when needed.
 		var fieldTy types.Type
-		if rec, ok := g.info.Types[e].(*types.Record); ok {
+		if rec, ok := g.typeOf(e).(*types.Record); ok {
 			if fld := rec.Lookup(f.Name); fld != nil {
 				fieldTy = fld.Type
 			}
 		}
-		b.WriteString(g.coerce(g.compileExpr(f.Value), g.info.Types[f.Value], fieldTy))
+		b.WriteString(g.coerce(g.compileExpr(f.Value), g.typeOf(f.Value), fieldTy))
 	}
 	b.WriteString("}")
 	return b.String()
@@ -684,7 +684,7 @@ func (g *Generator) compileVariantLit(e *ast.RecordLit, sum *types.Sum) string {
 		b.WriteString("_")
 		b.WriteString(f.Name)
 		b.WriteString(": ")
-		b.WriteString(g.coerce(g.compileExpr(init.Value), g.info.Types[init.Value], f.Type))
+		b.WriteString(g.coerce(g.compileExpr(init.Value), g.typeOf(init.Value), f.Type))
 	}
 	b.WriteString("}")
 	return b.String()

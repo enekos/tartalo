@@ -109,6 +109,18 @@ type Generator struct {
 	// `__ret__null` flag (for optional returns) or not.
 	currentReturnType types.Type
 
+	// currentSubst maps the *types.TypeVars of the generic function currently
+	// being emitted to the concrete types of the active instantiation. nil for
+	// monomorphic functions. typeOf and substType apply this substitution
+	// before returning a type so all downstream lookups see concrete types.
+	currentSubst map[*types.TypeVar]types.Type
+
+	// genericInsts is the precomputed monomorphization plan for the program:
+	// for each generic FuncDecl, the unique substitutions discovered by the
+	// call-site walk plus the mangled sh name for each. Built once by
+	// collectGenericInsts before the function-emission pass.
+	genericInsts map[*ast.FuncDecl][]genericInst
+
 	// trace, when true, makes the emitter prefix every statement with an
 	// assignment to `__tt_loc` and install an EXIT trap that prints the last
 	// known source location on a non-zero exit. Opt-in: it ~doubles the line
@@ -203,6 +215,97 @@ type pendingLambda struct {
 	shName string
 	decl   *ast.FuncDecl
 	module *loader.Module
+}
+
+// genericInst describes one monomorphization of a generic FuncDecl. The
+// codegen emits one sh function per distinct instantiation, named ShName,
+// with currentSubst set so all type lookups resolve through Subst.
+type genericInst struct {
+	Subst  map[*types.TypeVar]types.Type
+	Args   []types.Type // ordered to match FuncDecl.TypeParams
+	ShName string       // module-mangled and instantiation-mangled sh name
+	Module *loader.Module
+}
+
+// typeOf returns the static type of e, applying the current monomorphization
+// substitution if any. Equivalent to g.info.Types[e] when not emitting a
+// generic instantiation.
+func (g *Generator) typeOf(e ast.Expr) types.Type {
+	t := g.info.Types[e]
+	if t == nil || g.currentSubst == nil {
+		return t
+	}
+	return types.Substitute(t, g.currentSubst)
+}
+
+// substType applies the current monomorphization substitution to t. Used for
+// types pulled from a Symbol (function param/return types) rather than from
+// the per-expression TypeInfo map.
+func (g *Generator) substType(t types.Type) types.Type {
+	if t == nil || g.currentSubst == nil {
+		return t
+	}
+	return types.Substitute(t, g.currentSubst)
+}
+
+// mangleTypeArg builds an identifier-safe rendering of t for embedding in a
+// monomorphized function name. The result is collision-free across the type
+// shapes Tartalo supports as generic arguments: primitives, records, sums,
+// arrays of any nesting, optionals, and function types.
+func mangleTypeArg(t types.Type) string {
+	switch tt := t.(type) {
+	case *types.Primitive:
+		return tt.Name
+	case *types.Record:
+		return tt.Name
+	case *types.Sum:
+		return tt.Name
+	case *types.Array:
+		return mangleTypeArg(tt.Elem) + "_arr"
+	case *types.Optional:
+		return mangleTypeArg(tt.Elem) + "_opt"
+	case *types.Func:
+		var b strings.Builder
+		b.WriteString("fn")
+		for _, p := range tt.Params {
+			b.WriteByte('_')
+			b.WriteString(mangleTypeArg(p))
+		}
+		b.WriteString("_to_")
+		b.WriteString(mangleTypeArg(tt.Result))
+		return b.String()
+	case *types.TypeVar:
+		return tt.Name
+	}
+	return "X"
+}
+
+// genericInstName builds the sh-function name for one monomorphization. The
+// `__gen__` infix keeps it distinguishable from any name a user could have
+// written by hand and stable across runs (no counters).
+func genericInstName(base string, args []types.Type) string {
+	var b strings.Builder
+	b.Grow(len(base) + 8 + 8*len(args))
+	b.WriteString(base)
+	b.WriteString("__gen")
+	for _, a := range args {
+		b.WriteString("__")
+		b.WriteString(mangleTypeArg(a))
+	}
+	return b.String()
+}
+
+// instKey is a stable string derived from a tuple of type args, used to
+// dedupe distinct monomorphizations of the same generic FuncDecl.
+func instKey(args []types.Type) string {
+	var b strings.Builder
+	for i, a := range args {
+		if i > 0 {
+			b.WriteByte('|')
+		}
+		b.WriteString(mangleTypeArg(a))
+	}
+	return b.String()
 }
 
 func New(info *checker.TypeInfo) *Generator {
@@ -333,12 +436,30 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		})
 	}
 
+	// Generic monomorphization plan: walk every call site to collect the
+	// distinct instantiations of each generic FuncDecl. Done before function
+	// emission so emitFunc can fan out a single generic FuncDecl into N
+	// concrete sh functions in declaration order.
+	g.collectGenericInsts(modules)
+
 	// Pass 1: function definitions, in topological order (a function may call
 	// any other function declared in any loaded module).
 	for _, m := range modules {
 		g.currentModule = m
 		for _, d := range m.File.Decls {
 			if fd, ok := d.(*ast.FuncDecl); ok {
+				if len(fd.TypeParams) > 0 {
+					// Emit one specialised copy per discovered instantiation.
+					// Functions never called in the program produce no output —
+					// dead-code elimination falls out of demand-driven monomorphisation.
+					for _, inst := range g.genericInsts[fd] {
+						g.currentSubst = inst.Subst
+						g.emitFuncMono(fd, inst)
+						g.currentSubst = nil
+						g.writeLine("")
+					}
+					continue
+				}
 				g.emitFunc(fd)
 				g.writeLine("")
 			}
@@ -681,7 +802,285 @@ func itoa64(n int64) string {
 // --- function declarations --------------------------------------------------
 
 func (g *Generator) emitFunc(fd *ast.FuncDecl) {
-	mangled := shName(checker.MangledName(g.currentModule, fd.Name))
+	g.emitFuncWithName(fd, shName(checker.MangledName(g.currentModule, fd.Name)))
+}
+
+// emitFuncMono emits one specialized copy of a generic FuncDecl. The caller
+// is responsible for setting (and clearing) g.currentSubst around the call so
+// type lookups inside the body resolve to the instantiation's concrete types.
+func (g *Generator) emitFuncMono(fd *ast.FuncDecl, inst genericInst) {
+	g.emitFuncWithName(fd, shName(inst.ShName))
+}
+
+// collectGenericInsts walks every CallExpr across the supplied modules and
+// builds the monomorphization plan: for each generic FuncDecl, the unique
+// instantiations discovered at call sites (deduped by their type-arg tuple)
+// plus the mangled sh name each will be emitted under.
+//
+// The walk is iterative — a new instantiation can introduce a transitive
+// generic call inside its body that we haven't seen yet, so we re-scan
+// whenever we discover a fresh instantiation. The fixed point is small in
+// practice because user generics don't typically nest more than a couple of
+// levels.
+func (g *Generator) collectGenericInsts(modules []*loader.Module) {
+	g.genericInsts = map[*ast.FuncDecl][]genericInst{}
+	if g.info.GenericInsts == nil {
+		return
+	}
+	// Index every generic FuncDecl by its module-mangled checker key so a
+	// recorded type-arg tuple can be turned back into a FuncDecl + module.
+	type funcRec struct {
+		fd     *ast.FuncDecl
+		module *loader.Module
+	}
+	byKey := map[string]funcRec{}
+	for _, m := range modules {
+		for _, d := range m.File.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || len(fd.TypeParams) == 0 {
+				continue
+			}
+			byKey[checker.MangledName(m, fd.Name)] = funcRec{fd: fd, module: m}
+		}
+	}
+	if len(byKey) == 0 {
+		return
+	}
+	seen := map[*ast.FuncDecl]map[string]bool{}
+	addInst := func(fd *ast.FuncDecl, m *loader.Module, args []types.Type) {
+		key := instKey(args)
+		if seen[fd] == nil {
+			seen[fd] = map[string]bool{}
+		}
+		if seen[fd][key] {
+			return
+		}
+		seen[fd][key] = true
+		sym := g.info.Decls[checker.MangledName(m, fd.Name)]
+		if sym == nil {
+			return
+		}
+		ft, _ := sym.Type.(*types.Func)
+		if ft == nil || len(ft.TypeParams) != len(args) {
+			return
+		}
+		subst := make(map[*types.TypeVar]types.Type, len(args))
+		for i, tv := range ft.TypeParams {
+			subst[tv] = args[i]
+		}
+		g.genericInsts[fd] = append(g.genericInsts[fd], genericInst{
+			Subst:  subst,
+			Args:   args,
+			ShName: genericInstName(checker.MangledName(m, fd.Name), args),
+			Module: m,
+		})
+	}
+	// Iterate to fixed point. Each pass walks every recorded GenericInsts
+	// entry; if we find one whose function args reference a TypeVar from the
+	// enclosing generic frame, the corresponding outer instantiation must
+	// already exist before we can substitute it. The simple fixed-point loop
+	// converges in O(n) passes for n nested generics.
+	for changed := true; changed; {
+		changed = false
+		// Walk the recorded instantiations from the checker. These contain
+		// ALL call sites; entries inside a generic body have TypeVars in
+		// their args that we substitute via known outer instantiations.
+		for callExpr, args := range g.info.GenericInsts {
+			id, _ := callExpr.Callee.(*ast.Ident)
+			if id == nil {
+				continue
+			}
+			// Find which FuncDecl this call refers to. The checker stored the
+			// resolved Symbol in info.Uses; we use its module-mangled name to
+			// look up the FuncDecl record.
+			sym := g.info.Uses[id]
+			if sym == nil || sym.Module == nil {
+				continue
+			}
+			rec, ok := byKey[checker.MangledName(sym.Module, sym.Name)]
+			if !ok {
+				continue
+			}
+			// If this call sits inside a generic function body, its args may
+			// mention TypeVars from the enclosing function. Each existing
+			// outer instantiation produces its own concrete inner inst.
+			containsTV := false
+			for _, a := range args {
+				if types.ContainsTypeVar(a) {
+					containsTV = true
+					break
+				}
+			}
+			if !containsTV {
+				before := len(g.genericInsts[rec.fd])
+				addInst(rec.fd, rec.module, args)
+				if len(g.genericInsts[rec.fd]) != before {
+					changed = true
+				}
+				continue
+			}
+			// Find every FuncDecl whose body contains this call site, then
+			// for every existing instantiation of that outer FuncDecl,
+			// substitute the inner args and add.
+			outerFD, outerMod := g.findEnclosingGenericFunc(callExpr, modules)
+			if outerFD == nil {
+				continue
+			}
+			_ = outerMod
+			for _, outerInst := range g.genericInsts[outerFD] {
+				resolved := make([]types.Type, len(args))
+				for i, a := range args {
+					resolved[i] = types.Substitute(a, outerInst.Subst)
+				}
+				before := len(g.genericInsts[rec.fd])
+				addInst(rec.fd, rec.module, resolved)
+				if len(g.genericInsts[rec.fd]) != before {
+					changed = true
+				}
+			}
+		}
+	}
+}
+
+// findEnclosingGenericFunc locates the generic FuncDecl whose body lexically
+// contains the given CallExpr. Used by the monomorphization fixed-point loop
+// to compose outer-and-inner type substitutions for nested generic calls.
+func (g *Generator) findEnclosingGenericFunc(call *ast.CallExpr, modules []*loader.Module) (*ast.FuncDecl, *loader.Module) {
+	for _, m := range modules {
+		for _, d := range m.File.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || len(fd.TypeParams) == 0 {
+				continue
+			}
+			if blockContainsCall(fd.Body, call) {
+				return fd, m
+			}
+		}
+	}
+	return nil, nil
+}
+
+func blockContainsCall(b *ast.Block, target *ast.CallExpr) bool {
+	if b == nil {
+		return false
+	}
+	for _, s := range b.Stmts {
+		if stmtContainsCall(s, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func stmtContainsCall(s ast.Stmt, target *ast.CallExpr) bool {
+	switch s := s.(type) {
+	case *ast.DeclStmt:
+		return s.Decl != nil && exprContainsCall(s.Decl.Value, target)
+	case *ast.ExprStmt:
+		return exprContainsCall(s.X, target)
+	case *ast.AssignStmt:
+		return exprContainsCall(s.Value, target)
+	case *ast.FieldAssignStmt:
+		return exprContainsCall(s.Target, target) || exprContainsCall(s.Value, target)
+	case *ast.ReturnStmt:
+		return exprContainsCall(s.Value, target)
+	case *ast.IfStmt:
+		return exprContainsCall(s.Cond, target) || blockContainsCall(s.Then, target) || blockContainsCall(s.Else, target)
+	case *ast.ForStmt:
+		return exprContainsCall(s.Iter, target) || blockContainsCall(s.Body, target)
+	case *ast.MatchStmt:
+		if exprContainsCall(s.Subject, target) {
+			return true
+		}
+		for _, c := range s.Cases {
+			if blockContainsCall(c.Body, target) {
+				return true
+			}
+		}
+	case *ast.DeferStmt:
+		return blockContainsCall(s.Body, target)
+	case *ast.ParallelStmt:
+		return blockContainsCall(s.Body, target)
+	case *ast.TaskStmt:
+		return blockContainsCall(s.Body, target)
+	case *ast.Block:
+		return blockContainsCall(s, target)
+	}
+	return false
+}
+
+func exprContainsCall(e ast.Expr, target *ast.CallExpr) bool {
+	if e == nil {
+		return false
+	}
+	if e == ast.Expr(target) {
+		return true
+	}
+	switch e := e.(type) {
+	case *ast.CallExpr:
+		if e == target {
+			return true
+		}
+		if exprContainsCall(e.Callee, target) {
+			return true
+		}
+		for _, a := range e.Args {
+			if exprContainsCall(a, target) {
+				return true
+			}
+		}
+	case *ast.BinaryExpr:
+		return exprContainsCall(e.Lhs, target) || exprContainsCall(e.Rhs, target)
+	case *ast.UnaryExpr:
+		return exprContainsCall(e.Operand, target)
+	case *ast.IndexExpr:
+		return exprContainsCall(e.Target, target) || exprContainsCall(e.Index, target)
+	case *ast.FieldExpr:
+		return exprContainsCall(e.Target, target)
+	case *ast.CoalesceExpr:
+		return exprContainsCall(e.Lhs, target) || exprContainsCall(e.Rhs, target)
+	case *ast.UnwrapExpr:
+		return exprContainsCall(e.Operand, target)
+	case *ast.TryExpr:
+		return exprContainsCall(e.Operand, target)
+	case *ast.RangeExpr:
+		return exprContainsCall(e.Start, target) || exprContainsCall(e.End, target)
+	case *ast.ArrayLit:
+		for _, x := range e.Elems {
+			if exprContainsCall(x, target) {
+				return true
+			}
+		}
+	case *ast.RecordLit:
+		if exprContainsCall(e.Spread, target) {
+			return true
+		}
+		for _, f := range e.Fields {
+			if exprContainsCall(f.Value, target) {
+				return true
+			}
+		}
+	case *ast.CastExpr:
+		return exprContainsCall(e.Operand, target)
+	case *ast.StringLit:
+		for _, p := range e.Parts {
+			if exprContainsCall(p, target) {
+				return true
+			}
+		}
+	case *ast.CmdLit:
+		for _, p := range e.Parts {
+			if exprContainsCall(p, target) {
+				return true
+			}
+		}
+	case *ast.FuncLit:
+		return blockContainsCall(e.Body, target)
+	}
+	return false
+}
+
+func (g *Generator) emitFuncWithName(fd *ast.FuncDecl, mangled string) {
 	for i := 0; i < g.indent; i++ {
 		g.out.WriteString("  ")
 	}
@@ -705,7 +1104,8 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	prevRet := g.currentReturnType
 	if sym := g.info.Decls[checker.MangledName(g.currentModule, fd.Name)]; sym != nil {
 		if ft, ok := sym.Type.(*types.Func); ok {
-			g.currentReturnType = ft.Result
+			retType := g.substType(ft.Result)
+			g.currentReturnType = retType
 			// Initialise the return slots before binding any params. If the
 			// function falls through without an explicit return, callers
 			// see the safe default — null for optional, empty for everything
@@ -713,7 +1113,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 			// `set -u`, an "unbound variable" abort).
 			// When every path returns explicitly we can skip the init.
 			needsInit := !allPathsReturn(fd.Body.Stmts)
-			switch r := ft.Result.(type) {
+			switch r := retType.(type) {
 			case *types.Optional:
 				if needsInit {
 					g.writeLine(`__ret=""`)
@@ -926,7 +1326,8 @@ func allPathsReturn(stmts []ast.Stmt) bool {
 }
 
 // paramType resolves the parameter's tartalo type by consulting the function
-// symbol the checker recorded.
+// symbol the checker recorded. While emitting a generic instantiation, the
+// returned type is substituted to its concrete form for that instantiation.
 func (g *Generator) paramType(fd *ast.FuncDecl, paramName string) types.Type {
 	sym := g.info.Decls[checker.MangledName(g.currentModule, fd.Name)]
 	if sym == nil {
@@ -939,7 +1340,7 @@ func (g *Generator) paramType(fd *ast.FuncDecl, paramName string) types.Type {
 	for i, p := range fd.Params {
 		if p.Name == paramName {
 			if i < len(ft.Params) {
-				return ft.Params[i]
+				return g.substType(ft.Params[i])
 			}
 			return types.Invalid
 		}
@@ -1035,7 +1436,7 @@ func (g *Generator) emitFieldAssign(s *ast.FieldAssignStmt) {
 	tv := g.compileExpr(s.Target)
 	g.writeLines(tv.prologue)
 	target := tv.value + "__" + s.Name
-	tt := g.info.Types[s.Target]
+	tt := g.typeOf(s.Target)
 	rec, _ := tt.(*types.Record)
 	var f *types.Field
 	if rec != nil {
@@ -1078,7 +1479,7 @@ func (g *Generator) emitFieldAssign(s *ast.FieldAssignStmt) {
 }
 
 func (g *Generator) emitMatch(s *ast.MatchStmt) {
-	if sum, ok := g.info.Types[s.Subject].(*types.Sum); ok {
+	if sum, ok := g.typeOf(s.Subject).(*types.Sum); ok {
 		g.emitMatchSum(s, sum)
 		return
 	}
@@ -1276,15 +1677,15 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl, local bool) {
 	// out into multiple shell variables. The declared annotation wins — if
 	// the user wrote `: T?` or `: Record`, the binding has that shape even
 	// when the initializer is plainly typed.
-	if isOptionalTypeAnn(d.TypeAnn) || isOptionalValueType(g.info.Types[d.Value]) {
+	if isOptionalTypeAnn(d.TypeAnn) || isOptionalValueType(g.typeOf(d.Value)) {
 		g.emitOptVarDecl(d, target, declPrefix)
 		return
 	}
-	if rec, ok := g.info.Types[d.Value].(*types.Record); ok {
+	if rec, ok := g.typeOf(d.Value).(*types.Record); ok {
 		g.emitRecordCopy(target, declPrefix, rec, d.Value)
 		return
 	}
-	if sum, ok := g.info.Types[d.Value].(*types.Sum); ok {
+	if sum, ok := g.typeOf(d.Value).(*types.Sum); ok {
 		g.emitSumCopy(target, declPrefix, sum, d.Value)
 		return
 	}
@@ -1389,11 +1790,11 @@ func (g *Generator) emitAssign(s *ast.AssignStmt) {
 	if sym != nil && sym.Module != nil {
 		target = shName(checker.MangledName(sym.Module, sym.Name))
 	}
-	if rec, ok := g.info.Types[s.Value].(*types.Record); ok {
+	if rec, ok := g.typeOf(s.Value).(*types.Record); ok {
 		g.emitRecordCopy(target, "", rec, s.Value)
 		return
 	}
-	if sum, ok := g.info.Types[s.Value].(*types.Sum); ok {
+	if sum, ok := g.typeOf(s.Value).(*types.Sum); ok {
 		g.emitSumCopy(target, "", sum, s.Value)
 		return
 	}
@@ -1444,7 +1845,7 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 		g.writeLine("return 0")
 		return
 	}
-	if rec, ok := g.info.Types[s.Value].(*types.Record); ok {
+	if rec, ok := g.typeOf(s.Value).(*types.Record); ok {
 		g.emitRecordCopy("__ret", "", rec, s.Value)
 		if g.currentFuncHasDefers {
 			g.writeLine("__tt_run_defers")
@@ -1452,7 +1853,7 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 		g.writeLine("return 0")
 		return
 	}
-	if sum, ok := g.info.Types[s.Value].(*types.Sum); ok {
+	if sum, ok := g.typeOf(s.Value).(*types.Sum); ok {
 		g.emitSumCopy("__ret", "", sum, s.Value)
 		if g.currentFuncHasDefers {
 			g.writeLine("__tt_run_defers")
@@ -1544,7 +1945,7 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 	default:
 		// Array of records: each row is a US-separated record. Bind the
 		// loop variable's leaves on each iteration.
-		if arr, ok := g.info.Types[s.Iter].(*types.Array); ok {
+		if arr, ok := g.typeOf(s.Iter).(*types.Array); ok {
 			if rec, ok := arr.Elem.(*types.Record); ok {
 				g.emitForArrayOfRecord(s, rec)
 				return
@@ -1837,7 +2238,7 @@ func (g *Generator) compileExpr(e ast.Expr) exprValue {
 func (g *Generator) compileFuncLit(e *ast.FuncLit) exprValue {
 	synth := g.tmp("lam")
 	mangled := checker.MangledName(g.currentModule, synth)
-	ftype, _ := g.info.Types[e].(*types.Func)
+	ftype, _ := g.typeOf(e).(*types.Func)
 	decl := &ast.FuncDecl{
 		NamePos: e.KwPos,
 		Name:    synth,
@@ -1880,7 +2281,7 @@ func (g *Generator) emitPendingLambdas() {
 // allocate a fresh prefix and copy each target leaf from the source's
 // matching slot.
 func (g *Generator) compileCast(e *ast.CastExpr) exprValue {
-	tgt, _ := g.info.Types[e].(*types.Record)
+	tgt, _ := g.typeOf(e).(*types.Record)
 	if tgt == nil {
 		// Checker should have rejected this; emit a comment for safety.
 		v := g.compileExpr(e.Operand)
@@ -1905,7 +2306,7 @@ func (g *Generator) compileCast(e *ast.CastExpr) exprValue {
 func (g *Generator) compileTry(e *ast.TryExpr) exprValue {
 	v := g.compileExpr(e.Operand)
 	prologue := append([]string{}, v.prologue...)
-	opSum, _ := g.info.Types[e.Operand].(*types.Sum)
+	opSum, _ := g.typeOf(e.Operand).(*types.Sum)
 	if opSum == nil {
 		return exprValue{prologue: prologue, value: "", form: formStr}
 	}
@@ -1951,7 +2352,7 @@ func (g *Generator) compileArrayLit(a *ast.ArrayLit) exprValue {
 		return exprValue{value: "", form: formStr}
 	}
 	// Array of records: rows separated by newline, fields by ASCII US.
-	if arrTy, ok := g.info.Types[a].(*types.Array); ok {
+	if arrTy, ok := g.typeOf(a).(*types.Array); ok {
 		if rec, ok := arrTy.Elem.(*types.Record); ok {
 			return g.compileArrayLitOfRecord(a, rec)
 		}
@@ -2108,10 +2509,10 @@ func (g *Generator) compileUnwrap(e *ast.UnwrapExpr) exprValue {
 func (g *Generator) compileRecordLit(e *ast.RecordLit, prefix string) exprValue {
 	// `Foo{...}` may be a sum-variant construction rather than a record
 	// literal; the checker stamps the result type with the parent sum.
-	if sum, ok := g.info.Types[e].(*types.Sum); ok {
+	if sum, ok := g.typeOf(e).(*types.Sum); ok {
 		return g.compileVariantLit(e, sum, prefix)
 	}
-	rec, _ := g.info.Types[e].(*types.Record)
+	rec, _ := g.typeOf(e).(*types.Record)
 	if rec == nil {
 		return exprValue{value: "# bad record literal", form: formStr}
 	}
@@ -2290,12 +2691,12 @@ func (g *Generator) appendRecordLitFields(prologue *[]string, rec *types.Record,
 func (g *Generator) compileFieldExpr(e *ast.FieldExpr) exprValue {
 	tv := g.compileExpr(e.Target)
 	fieldVar := tv.value + "__" + e.Name
-	if _, isRec := g.info.Types[e].(*types.Record); isRec {
+	if _, isRec := g.typeOf(e).(*types.Record); isRec {
 		// A record-typed field is a sub-prefix; chained `.x` access concatenates
 		// onto it. There's no top-level shell var for the prefix itself.
 		return exprValue{prologue: tv.prologue, value: fieldVar, form: formRecord}
 	}
-	if opt, isOpt := g.info.Types[e].(*types.Optional); isOpt {
+	if opt, isOpt := g.typeOf(e).(*types.Optional); isOpt {
 		nullVar := fieldVar + "__null"
 		switch opt.Elem {
 		case types.Number, types.Bool:
@@ -2304,7 +2705,7 @@ func (g *Generator) compileFieldExpr(e *ast.FieldExpr) exprValue {
 			return exprValue{prologue: tv.prologue, value: "${" + fieldVar + "}", form: formStr, nullCheck: nullVar}
 		}
 	}
-	switch g.info.Types[e] {
+	switch g.typeOf(e) {
 	case types.Number, types.Bool:
 		return exprValue{prologue: tv.prologue, value: fieldVar, form: formArith}
 	default:
@@ -2376,7 +2777,7 @@ func (g *Generator) emitRecordCopy(targetPrefix, declPrefix string, rec *types.R
 func (g *Generator) compileIndex(e *ast.IndexExpr) exprValue {
 	// Index of an array-of-record produces a record-form value: extract the
 	// row (newline-separated), then split it into leaf slots.
-	if rec, ok := g.info.Types[e].(*types.Record); ok {
+	if rec, ok := g.typeOf(e).(*types.Record); ok {
 		return g.compileIndexOfRecord(e, rec)
 	}
 	tv := g.compileExpr(e.Target)
@@ -2389,7 +2790,7 @@ func (g *Generator) compileIndex(e *ast.IndexExpr) exprValue {
 			out, tv.shString(), asArithExpansion(iv)))
 	// Render the result form according to the element type so arithmetic on
 	// number-array elements doesn't need an extra cast at the use site.
-	switch g.info.Types[e] {
+	switch g.typeOf(e) {
 	case types.Number, types.Bool:
 		return exprValue{prologue: prologue, value: out, form: formArith}
 	default:
@@ -2440,7 +2841,7 @@ func (g *Generator) compileIdent(id *ast.Ident) exprValue {
 		return exprValue{value: name, form: formArith}
 	}
 	if _, isOpt := sym.Type.(*types.Optional); isOpt {
-		if narrowed := g.info.Types[id]; narrowed != nil && !types.IsOptional(narrowed) {
+		if narrowed := g.typeOf(id); narrowed != nil && !types.IsOptional(narrowed) {
 			switch narrowed {
 			case types.Number, types.Bool:
 				return exprValue{value: name, form: formArith}
@@ -2542,7 +2943,7 @@ func (g *Generator) compileUnary(u *ast.UnaryExpr) exprValue {
 	case token.Minus:
 		// Float negation can't go through `$(( ))` because sh arithmetic doesn't
 		// understand decimal points. Defer to awk for floats.
-		if g.info.Types[u.Operand] == types.Float {
+		if g.typeOf(u.Operand) == types.Float {
 			t := g.tmp("neg")
 			prologue := append([]string{}, v.prologue...)
 			prologue = append(prologue, fmt.Sprintf(
@@ -2623,8 +3024,8 @@ func (g *Generator) compileBinary(b *ast.BinaryExpr) exprValue {
 		}
 	}
 
-	lt := g.info.Types[b.Lhs]
-	rt := g.info.Types[b.Rhs]
+	lt := g.typeOf(b.Lhs)
+	rt := g.typeOf(b.Rhs)
 
 	switch b.Op {
 	case token.Plus:
@@ -3016,8 +3417,8 @@ func (g *Generator) tryCompileNullValue(b *ast.BinaryExpr) (exprValue, bool) {
 	if b.Op != token.Eq && b.Op != token.Neq {
 		return exprValue{}, false
 	}
-	lt := g.info.Types[b.Lhs]
-	rt := g.info.Types[b.Rhs]
+	lt := g.typeOf(b.Lhs)
+	rt := g.typeOf(b.Rhs)
 	var opt ast.Expr
 	switch {
 	case lt == types.Null && types.IsOptional(rt):
@@ -3052,8 +3453,8 @@ func (g *Generator) tryCompileNullCond(b *ast.BinaryExpr) (condValue, bool) {
 	if b.Op != token.Eq && b.Op != token.Neq {
 		return condValue{}, false
 	}
-	lt := g.info.Types[b.Lhs]
-	rt := g.info.Types[b.Rhs]
+	lt := g.typeOf(b.Lhs)
+	rt := g.typeOf(b.Rhs)
 	// Locate the optional side and the literal-null side.
 	var opt ast.Expr
 	switch {
@@ -3088,8 +3489,8 @@ func (g *Generator) compareOp(b *ast.BinaryExpr, operandType types.Type) exprVal
 		return v
 	}
 	// Float (or mixed int/float) comparison goes through awk.
-	lt := g.info.Types[b.Lhs]
-	rt := g.info.Types[b.Rhs]
+	lt := g.typeOf(b.Lhs)
+	rt := g.typeOf(b.Rhs)
 	if lt == types.Float || rt == types.Float {
 		return g.floatCompare(b)
 	}
@@ -3170,7 +3571,7 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 			prologue = append(prologue, av.prologue...)
 		}
 		argVals = append(argVals, av)
-		argTypes = append(argTypes, g.info.Types[a])
+		argTypes = append(argTypes, g.typeOf(a))
 	}
 
 	if sym.IsBuiltin {
@@ -3186,6 +3587,21 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		if sym.Module != nil {
 			calleeName = shName(checker.MangledName(sym.Module, sym.Name))
 		}
+		// Generic call dispatch: the checker recorded inferred type
+		// arguments; resolve them through the active substitution (in case
+		// we're emitting from inside another generic) and rewrite the
+		// callee to the matching monomorphized name.
+		if args, ok := g.info.GenericInsts[call]; ok {
+			resolved := make([]types.Type, len(args))
+			for i, a := range args {
+				resolved[i] = g.substType(a)
+			}
+			base := shName(id.Name)
+			if sym.Module != nil {
+				base = shName(checker.MangledName(sym.Module, sym.Name))
+			}
+			calleeName = shName(genericInstName(base, resolved))
+		}
 	} else {
 		// Variable of function type: `"${var}"` expands to the mangled name
 		// the variable is holding, which sh then runs as a command.
@@ -3195,6 +3611,23 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 		}
 		calleeName = `"${` + varName + `}"`
 	}
+	// If this call resolves to a generic instantiation, prepare a substituted
+	// function type so the param fan-out loop (above) and the post-call
+	// return-shape branches (below) see the concrete types.
+	var callFt *types.Func
+	if instArgs, ok := g.info.GenericInsts[call]; ok && len(instArgs) > 0 {
+		if ft, ok := sym.Type.(*types.Func); ok && len(ft.TypeParams) == len(instArgs) {
+			subst := make(map[*types.TypeVar]types.Type, len(instArgs))
+			for i, tv := range ft.TypeParams {
+				subst[tv] = g.substType(instArgs[i])
+			}
+			ps := make([]types.Type, len(ft.Params))
+			for i, p := range ft.Params {
+				ps[i] = types.Substitute(p, subst)
+			}
+			callFt = &types.Func{Params: ps, Result: types.Substitute(ft.Result, subst)}
+		}
+	}
 	// Build the call line directly with strings.Builder to avoid the
 	// []string + strings.Join allocation overhead.
 	var callLine strings.Builder
@@ -3203,6 +3636,9 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 	// The function's declared param types (sym.Type) drive the argument
 	// shape, since callers may pass `T` to a `T?` parameter (auto-wrap).
 	paramTypes := sym.Type.(*types.Func).Params
+	if callFt != nil {
+		paramTypes = callFt.Params
+	}
 	for i, av := range argVals {
 		var paramTy types.Type
 		if i < len(paramTypes) {
@@ -3255,6 +3691,9 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 	prologue = append(prologue, callLine.String())
 
 	ft := sym.Type.(*types.Func)
+	if callFt != nil {
+		ft = callFt
+	}
 	if ft.Result == types.Void {
 		return exprValue{prologue: prologue, value: "", form: formStr}
 	}
@@ -4537,8 +4976,8 @@ func (g *Generator) compileCmpCond(b *ast.BinaryExpr) condValue {
 		return cond
 	}
 	// Float (or mixed) comparisons go through awk in test position too.
-	lt := g.info.Types[b.Lhs]
-	rt := g.info.Types[b.Rhs]
+	lt := g.typeOf(b.Lhs)
+	rt := g.typeOf(b.Rhs)
 	if lt == types.Float || rt == types.Float {
 		v := g.floatCompare(b)
 		return condValue{

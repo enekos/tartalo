@@ -12,6 +12,23 @@ import (
 // is reconstructed from the checker's symbol so we know parameter and result
 // types without re-walking the type annotations.
 func (g *Generator) emitFunc(fd *ast.FuncDecl) {
+	var name string
+	if g.currentModule == nil || g.currentModule.IsEntry {
+		name = "tt_" + fd.Name
+	} else {
+		name = "tt_" + checker.MangledName(g.currentModule, fd.Name)
+	}
+	g.emitFuncWithName(fd, name)
+}
+
+// emitFuncMono emits one specialised copy of a generic FuncDecl. The caller
+// is responsible for setting (and clearing) g.currentSubst so type lookups
+// inside the body resolve to the instantiation's concrete types.
+func (g *Generator) emitFuncMono(fd *ast.FuncDecl, inst nativeGenericInst) {
+	g.emitFuncWithName(fd, inst.GoName)
+}
+
+func (g *Generator) emitFuncWithName(fd *ast.FuncDecl, goName string) {
 	sym := g.info.Decls[checker.MangledName(g.currentModule, fd.Name)]
 	var ft *types.Func
 	if sym != nil {
@@ -19,16 +36,10 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	}
 	prevRet := g.currentReturnType
 	if ft != nil {
-		g.currentReturnType = ft.Result
+		g.currentReturnType = g.substType(ft.Result)
 	}
 	g.out.WriteString("func ")
-	if g.currentModule == nil || g.currentModule.IsEntry {
-		g.out.WriteString("tt_")
-		g.out.WriteString(fd.Name)
-	} else {
-		g.out.WriteString("tt_")
-		g.out.WriteString(checker.MangledName(g.currentModule, fd.Name))
-	}
+	g.out.WriteString(goName)
 	g.out.WriteString("(")
 	switch len(fd.Params) {
 	case 0:
@@ -44,7 +55,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 		g.out.WriteString("tt_")
 		g.out.WriteString(p.Name)
 		g.out.WriteString(" ")
-		g.out.WriteString(g.goType(pt))
+		g.out.WriteString(g.goType(g.substType(pt)))
 	default:
 		for i, p := range fd.Params {
 			if i > 0 {
@@ -59,7 +70,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 			} else {
 				pt = g.typeFromAnn(p.TypeAnn)
 			}
-			g.out.WriteString(g.goType(pt))
+			g.out.WriteString(g.goType(g.substType(pt)))
 		}
 	}
 	g.out.WriteString(")")
@@ -68,17 +79,21 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	// rewrite it on panic. Otherwise stick with a positional return for
 	// the cleanest Go output.
 	useNamedRet := false
-	if ft != nil && ft.Result != types.Void {
-		if retSum, ok := ft.Result.(*types.Sum); ok && hasTryIn(fd.Body) {
+	var resultTy types.Type
+	if ft != nil {
+		resultTy = g.substType(ft.Result)
+	}
+	if ft != nil && resultTy != types.Void {
+		if retSum, ok := resultTy.(*types.Sum); ok && hasTryIn(fd.Body) {
 			if errV := retSum.LookupVariant("Err"); errV != nil && len(errV.Fields) == 1 {
 				useNamedRet = true
 				_ = errV
 			}
 		}
 		if useNamedRet {
-			g.out.WriteString(" (_tt_ret " + g.goType(ft.Result) + ")")
+			g.out.WriteString(" (_tt_ret " + g.goType(resultTy) + ")")
 		} else {
-			g.out.WriteString(" " + g.goType(ft.Result))
+			g.out.WriteString(" " + g.goType(resultTy))
 		}
 	}
 	g.out.WriteString(" {\n")
@@ -95,7 +110,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	}
 	if useNamedRet {
 		g.usesRuntimeTry = true
-		retSum := ft.Result.(*types.Sum)
+		retSum := resultTy.(*types.Sum)
 		g.writeLine("defer func() {")
 		g.indent++
 		g.writeLine("if r := recover(); r != nil {")
@@ -121,8 +136,8 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	// Functions with a non-void return that don't end in `return` need a
 	// safe trailing zero-value to satisfy Go's flow analysis. Tartalo's
 	// checker doesn't enforce this on every path, so we belt-and-braces it.
-	if ft != nil && ft.Result != types.Void && !endsWithReturn(fd.Body.Stmts) {
-		g.writeLine("var _tt_zero " + g.goType(ft.Result))
+	if ft != nil && resultTy != types.Void && !endsWithReturn(fd.Body.Stmts) {
+		g.writeLine("var _tt_zero " + g.goType(resultTy))
 		g.writeLine("return _tt_zero")
 	}
 	g.indent--
@@ -337,7 +352,7 @@ func (g *Generator) emitDefer(s *ast.DeferStmt) {
 // nothing.
 func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 	rhs := g.compileExpr(d.Value)
-	from := g.info.Types[d.Value]
+	from := g.typeOf(d.Value)
 	to := from
 	if d.TypeAnn != nil {
 		if at := g.typeFromAnn(d.TypeAnn); at != nil {
@@ -369,8 +384,8 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 func (g *Generator) emitAssign(s *ast.AssignStmt) {
 	sym := g.info.Assigns[s]
 	rhs := g.compileExpr(s.Value)
-	if sym != nil && g.info.Types[s.Value] != sym.Type {
-		rhs = g.coerce(rhs, g.info.Types[s.Value], sym.Type)
+	if sym != nil && g.typeOf(s.Value) != sym.Type {
+		rhs = g.coerce(rhs, g.typeOf(s.Value), sym.Type)
 	}
 	g.writeIndent()
 	if sym != nil && sym.Module != nil {
@@ -389,12 +404,12 @@ func (g *Generator) emitFieldAssign(s *ast.FieldAssignStmt) {
 	rhs := g.compileExpr(s.Value)
 	// Coerce to the field's declared type (auto-wrap optionals, widen number→float).
 	var fieldTy types.Type
-	if rec, ok := g.info.Types[s.Target].(*types.Record); ok {
+	if rec, ok := g.typeOf(s.Target).(*types.Record); ok {
 		if fld := rec.Lookup(s.Name); fld != nil {
 			fieldTy = fld.Type
 		}
 	}
-	rhs = g.coerce(rhs, g.info.Types[s.Value], fieldTy)
+	rhs = g.coerce(rhs, g.typeOf(s.Value), fieldTy)
 	g.writeIndent()
 	g.out.WriteString(g.compileExpr(s.Target))
 	g.out.WriteString(".F_")
@@ -410,7 +425,7 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 		return
 	}
 	rhs := g.compileExpr(s.Value)
-	from := g.info.Types[s.Value]
+	from := g.typeOf(s.Value)
 	if from != g.currentReturnType {
 		rhs = g.coerce(rhs, from, g.currentReturnType)
 	}
@@ -511,7 +526,7 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 	default:
 		// Iteration over an array/slice or a string-of-lines.
 		// Distinguish by the iterator's type: array → range slice, string → split.
-		t := g.info.Types[s.Iter]
+		t := g.typeOf(s.Iter)
 		switch t.(type) {
 		case *types.Array:
 			g.writeIndent()
@@ -548,7 +563,7 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 }
 
 func (g *Generator) emitMatch(s *ast.MatchStmt) {
-	if sum, ok := g.info.Types[s.Subject].(*types.Sum); ok {
+	if sum, ok := g.typeOf(s.Subject).(*types.Sum); ok {
 		g.emitMatchSum(s, sum)
 		return
 	}
@@ -706,7 +721,7 @@ func (g *Generator) emitExprStmt(x ast.Expr) {
 		expr := g.compileCall(x)
 		// Void calls compile to a bare statement; non-void calls need an
 		// underscore receiver so Go doesn't complain about unused values.
-		t := g.info.Types[x]
+		t := g.typeOf(x)
 		if t == nil || t == types.Void {
 			g.writeIndent()
 			g.out.WriteString(expr)

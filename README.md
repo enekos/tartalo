@@ -40,6 +40,10 @@ See [SPEC.md](SPEC.md) for the language reference.
 
 Pre-alpha. The compiler pipeline is complete — lexer → parser → type checker → sh emitter — and the CLI supports build, run, test, check, format, benchmark, and LSP modes.
 
+Generic functions are supported with inference-only call sites and
+monomorphisation in both backends; see [`SPEC.md`](SPEC.md#generic-functions)
+for the syntax and v0 limits.
+
 ## Install
 
 Prebuilt binaries for darwin / linux / windows × amd64 / arm64 are attached

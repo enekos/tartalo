@@ -414,6 +414,53 @@ func (p *Parser) parseToolOrAgent(kind ast.FuncKind) *ast.FuncDecl {
 func (p *Parser) parseFuncLike(ctx string, kind ast.FuncKind) *ast.FuncDecl {
 	p.advance() // func | tool | agent
 	name := p.expect(token.Ident, ctx)
+
+	// Optional type parameter list: `<T, U, ...>` between the name and `(`.
+	// Tools and agents are not generic in v0 — they're entry points whose
+	// schemas must be statically resolvable for the LLM-facing tool table.
+	var typeParams []ast.TypeParam
+	if p.peek().Kind == token.Lt {
+		if kind != ast.FuncKindPlain {
+			p.errorf(p.peek().Pos, "%s: %s declarations cannot be generic", ctx, kind.String())
+			// Skip the malformed type parameter list so the rest of the
+			// declaration can still be parsed.
+			depth := 0
+			for !p.atEnd() {
+				k := p.peek().Kind
+				if k == token.Lt {
+					depth++
+					p.advance()
+					continue
+				}
+				if k == token.Gt {
+					p.advance()
+					depth--
+					if depth == 0 {
+						break
+					}
+					continue
+				}
+				p.advance()
+			}
+		} else {
+			p.advance() // <
+			if p.peek().Kind == token.Gt {
+				p.errorf(p.peek().Pos, "%s: type parameter list cannot be empty", ctx)
+			}
+			for p.peek().Kind != token.Gt && !p.atEnd() {
+				tp := p.expect(token.Ident, ctx+" type parameter")
+				if tp.Value != "" {
+					typeParams = append(typeParams, ast.TypeParam{NamePos: tp.Pos, Name: tp.Value})
+				}
+				if _, ok := p.accept(token.Comma); ok {
+					continue
+				}
+				break
+			}
+			p.expect(token.Gt, ctx+" type parameter list")
+		}
+	}
+
 	p.expect(token.LParen, ctx)
 
 	var params []ast.Param
@@ -473,14 +520,15 @@ func (p *Parser) parseFuncLike(ctx string, kind ast.FuncKind) *ast.FuncDecl {
 	body := p.parseBlock()
 
 	return &ast.FuncDecl{
-		NamePos: name.Pos,
-		Name:    name.Value,
-		Kind:    kind,
-		Params:  params,
-		Result:  ret,
-		Effects: effects,
-		Tools:   tools,
-		Body:    body,
+		NamePos:    name.Pos,
+		Name:       name.Value,
+		Kind:       kind,
+		TypeParams: typeParams,
+		Params:     params,
+		Result:     ret,
+		Effects:    effects,
+		Tools:      tools,
+		Body:       body,
 	}
 }
 

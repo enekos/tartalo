@@ -138,10 +138,75 @@ func (s *Sum) LookupVariant(name string) *Variant {
 	return nil
 }
 
+// TypeVar is a placeholder for a type parameter inside a generic function's
+// signature or body. Each TypeVar instance is unique by pointer identity (the
+// checker allocates a fresh set per generic function declaration), so two
+// different functions both declaring `<T>` produce distinct TypeVars even
+// though their printable name matches.
+type TypeVar struct {
+	Name string
+}
+
+func (v *TypeVar) String() string { return v.Name }
+func (v *TypeVar) typeNode()      {}
+
+// ContainsTypeVar reports whether t mentions any *TypeVar anywhere in its
+// structure. Used by the checker to detect signatures that still need
+// monomorphization at call sites.
+func ContainsTypeVar(t Type) bool {
+	switch tt := t.(type) {
+	case *TypeVar:
+		return true
+	case *Array:
+		return ContainsTypeVar(tt.Elem)
+	case *Optional:
+		return ContainsTypeVar(tt.Elem)
+	case *Func:
+		for _, p := range tt.Params {
+			if ContainsTypeVar(p) {
+				return true
+			}
+		}
+		return ContainsTypeVar(tt.Result)
+	}
+	return false
+}
+
+// Substitute returns a copy of t with every *TypeVar replaced by its mapping
+// in subst. Types that contain no TypeVars are returned unchanged.
+func Substitute(t Type, subst map[*TypeVar]Type) Type {
+	if !ContainsTypeVar(t) {
+		return t
+	}
+	switch tt := t.(type) {
+	case *TypeVar:
+		if r, ok := subst[tt]; ok {
+			return r
+		}
+		return tt
+	case *Array:
+		return &Array{Elem: Substitute(tt.Elem, subst)}
+	case *Optional:
+		return &Optional{Elem: Substitute(tt.Elem, subst)}
+	case *Func:
+		ps := make([]Type, len(tt.Params))
+		for i, p := range tt.Params {
+			ps[i] = Substitute(p, subst)
+		}
+		return &Func{Params: ps, Result: Substitute(tt.Result, subst)}
+	}
+	return t
+}
+
 // Func describes a function signature.
 type Func struct {
 	Params []Type
 	Result Type
+	// TypeParams lists the *TypeVar pointers introduced by a generic function
+	// declaration. Empty for monomorphic signatures. The slice is stored in
+	// declaration order so the checker can match call-site type arguments
+	// positionally.
+	TypeParams []*TypeVar
 }
 
 func (f *Func) String() string {
@@ -160,10 +225,20 @@ func (f *Func) typeNode() {}
 // Equal reports whether two types are the same. We use pointer equality for
 // primitives (they're singletons), nominal equality for records (a record
 // type is identified by its name), and structural equality for function and
-// array types.
+// array types. TypeVars compare by pointer identity — each generic function's
+// `<T>` allocates a fresh *TypeVar, so distinct functions both declaring `T`
+// stay distinct even though their printed name matches.
 func Equal(a, b Type) bool {
 	if a == b {
 		return true
+	}
+	if _, ok := a.(*TypeVar); ok {
+		// pointer equality already failed above, so two TypeVars from different
+		// declarations are not equal even if their Name matches.
+		return false
+	}
+	if _, ok := b.(*TypeVar); ok {
+		return false
 	}
 	if ra, ok := a.(*Record); ok {
 		if rb, ok := b.(*Record); ok {

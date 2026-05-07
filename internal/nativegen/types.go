@@ -22,6 +22,12 @@ var (
 // no-op for primitives and arrays; records resolve to their generated
 // `Tt_<name>` struct; optionals to `*<elem>`.
 func (g *Generator) goType(t types.Type) string {
+	// Apply the active monomorphisation substitution before pattern-matching
+	// on shape, so a body expression typed `T` resolves to its concrete type
+	// inside the current generic instantiation.
+	if g.currentSubst != nil {
+		t = types.Substitute(t, g.currentSubst)
+	}
 	switch t := t.(type) {
 	case *types.Primitive:
 		switch t {
@@ -82,6 +88,12 @@ func (g *Generator) goType(t types.Type) string {
 			out += " " + g.goType(t.Result)
 		}
 		return out
+	case *types.TypeVar:
+		// Reached only if a generic body expression's type leaked outside its
+		// monomorphisation context. Returning interface{} keeps the file
+		// well-formed even if the call site was missed; a nil currentSubst
+		// usually indicates a bug elsewhere in the emitter.
+		return "interface{}"
 	}
 	return "interface{}"
 }
@@ -93,6 +105,13 @@ func (g *Generator) goType(t types.Type) string {
 func (g *Generator) typeFromAnn(ann ast.TypeExpr) types.Type {
 	switch ann := ann.(type) {
 	case *ast.TypeName:
+		// Generic-scope override: if we're emitting a monomorphisation, a
+		// type-parameter name resolves to its concrete substitution.
+		if g.currentTypeNameSubst != nil {
+			if t, ok := g.currentTypeNameSubst[ann.Name]; ok {
+				return t
+			}
+		}
 		if t := types.Lookup(ann.Name); t != nil {
 			return t
 		}

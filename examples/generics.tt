@@ -1,0 +1,42 @@
+// Demonstrates generic functions in Tartalo.
+//
+// Type parameters go in `<...>` between the function name and parameter list.
+// Type arguments are inferred from the call site — there is no explicit
+// type-argument syntax. Each instantiation produces one specialised copy in
+// the emitted output, so generics cost nothing extra at runtime.
+
+type Person = {
+  name: string,
+  age: number,
+}
+
+func id<T>(x: T): T {
+  return x
+}
+
+func first<T>(xs: T[]): T {
+  return xs[0]
+}
+
+func or<T>(x: T?, fallback: T): T {
+  return x ?? fallback
+}
+
+func main(): void {
+  echo(id("hello"))
+  echo(str(id(42)))
+
+  let nums: number[] = [10, 20, 30]
+  echo(str(first(nums)))
+
+  let people: Person[] = [
+    Person{name: "Alice", age: 30},
+    Person{name: "Bob", age: 25},
+  ]
+
+  let p: Person = first(people)
+  echo(p.name + "/" + str(p.age))
+
+  let maybe: string? = null
+  echo(or(maybe, "default"))
+}
