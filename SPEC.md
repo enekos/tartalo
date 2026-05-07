@@ -68,7 +68,7 @@ Constraints in v0:
 - Numbers: integer literals only in v0 (`42`, `-3`).
 - Strings: double-quoted, with `\n \t \\ \" \$` escapes and `${expr}` interpolation.
 - Command literals: backticks, e.g. `` `ls -1` ``. Substitutes to a `string` (stdout, trailing newline trimmed).
-- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `match`, `type`, `import`, `export`, `test`, `defer`, `parallel`, `task`, `tool`, `agent`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
+- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `match`, `type`, `import`, `export`, `test`, `defer`, `parallel`, `task`, `tool`, `agent`, `as`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
 
 ## Types (v0)
 
@@ -919,6 +919,9 @@ Comparison on `number`: `== != < <= > >=`
 Boolean: `&& || !`
 Indexing on arrays: `arr[i]` (0-based)
 Grouping: `( ... )`
+Postfix cast: `expr as Type` (record-to-record only — see "Type casts")
+Optional unwrap: `expr ?? default`, `expr!`, `expr?` (Result short-circuit)
+Record spread: `Foo{...source, field: value}` (see "Record spread")
 
 ## Compilation model
 

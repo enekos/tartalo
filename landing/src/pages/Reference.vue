@@ -91,7 +91,7 @@
             <li>Numbers: integer literals only in v0 (<code>42</code>, <code>-3</code>).</li>
             <li>Strings: double-quoted, with <code>\n \t \\ \" \$</code> escapes and <code>${'${expr}'}</code> interpolation.</li>
             <li>Command literals: backticks, e.g. <code>`ls -1`</code>. Substitutes to a <code>string</code> (stdout, trailing newline trimmed).</li>
-            <li>Keywords: <code>let</code>, <code>const</code>, <code>func</code>, <code>return</code>, <code>if</code>, <code>else</code>, <code>for</code>, <code>in</code>, <code>true</code>, <code>false</code>, <code>string</code>, <code>number</code>, <code>bool</code>, <code>void</code>.</li>
+            <li>Keywords: <code>let</code>, <code>const</code>, <code>func</code>, <code>return</code>, <code>if</code>, <code>else</code>, <code>for</code>, <code>in</code>, <code>match</code>, <code>type</code>, <code>import</code>, <code>export</code>, <code>test</code>, <code>defer</code>, <code>parallel</code>, <code>task</code>, <code>tool</code>, <code>agent</code>, <code>as</code>, <code>null</code>, <code>true</code>, <code>false</code>, <code>string</code>, <code>number</code>, <code>float</code>, <code>bool</code>, <code>void</code>.</li>
           </ul>
         </section>
 
@@ -228,6 +228,36 @@
             <li>Arrays of records are supported (<code>Person[]</code>), but the element record's leaves must all be primitives — no array fields inside.</li>
           </ul>
 
+          <h3>Record spread</h3>
+          <p>
+            A record literal may begin with a <code>...source</code> spread that
+            copies every field from <code>source</code> (which must have the same
+            record type as the literal). Named fields after the spread override
+            the corresponding entries from the source:
+          </p>
+          <CodeBlock :code="codeRecordSpread" />
+          <p>
+            The spread must be the first entry in the literal. Cross-type spread
+            (copying fields from a structurally-similar but different record
+            type) is not allowed — use <code>as</code> instead.
+          </p>
+
+          <h3>Type casts</h3>
+          <p>
+            <code>expr as TargetRecord</code> reinterprets a record value as a
+            different record type when the target's field set is a subset of the
+            source's, with each shared field's type assignable from source to
+            target. Useful for narrowing a wide record into a purpose-built
+            shape:
+          </p>
+          <CodeBlock :code="codeRecordCast" />
+          <p>
+            Casts are restricted to record-to-record conversions in v0;
+            primitives, arrays, and sums use their existing builtins
+            (<code>str</code>, <code>num</code>, <code>floatOf</code>,
+            <code>intOf</code>).
+          </p>
+
           <h3>Codegen</h3>
           <p>
             Each record value is represented as a <strong>name prefix</strong>:
@@ -360,6 +390,39 @@
             values are passed back via a hidden <code>__ret</code> variable (sh has
             no return values in the language sense, only exit codes).
           </p>
+
+          <h3>Functions as values</h3>
+          <p>
+            Top-level functions can be stored in variables typed
+            <code>func(T...): R</code> and called through the variable. The
+            stored value is the mangled function name, callable via
+            <code>"$f" args</code> in sh and as a Go <code>func</code> value
+            on the native target.
+          </p>
+          <CodeBlock :code="codeFuncValue" />
+
+          <h3>Anonymous functions (closures)</h3>
+          <p>
+            Function literals can appear in any expression position. They have
+            the same shape as a named function, just without the name:
+          </p>
+          <CodeBlock :code="codeFuncLit" />
+          <p>
+            Lambdas may capture variables from the enclosing scope:
+          </p>
+          <CodeBlock :code="codeFuncCapture" />
+          <div class="callout">
+            <strong>Target compatibility:</strong> on the native target,
+            captures work like Go's closures — including for closures that
+            <em>escape</em> their defining function (e.g.
+            <code>func makeAdder(n) { return func(x) { return x + n } }</code>).
+            On the sh target, captures work via dynamic scoping, which is fine
+            for the common case where the lambda runs <em>while</em> the
+            defining frame is still live (e.g. inside <code>map</code>). A
+            closure that escapes its defining frame on the sh target will read
+            uninitialised free variables at runtime; if you need escaping
+            closures, use <code>--target=native</code>.
+          </div>
         </section>
 
         <!-- Control flow -->
@@ -439,6 +502,9 @@
               <tr><td>Boolean</td><td><code>&amp;&amp; || !</code></td></tr>
               <tr><td>Indexing on arrays</td><td><code>arr[i]</code> (0-based)</td></tr>
               <tr><td>Grouping</td><td><code>( ... )</code></td></tr>
+              <tr><td>Optional</td><td><code>?? !</code> (coalesce / forced unwrap), <code>?</code> (Result short-circuit)</td></tr>
+              <tr><td>Cast</td><td><code>expr as Type</code> (record-to-record only)</td></tr>
+              <tr><td>Record spread</td><td><code>Foo{...source, field: value}</code> (must be first in literal)</td></tr>
             </tbody>
           </table>
         </section>
@@ -583,7 +649,7 @@ const builtins = [
       { sig: "eprint(s: string): void", desc: "print line to stderr" },
       { sig: "str(n: number | float | bool): string", desc: "scalar → string" },
       { sig: "num(s: string): number", desc: "string → int (errors at runtime if not numeric)" },
-      { sig: "len(s | T[]): number", desc: "string byte-length or array element count" },
+      { sig: "len(s | T[]): number", desc: "UTF-8 codepoint (rune) count for strings; element count for arrays. Use <code>byteLen</code> for raw byte length." },
       { sig: "env(name: string): string?", desc: "read env var (<code>null</code> if unset, empty string if set to <code>\"\"</code>)" },
       { sig: "exit(code: number): void", desc: "exit with code" },
     ],
@@ -599,7 +665,9 @@ const builtins = [
       { sig: "contains(s, sub: string): bool" },
       { sig: "startsWith(s, prefix: string): bool" },
       { sig: "endsWith(s, suffix: string): bool" },
-      { sig: "slice(s: string, start, end: number): string", desc: "half-open <code>[start, end)</code>, 0-based" },
+      { sig: "slice(s: string, start, end: number): string", desc: "half-open <code>[start, end)</code>, 0-based; <code>start</code> and <code>end</code> are UTF-8 codepoint indices, so the result is always valid UTF-8" },
+      { sig: "byteLen(s: string): number", desc: "raw byte length (POSIX <code>wc -c</code> semantics)" },
+      { sig: "byteSlice(s: string, start, end: number): string", desc: "half-open byte-index slice. May return an invalid UTF-8 substring when cutting through a multi-byte sequence; prefer <code>slice</code> unless you specifically need bytes." },
       { sig: "split(s, sep: string): string[]" },
       { sig: "join(arr: string[], sep: string): string" },
     ],
@@ -670,7 +738,7 @@ const builtins = [
     id: "higher-order",
     title: "Higher-order",
     intro:
-      "Typed by hand in the checker (no generics yet). The function argument is a reference to a top-level user-declared function — pass the function's name as a value: map(xs, double). Builtins cannot be passed by reference.",
+      "Typed by hand in the checker (no generics yet). The function argument can be a reference to a top-level user-declared function (pass its name: map(xs, double)) or an inline function literal (map(xs, func(x: number): number { return x * x })). Builtins cannot be passed by reference.",
     items: [
       { sig: "map(arr: T[], f: func(T): U): U[]" },
       { sig: "filter(arr: T[], pred: func(T): bool): T[]" },
@@ -890,6 +958,33 @@ func main(): void {
   ]
   echo(str(len(people)))
   for p in people { echo(p.name + "/" + str(p.age)) }
+}`;
+
+const codeRecordSpread = `type Person = { name: string, age: number }
+
+let alice: Person = Person{name: "Alice", age: 30}
+let older: Person = Person{...alice, age: 31}`;
+
+const codeRecordCast = `type RawUser   = { name: string, age: number, email: string }
+type ShortUser = { name: string, age: number }
+
+let raw:   RawUser   = RawUser{name: "Alice", age: 30, email: "a@x"}
+let short: ShortUser = raw as ShortUser`;
+
+const codeFuncValue = `func square(n: number): number { return n * n }
+
+let f: func(number): number = square
+echo(str(f(7)))`;
+
+const codeFuncLit = `let dbl: func(number): number = func(x: number): number { return x + x }
+
+let xs: number[] = [1, 2, 3, 4]
+let squares: number[] = map(xs, func(x: number): number { return x * x })`;
+
+const codeFuncCapture = `func main(): void {
+  let n: number = 10
+  let xs: number[] = [1, 2, 3]
+  let added: number[] = map(xs, func(x: number): number { return x + n })
 }`;
 
 const codeInterp = `let who: string = "world"
