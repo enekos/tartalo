@@ -178,6 +178,8 @@ func hasTryInStmt(s ast.Stmt) bool {
 		return hasTryInExpr(s.Cond) || hasTryIn(s.Then) || hasTryIn(s.Else)
 	case *ast.ForStmt:
 		return hasTryInExpr(s.Iter) || hasTryIn(s.Body)
+	case *ast.WhileStmt:
+		return hasTryInExpr(s.Cond) || hasTryIn(s.Body)
 	case *ast.MatchStmt:
 		if hasTryInExpr(s.Subject) {
 			return true
@@ -278,6 +280,12 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.emitIf(s)
 	case *ast.ForStmt:
 		g.emitFor(s)
+	case *ast.WhileStmt:
+		g.emitWhile(s)
+	case *ast.BreakStmt:
+		g.writeLine("break")
+	case *ast.ContinueStmt:
+		g.writeLine("continue")
 	case *ast.MatchStmt:
 		g.emitMatch(s)
 	case *ast.DeferStmt:
@@ -495,6 +503,21 @@ func (g *Generator) emitIfTail(s *ast.IfStmt) {
 		}
 		g.indent--
 	}
+	g.writeIndent()
+	g.out.WriteString("}\n")
+}
+
+// emitWhile lowers `while cond { ... }` to Go's `for cond { ... }`.
+func (g *Generator) emitWhile(s *ast.WhileStmt) {
+	g.writeIndent()
+	g.out.WriteString("for ")
+	g.out.WriteString(g.compileExpr(s.Cond))
+	g.out.WriteString(" {\n")
+	g.indent++
+	for _, st := range s.Body.Stmts {
+		g.emitStmt(st)
+	}
+	g.indent--
 	g.writeIndent()
 	g.out.WriteString("}\n")
 }

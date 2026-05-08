@@ -629,6 +629,9 @@ func (g *Generator) scanStmt(s ast.Stmt) {
 	case *ast.ForStmt:
 		g.scanExpr(s.Iter)
 		g.scanBlock(s.Body)
+	case *ast.WhileStmt:
+		g.scanExpr(s.Cond)
+		g.scanBlock(s.Body)
 	case *ast.MatchStmt:
 		g.scanExpr(s.Subject)
 		for _, c := range s.Cases {

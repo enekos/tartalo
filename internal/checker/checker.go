@@ -157,6 +157,12 @@ type Checker struct {
 	currentMod *loader.Module
 	currentRet types.Type
 
+	// loopDepth counts the number of `for`/`while` loops currently being
+	// checked. `break` and `continue` are valid only when this is > 0. Saved
+	// and restored at task body boundaries: a task body starts a fresh loop
+	// scope so a `break` inside a task can't break out of an outer loop.
+	loopDepth int
+
 	// taskOuter is non-nil while checking the body of a `task { ... }` block.
 	// Its value is the scope that immediately encloses the task body, so
 	// `isLocalToTask` can tell whether a resolved symbol was declared inside
@@ -364,13 +370,16 @@ func (c *Checker) checkTestBody(td *ast.TestDecl, m *loader.Module) {
 	saved := c.current
 	savedRet := c.currentRet
 	savedInTest := c.inTest
+	savedLoop := c.loopDepth
 	c.current = newScope(env.scope)
 	c.currentRet = types.Void
 	c.inTest = true
+	c.loopDepth = 0
 	c.checkBlock(td.Body)
 	c.current = saved
 	c.currentRet = savedRet
 	c.inTest = savedInTest
+	c.loopDepth = savedLoop
 }
 
 // checkEvalBody walks an eval declaration body. Same shape as a test body —
@@ -382,15 +391,18 @@ func (c *Checker) checkEvalBody(ed *ast.EvalDecl, m *loader.Module) {
 	savedRet := c.currentRet
 	savedInTest := c.inTest
 	savedInEval := c.inEval
+	savedLoop := c.loopDepth
 	c.current = newScope(env.scope)
 	c.currentRet = types.Void
 	c.inTest = true
 	c.inEval = true
+	c.loopDepth = 0
 	c.checkBlock(ed.Body)
 	c.current = saved
 	c.currentRet = savedRet
 	c.inTest = savedInTest
 	c.inEval = savedInEval
+	c.loopDepth = savedLoop
 }
 
 // resolveTypeImports brings exported type names from dep modules into m's
@@ -717,6 +729,8 @@ func firstReturnInStmt(s ast.Stmt) (token.Pos, bool) {
 		}
 	case *ast.ForStmt:
 		return firstReturnIn(s.Body)
+	case *ast.WhileStmt:
+		return firstReturnIn(s.Body)
 	case *ast.MatchStmt:
 		for _, arm := range s.Cases {
 			if arm.Body != nil {
@@ -997,10 +1011,12 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	savedInTest := c.inTest
 	savedInEval := c.inEval
 	savedGenScope := c.genericScope
+	savedLoop := c.loopDepth
 	c.current = newScope(env.scope)
 	c.currentRet = ft.Result
 	c.inTest = false
 	c.inEval = false
+	c.loopDepth = 0
 	// Re-bind type-parameter names to the same *types.TypeVars used for the
 	// signature so that any type annotation inside the body (e.g.
 	// `let x: T = ...`) resolves to the same opaque type.
@@ -1029,6 +1045,7 @@ func (c *Checker) checkFuncBody(fd *ast.FuncDecl, m *loader.Module) {
 	c.inTest = savedInTest
 	c.inEval = savedInEval
 	c.genericScope = savedGenScope
+	c.loopDepth = savedLoop
 }
 
 // checkAgentToolList validates each name in an agent's `uses (...)` clause
@@ -1219,10 +1236,33 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 		saved := c.current
 		c.current = newScope(saved)
 		c.current.define(&Symbol{Name: s.Var, Type: elemTy, DeclPos: s.VarPos})
+		c.loopDepth++
 		for _, st := range s.Body.Stmts {
 			c.checkStmt(st)
 		}
+		c.loopDepth--
 		c.current = saved
+	case *ast.WhileStmt:
+		ct := c.checkExpr(s.Cond)
+		if ct != types.Invalid && ct != types.Bool {
+			c.errorf(s.Cond.Pos(), "while condition must be bool, got %s", types.Format(ct))
+		}
+		saved := c.current
+		c.current = newScope(saved)
+		c.loopDepth++
+		for _, st := range s.Body.Stmts {
+			c.checkStmt(st)
+		}
+		c.loopDepth--
+		c.current = saved
+	case *ast.BreakStmt:
+		if c.loopDepth == 0 {
+			c.errorf(s.KwPos, "break is only valid inside a for or while loop")
+		}
+	case *ast.ContinueStmt:
+		if c.loopDepth == 0 {
+			c.errorf(s.KwPos, "continue is only valid inside a for or while loop")
+		}
 	case *ast.Block:
 		c.checkBlock(s)
 	case *ast.MatchStmt:
@@ -1299,11 +1339,14 @@ func (c *Checker) checkParallel(s *ast.ParallelStmt) {
 		}
 		savedOuter := c.taskOuter
 		savedScope := c.current
+		savedLoop := c.loopDepth
 		c.taskOuter = c.current
 		c.current = newScope(savedScope)
+		c.loopDepth = 0
 		for _, bs := range ts.Body.Stmts {
 			c.checkStmt(bs)
 		}
+		c.loopDepth = savedLoop
 		c.current = savedScope
 		c.taskOuter = savedOuter
 	}
@@ -1643,6 +1686,9 @@ func walkStmtFreeVars(s ast.Stmt, info *TypeInfo, start, end token.Pos, ownParam
 		collectFreeVars(s.Else, info, start, end, ownParams, seen, out)
 	case *ast.ForStmt:
 		walkExprFreeVars(s.Iter, info, start, end, ownParams, seen, out)
+		collectFreeVars(s.Body, info, start, end, ownParams, seen, out)
+	case *ast.WhileStmt:
+		walkExprFreeVars(s.Cond, info, start, end, ownParams, seen, out)
 		collectFreeVars(s.Body, info, start, end, ownParams, seen, out)
 	case *ast.MatchStmt:
 		walkExprFreeVars(s.Subject, info, start, end, ownParams, seen, out)

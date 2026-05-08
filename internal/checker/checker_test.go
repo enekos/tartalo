@@ -1006,3 +1006,63 @@ func TestAgentUsesValidAccepts(t *testing.T) {
 		func main(): void { echo(foo("x")) }
 	`)
 }
+
+func TestWhileCondMustBeBool(t *testing.T) {
+	wantError(t, `
+		func main(): void {
+			while 1 { echo("nope") }
+		}
+	`, "while condition must be bool")
+}
+
+func TestBreakOutsideLoopRejected(t *testing.T) {
+	wantError(t, `
+		func main(): void {
+			break
+		}
+	`, "break is only valid")
+}
+
+func TestContinueOutsideLoopRejected(t *testing.T) {
+	wantError(t, `
+		func main(): void {
+			continue
+		}
+	`, "continue is only valid")
+}
+
+func TestBreakInsideForOk(t *testing.T) {
+	wantOk(t, `
+		func main(): void {
+			for i in 0..3 {
+				if i == 1 { break }
+			}
+		}
+	`)
+}
+
+func TestContinueInsideWhileOk(t *testing.T) {
+	wantOk(t, `
+		func main(): void {
+			let i: number = 0
+			while i < 3 {
+				i = i + 1
+				continue
+			}
+		}
+	`)
+}
+
+func TestBreakInsideTaskOnlyForOuterLoopRejected(t *testing.T) {
+	// A break inside a task body must reference a loop inside the same task,
+	// not an enclosing for-loop in the parent scope.
+	wantError(t, `
+		func main(): void {
+			for i in 0..2 {
+				parallel {
+					task { break }
+				}
+			}
+		}
+	`, "break is only valid")
+}

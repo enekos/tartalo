@@ -31,6 +31,9 @@ const (
 	Else
 	For
 	In
+	While
+	Break
+	Continue
 	Match
 	Type
 	Import
@@ -97,7 +100,9 @@ var kindNames = map[Kind]string{
 	StringStart: "STR_START", StringPart: "STR_PART", StringEnd: "STR_END",
 	CmdStart: "CMD_START", CmdPart: "CMD_PART", CmdEnd: "CMD_END",
 	Let: "let", Const: "const", Func: "func", Return: "return",
-	If: "if", Else: "else", For: "for", In: "in", Match: "match", Type: "type",
+	If: "if", Else: "else", For: "for", In: "in",
+	While: "while", Break: "break", Continue: "continue",
+	Match: "match", Type: "type",
 	Import: "import", Export: "export", Test: "test", Eval: "eval", Defer: "defer",
 	Null: "null", True: "true", False: "false",
 	Tool: "tool", Agent: "agent",
@@ -161,6 +166,9 @@ var Keywords = map[string]Kind{
 	"else":     Else,
 	"for":      For,
 	"in":       In,
+	"while":    While,
+	"break":    Break,
+	"continue": Continue,
 	"match":    Match,
 	"type":     Type,
 	"import":   Import,

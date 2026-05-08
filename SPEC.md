@@ -68,7 +68,7 @@ Constraints in v0:
 - Numbers: integer literals only in v0 (`42`, `-3`).
 - Strings: double-quoted, with `\n \t \\ \" \$` escapes and `${expr}` interpolation.
 - Command literals: backticks, e.g. `` `ls -1` ``. Substitutes to a `string` (stdout, trailing newline trimmed).
-- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `match`, `type`, `import`, `export`, `test`, `defer`, `parallel`, `task`, `tool`, `agent`, `as`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
+- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `while`, `break`, `continue`, `match`, `type`, `import`, `export`, `test`, `defer`, `parallel`, `task`, `tool`, `agent`, `as`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
 
 ## Types (v0)
 
@@ -394,9 +394,49 @@ for line in `ls -1` {
 for x in [10, 20, 30] {
   echo(str(x))
 }
+
+while count > 0 {
+  echo(str(count))
+  count = count - 1
+}
 ```
 
-`a..b` is a half-open numeric range.
+`for x in iter { ... }` walks an iterable and binds each element to a fresh
+local `x` scoped to the body. The element type is inferred from the
+iterable; `x` shadows any outer binding for the duration of the loop. There
+are four legal iterables in v0:
+
+- **Numeric range** — `start..end` is half-open: `start` is included,
+  `end` is not. `start` and `end` are `number` expressions; the loop
+  variable is `number`. `for i in 0..3 { ... }` runs for `i = 0, 1, 2`.
+  An empty range (`start >= end`) skips the body. Steps other than 1 are
+  not supported in v0; build them by hand with `while`.
+- **Array** — any `T[]` value, including arrays of records. The loop
+  variable has type `T` and is bound by value, so mutations inside the
+  body do not write back to the array. (Array-of-record elements bind a
+  fresh record-prefix copy per iteration; see "Arrays of records" above.)
+- **String** — a `string` is iterated **line by line** (split on `\n`).
+  An empty string runs the body zero times. Useful for processing the
+  output of a backtick command or a file read into a single string.
+- **Command literal** — `` `cmd` `` runs the command, captures stdout, and
+  iterates its lines. Equivalent to assigning the command result to a
+  string and iterating that. `for line in `ls -1` { ... }`.
+
+Mixing iterable kinds in one loop is not supported: each form has its own
+codegen path and the checker pins the element type at compile time.
+
+`a..b` is a half-open numeric range — only legal as the iterable in a
+`for ... in` loop.
+
+`while cond { ... }` re-runs its body as long as the boolean condition is
+true. The condition is evaluated on each iteration, so any side effects in
+the expression (calls, command substitutions) fire each pass.
+
+`break` exits the innermost enclosing `for`/`while` loop; `continue` skips
+to the next iteration. Both are statements and only legal inside a loop —
+the checker rejects a stray `break` or `continue` at file or function
+scope. They also cannot break/continue across a `task { ... }` boundary,
+since each task runs as its own subshell or goroutine.
 
 `match` dispatches on a primitive value:
 

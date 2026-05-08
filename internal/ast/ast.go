@@ -338,6 +338,36 @@ type ForStmt struct {
 func (s *ForStmt) Pos() token.Pos { return s.KwPos }
 func (s *ForStmt) stmtNode()      {}
 
+// WhileStmt: `while cond { ... }`. The condition must be a `bool` expression;
+// the body re-runs as long as it stays true. `break` and `continue` inside
+// the body behave as in C/Go.
+type WhileStmt struct {
+	KwPos token.Pos
+	Cond  Expr
+	Body  *Block
+}
+
+func (s *WhileStmt) Pos() token.Pos { return s.KwPos }
+func (s *WhileStmt) stmtNode()      {}
+
+// BreakStmt: `break`. Exits the innermost enclosing `for` or `while` loop.
+// The checker rejects `break` outside any loop.
+type BreakStmt struct {
+	KwPos token.Pos
+}
+
+func (s *BreakStmt) Pos() token.Pos { return s.KwPos }
+func (s *BreakStmt) stmtNode()      {}
+
+// ContinueStmt: `continue`. Skips to the next iteration of the innermost
+// enclosing loop. The checker rejects `continue` outside any loop.
+type ContinueStmt struct {
+	KwPos token.Pos
+}
+
+func (s *ContinueStmt) Pos() token.Pos { return s.KwPos }
+func (s *ContinueStmt) stmtNode()      {}
+
 // DeferStmt: `defer { ... }`. Registers a block to run when the enclosing
 // function exits, in last-registered-first-run order. The body cannot
 // contain `return`; the checker enforces that.

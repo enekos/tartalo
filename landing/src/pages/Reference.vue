@@ -489,7 +489,52 @@
         <section :id="ids.controlflow" ref="secRefs">
           <h2>Control flow</h2>
           <CodeBlock :code="codeControl" />
-          <p><code>a..b</code> is a half-open numeric range.</p>
+          <p>
+            <code>for x in iter {{ '{ ... }' }}</code> walks an iterable and
+            binds each element to a fresh local <code>x</code> scoped to the
+            body. The element type is inferred from the iterable; the loop
+            variable shadows any outer binding for the duration of the loop.
+            Four iterable forms are legal in v0:
+          </p>
+          <ul class="bullets">
+            <li>
+              <strong>Numeric range</strong> —
+              <code>start..end</code> is half-open: <code>start</code> is
+              included, <code>end</code> is not. Both bounds are
+              <code>number</code> expressions, so the loop variable is
+              <code>number</code>. An empty range (<code>start &gt;= end</code>)
+              skips the body. Steps other than 1 are not supported — build them
+              with <code>while</code>.
+            </li>
+            <li>
+              <strong>Array</strong> — any <code>T[]</code> value, including
+              arrays of records. The loop variable has type <code>T</code> and
+              is bound by value; mutations inside the body do not write back
+              to the array.
+            </li>
+            <li>
+              <strong>String</strong> — a <code>string</code> is iterated
+              line by line (split on <code>\n</code>). An empty string runs
+              the body zero times.
+            </li>
+            <li>
+              <strong>Command literal</strong> —
+              <code>`cmd`</code> runs the command, captures stdout, and
+              iterates its lines.
+            </li>
+          </ul>
+          <p>
+            <code>a..b</code> is a half-open numeric range — only legal as
+            the iterable in a <code>for ... in</code> loop.
+          </p>
+          <p>
+            <code>while cond {{ '{ ... }' }}</code> re-runs its body as long as
+            the boolean condition is true; the expression is evaluated on
+            every iteration. <code>break</code> exits the innermost enclosing
+            loop, <code>continue</code> jumps to the next iteration. Both are
+            statements and only legal inside a <code>for</code> or
+            <code>while</code> loop.
+          </p>
 
           <h3><code>match</code></h3>
           <p><code>match</code> dispatches on a primitive value:</p>
@@ -1008,6 +1053,11 @@ for line in \`ls -1\` {
 
 for x in [10, 20, 30] {
   echo(str(x))
+}
+
+while count > 0 {
+  if count == 5 { break }
+  count = count - 1
 }`;
 
 const codeMatch = `match action {

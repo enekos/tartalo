@@ -18,6 +18,7 @@ package codegen
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -1028,6 +1029,18 @@ func (g *Generator) collectGenericInsts(modules []*loader.Module) {
 			}
 		}
 	}
+	// Stable emit order: g.info.GenericInsts is a Go map whose iteration order
+	// is randomised per process, which would otherwise leak into the order in
+	// which monomorphizations are emitted. Sorting by the (already-collision-
+	// free) instantiation sh-name pins the output to be reproducible across
+	// runs and across copies of the source tree.
+	for fd := range g.genericInsts {
+		insts := g.genericInsts[fd]
+		sort.SliceStable(insts, func(i, j int) bool {
+			return insts[i].ShName < insts[j].ShName
+		})
+		g.genericInsts[fd] = insts
+	}
 }
 
 // findEnclosingGenericFunc locates the generic FuncDecl whose body lexically
@@ -1076,6 +1089,8 @@ func stmtContainsCall(s ast.Stmt, target *ast.CallExpr) bool {
 		return exprContainsCall(s.Cond, target) || blockContainsCall(s.Then, target) || blockContainsCall(s.Else, target)
 	case *ast.ForStmt:
 		return exprContainsCall(s.Iter, target) || blockContainsCall(s.Body, target)
+	case *ast.WhileStmt:
+		return exprContainsCall(s.Cond, target) || blockContainsCall(s.Body, target)
 	case *ast.MatchStmt:
 		if exprContainsCall(s.Subject, target) {
 			return true
@@ -1331,6 +1346,8 @@ func hasDeferInStmt(s ast.Stmt) bool {
 		return hasDeferIn(s.Then) || hasDeferIn(s.Else)
 	case *ast.ForStmt:
 		return hasDeferIn(s.Body)
+	case *ast.WhileStmt:
+		return hasDeferIn(s.Body)
 	case *ast.MatchStmt:
 		for _, c := range s.Cases {
 			if hasDeferIn(c.Body) {
@@ -1366,6 +1383,8 @@ func collectDefersIn(b *ast.Block, out *[]*ast.DeferStmt) {
 			collectDefersIn(s.Then, out)
 			collectDefersIn(s.Else, out)
 		case *ast.ForStmt:
+			collectDefersIn(s.Body, out)
+		case *ast.WhileStmt:
 			collectDefersIn(s.Body, out)
 		case *ast.MatchStmt:
 			for _, c := range s.Cases {
@@ -1462,6 +1481,12 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.emitIf(s)
 	case *ast.ForStmt:
 		g.emitFor(s)
+	case *ast.WhileStmt:
+		g.emitWhile(s)
+	case *ast.BreakStmt:
+		g.writeLine("break")
+	case *ast.ContinueStmt:
+		g.writeLine("continue")
 	case *ast.Block:
 		for _, st := range s.Stmts {
 			g.emitStmt(st)
@@ -2033,6 +2058,36 @@ func (g *Generator) emitIf(s *ast.IfStmt) {
 	g.writeLine("fi")
 }
 
+// emitWhile lowers `while cond { ... }` to `while CONDITION; do ... done`.
+// The condition's prologue runs on every iteration so any side effects in
+// `cond` (calls, command substitutions) are evaluated each pass — matching
+// the language's eager-evaluation semantics for expressions.
+func (g *Generator) emitWhile(s *ast.WhileStmt) {
+	cond := g.compileCond(s.Cond)
+	if len(cond.prologue) == 0 {
+		// Simple condition: emit on one line for readability.
+		g.writeLine("while " + cond.test + "; do")
+	} else {
+		g.writeLine("while")
+		g.indent++
+		g.writeLines(cond.prologue)
+		g.writeLine(cond.test)
+		g.indent--
+		g.writeLine("do")
+	}
+	g.indent++
+	if len(s.Body.Stmts) == 0 {
+		// sh requires at least one command in the loop body.
+		g.writeLine(":")
+	} else {
+		for _, st := range s.Body.Stmts {
+			g.emitStmt(st)
+		}
+	}
+	g.indent--
+	g.writeLine("done")
+}
+
 func (g *Generator) emitFor(s *ast.ForStmt) {
 	switch iter := s.Iter.(type) {
 	case *ast.RangeExpr:
@@ -2096,35 +2151,41 @@ func (g *Generator) emitForRange(s *ast.ForStmt, r *ast.RangeExpr) {
 	g.writeLines(start.prologue)
 	g.writeLines(end.prologue)
 	vname := shName(s.Var)
-	g.writeLine(vname + "=" + start.assignmentRHS())
-	// Inline simple end bounds (constants or bare identifiers) to avoid an
-	// extra temp variable. Complex expressions still need a temp.
+
+	// Increment-at-top scheme: seed `i` to start-1, increment first inside the
+	// loop, then test the bound. This way a user `continue` jumps to the top
+	// without skipping the increment (which would loop forever). For literal
+	// or simple-arith start expressions we fold the `- 1` into the seed.
+	startExpr := start.value
+	if start.form == formStr {
+		// Defensive: numeric range starts always come back as arith, but if
+		// somehow a string-form value lands here, route it through a temp.
+		startExpr = "$" + start.value
+	}
+	g.writeLine(vname + "=$((" + startExpr + " - 1))")
+
+	// Resolve the end into a stable form we can re-test on each iteration.
+	var endTest string
 	if lit, ok := r.End.(*ast.IntLit); ok {
-		for i := 0; i < g.indent; i++ {
-			g.out.WriteString("  ")
-		}
-		g.out.WriteString("while [ \"$")
-		g.out.WriteString(vname)
-		g.out.WriteString("\" -lt ")
-		g.out.WriteString(itoa64(lit.Value))
-		g.out.WriteString(" ]; do")
-		g.out.WriteByte('\n')
+		endTest = itoa64(lit.Value)
 	} else if id, ok := r.End.(*ast.Ident); ok {
 		name := shName(id.Name)
 		if sym := g.info.Uses[id]; sym != nil && sym.Module != nil {
 			name = shName(checker.MangledName(sym.Module, sym.Name))
 		}
-		g.writeLine("while [ \"$" + vname + "\" -lt \"$" + name + "\" ]; do")
+		endTest = "\"$" + name + "\""
 	} else {
 		endVar := g.tmp("end")
 		g.writeLine(endVar + "=" + end.assignmentRHS())
-		g.writeLine("while [ \"$" + vname + "\" -lt \"$" + endVar + "\" ]; do")
+		endTest = "\"$" + endVar + "\""
 	}
+	g.writeLine("while :; do")
 	g.indent++
+	g.writeLine(vname + "=$((" + vname + " + 1))")
+	g.writeLine("[ \"$" + vname + "\" -lt " + endTest + " ] || break")
 	for _, st := range s.Body.Stmts {
 		g.emitStmt(st)
 	}
-	g.writeLine(vname + "=$((" + vname + " + 1))")
 	g.indent--
 	g.writeLine("done")
 }

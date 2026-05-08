@@ -553,6 +553,16 @@ func (p *printer) printStmt(s ast.Stmt) {
 		p.printIf(x)
 	case *ast.ForStmt:
 		p.printFor(x)
+	case *ast.WhileStmt:
+		p.printWhile(x)
+	case *ast.BreakStmt:
+		p.write("break")
+		p.trailingOn(x.KwPos.Line)
+		p.nl()
+	case *ast.ContinueStmt:
+		p.write("continue")
+		p.trailingOn(x.KwPos.Line)
+		p.nl()
 	case *ast.MatchStmt:
 		p.printMatch(x)
 	case *ast.ParallelStmt:
@@ -592,6 +602,15 @@ func (p *printer) printIf(s *ast.IfStmt) {
 		}
 	}
 	p.printBlock(s.Else)
+	p.trailingOn(p.lastSrcLine)
+	p.nl()
+}
+
+func (p *printer) printWhile(s *ast.WhileStmt) {
+	p.write("while ")
+	p.printExpr(s.Cond, precLowest)
+	p.write(" ")
+	p.printBlock(s.Body)
 	p.trailingOn(p.lastSrcLine)
 	p.nl()
 }

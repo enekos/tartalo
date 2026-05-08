@@ -178,7 +178,8 @@ func (p *Parser) errorf(pos token.Pos, format string, args ...any) *diag.Diag {
 func (p *Parser) recoverToStmt() {
 	for !p.atEnd() {
 		switch p.peek().Kind {
-		case token.Let, token.Const, token.Func, token.Tool, token.Agent, token.If, token.For, token.Return,
+		case token.Let, token.Const, token.Func, token.Tool, token.Agent, token.If, token.For,
+			token.While, token.Break, token.Continue, token.Return,
 			token.Match, token.Type, token.Export, token.Test, token.Defer, token.Parallel,
 			token.RBrace, token.Semicolon:
 			return
@@ -813,6 +814,16 @@ func (p *Parser) parseStmt() ast.Stmt {
 		return p.parseIf()
 	case token.For:
 		return p.parseFor()
+	case token.While:
+		return p.parseWhile()
+	case token.Break:
+		kw := p.advance()
+		_, _ = p.accept(token.Semicolon)
+		return &ast.BreakStmt{KwPos: kw.Pos}
+	case token.Continue:
+		kw := p.advance()
+		_, _ = p.accept(token.Semicolon)
+		return &ast.ContinueStmt{KwPos: kw.Pos}
 	case token.Return:
 		return p.parseReturn()
 	case token.Match:
@@ -922,6 +933,13 @@ func (p *Parser) parseTask() *ast.TaskStmt {
 	kw := p.advance() // task
 	body := p.parseBlock()
 	return &ast.TaskStmt{KwPos: kw.Pos, Body: body}
+}
+
+func (p *Parser) parseWhile() *ast.WhileStmt {
+	kw := p.advance() // while
+	cond := p.parseExpr()
+	body := p.parseBlock()
+	return &ast.WhileStmt{KwPos: kw.Pos, Cond: cond, Body: body}
 }
 
 func (p *Parser) parseFor() *ast.ForStmt {

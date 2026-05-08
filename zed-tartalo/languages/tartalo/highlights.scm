@@ -23,6 +23,9 @@
   "else"
   "for"
   "in"
+  "while"
+  "break"
+  "continue"
   "match"
 ] @keyword.control
 

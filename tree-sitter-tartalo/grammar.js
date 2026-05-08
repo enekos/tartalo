@@ -166,6 +166,9 @@ module.exports = grammar({
       $.variable_declaration,
       $.if_statement,
       $.for_statement,
+      $.while_statement,
+      $.break_statement,
+      $.continue_statement,
       $.return_statement,
       $.match_statement,
       $.block,
@@ -190,6 +193,22 @@ module.exports = grammar({
       field('iter', $._expression_no_struct),
       field('body', $.block),
     ),
+
+    while_statement: $ => seq(
+      'while',
+      field('condition', $._expression_no_struct),
+      field('body', $.block),
+    ),
+
+    break_statement: $ => prec.right(seq(
+      'break',
+      optional(';'),
+    )),
+
+    continue_statement: $ => prec.right(seq(
+      'continue',
+      optional(';'),
+    )),
 
     return_statement: $ => prec.right(seq(
       'return',

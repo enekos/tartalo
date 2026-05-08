@@ -1,6 +1,7 @@
 package nativegen
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
@@ -206,6 +207,17 @@ func (g *Generator) collectGenericInsts(modules []*loader.Module) {
 			}
 		}
 	}
+	// Stable emit order: g.info.GenericInsts is a Go map whose iteration order
+	// is randomised per process. Sorting by the (collision-free) Go function
+	// name pins instantiations to a reproducible order, so two builds of the
+	// same source produce byte-identical Go output.
+	for fd := range g.genericInsts {
+		insts := g.genericInsts[fd]
+		sort.SliceStable(insts, func(i, j int) bool {
+			return insts[i].GoName < insts[j].GoName
+		})
+		g.genericInsts[fd] = insts
+	}
 }
 
 func (g *Generator) findEnclosingGenericFunc(call *ast.CallExpr, modules []*loader.Module) (*ast.FuncDecl, *loader.Module) {
@@ -251,6 +263,8 @@ func stmtContainsCall(s ast.Stmt, target *ast.CallExpr) bool {
 		return exprContainsCall(s.Cond, target) || blockContainsCall(s.Then, target) || blockContainsCall(s.Else, target)
 	case *ast.ForStmt:
 		return exprContainsCall(s.Iter, target) || blockContainsCall(s.Body, target)
+	case *ast.WhileStmt:
+		return exprContainsCall(s.Cond, target) || blockContainsCall(s.Body, target)
 	case *ast.MatchStmt:
 		if exprContainsCall(s.Subject, target) {
 			return true
