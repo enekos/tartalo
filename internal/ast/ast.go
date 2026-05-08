@@ -198,6 +198,18 @@ type OptionalType struct {
 func (t *OptionalType) Pos() token.Pos { return t.Elem.Pos() }
 func (t *OptionalType) typeExprNode()  {}
 
+// MapType: `map<K, V>`. K must be a primitive (string, number, bool) and V
+// must be a primitive or optional primitive in v0. The checker validates
+// both restrictions when resolving the type expression.
+type MapType struct {
+	KwPos token.Pos
+	Key   TypeExpr
+	Value TypeExpr
+}
+
+func (t *MapType) Pos() token.Pos { return t.KwPos }
+func (t *MapType) typeExprNode()  {}
+
 // FuncType: `func(T1, T2, ...): R`. Used as a type annotation when a value
 // of function type is being passed around.
 type FuncType struct {

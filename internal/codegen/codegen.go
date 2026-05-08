@@ -143,6 +143,12 @@ type Generator struct {
 	// inline byte semantics).
 	usesUtf8 bool
 
+	// usesMap tracks whether any emitted expression needs the runtime helpers
+	// for the map<K,V> builtins (__tt_map_get / __tt_map_set / etc.). The
+	// helpers depend on the RS/US byte literals defined in the same preamble
+	// fragment, so the flag also gates emission of __tt_map_rs / __tt_map_us.
+	usesMap bool
+
 	// pendingLambdas accumulates anonymous-function literals encountered
 	// during expression compilation. Each one is hoisted to a top-level
 	// sh function emitted at the end of emitModules, before the main
@@ -513,7 +519,7 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		g.emitTestHarness(entry)
 	}
 	result := g.out.String()
-	if g.needsArgv || g.usesRecordArrays || g.usesUtf8 {
+	if g.needsArgv || g.usesRecordArrays || g.usesUtf8 || g.usesMap {
 		var cond strings.Builder
 		if g.usesRecordArrays {
 			cond.WriteString(`__tt_us=$(printf '\037')` + "\n")
@@ -523,6 +529,9 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		}
 		if g.usesUtf8 {
 			cond.WriteString(utf8RuntimeHelpers)
+		}
+		if g.usesMap {
+			cond.WriteString(mapRuntimeHelpers)
 		}
 		result = result[:insertPos] + cond.String() + result[insertPos:]
 	}
@@ -571,6 +580,72 @@ __tt_runeslice() {
       }
       printf "%s", out
     }'
+}
+`
+
+// mapRuntimeHelpers is injected into the preamble when any map<K,V> builtin
+// is used. The encoding is one shell variable per map: pairs are joined by
+// the ASCII Record Separator (\036) and within a pair, key and value by the
+// ASCII Unit Separator (\037). An empty string is the empty map.
+//
+// Every helper takes the encoded map as its first argument and reads it via
+// stdin so values containing arbitrary text (newlines, spaces, glob chars)
+// pass through awk safely. The helpers `print` to stdout because the only
+// path back to the caller is `$(...)`. exit codes signal found/missing for
+// __tt_map_get and __tt_map_has.
+const mapRuntimeHelpers = `__tt_map_get() {
+  printf '%s' "$1" | __tt_mk="$2" awk '
+    BEGIN { RS = "\036"; FS = "\037"; k = ENVIRON["__tt_mk"]; found = 0 }
+    $1 == k { printf "%s", $2; found = 1; exit }
+    END { if (!found) exit 1 }'
+}
+__tt_map_has() {
+  printf '%s' "$1" | __tt_mk="$2" awk '
+    BEGIN { RS = "\036"; FS = "\037"; k = ENVIRON["__tt_mk"]; found = 0 }
+    $1 == k { found = 1; exit }
+    END { if (!found) exit 1 }' >/dev/null
+}
+__tt_map_set() {
+  printf '%s' "$1" | __tt_mk="$2" __tt_mv="$3" awk '
+    BEGIN {
+      RS = "\036"; FS = "\037"; OFS = "\037"
+      k = ENVIRON["__tt_mk"]; v = ENVIRON["__tt_mv"]; replaced = 0; first = 1
+    }
+    {
+      if ($0 == "") next
+      if ($1 == k) { line = k OFS v; replaced = 1 } else { line = $0 }
+      if (first) { printf "%s", line; first = 0 } else { printf "\036%s", line }
+    }
+    END {
+      if (!replaced) {
+        line = k OFS v
+        if (first) { printf "%s", line } else { printf "\036%s", line }
+      }
+    }'
+}
+__tt_map_delete() {
+  printf '%s' "$1" | __tt_mk="$2" awk '
+    BEGIN { RS = "\036"; FS = "\037"; k = ENVIRON["__tt_mk"]; first = 1 }
+    {
+      if ($0 == "" || $1 == k) next
+      if (first) { printf "%s", $0; first = 0 } else { printf "\036%s", $0 }
+    }'
+}
+__tt_map_keys() {
+  printf '%s' "$1" | awk '
+    BEGIN { RS = "\036"; FS = "\037" }
+    { if ($0 != "") print $1 }' | LC_ALL=C sort | awk 'NR==1{printf "%s",$0; next}{printf "\n%s",$0}'
+}
+__tt_map_values() {
+  printf '%s' "$1" | awk '
+    BEGIN { RS = "\036"; FS = "\037" }
+    { if ($0 != "") printf "%s\037%s\n", $1, $2 }' | LC_ALL=C sort -t "$(printf '\037')" -k1,1 | awk -F"\037" 'NR==1{printf "%s",$2; next}{printf "\n%s",$2}'
+}
+__tt_map_len() {
+  printf '%s' "$1" | awk '
+    BEGIN { RS = "\036"; FS = "\037"; n = 0 }
+    { if ($0 != "") n++ }
+    END { printf "%d", n }'
 }
 `
 
@@ -3242,6 +3317,117 @@ func (g *Generator) compileUnique(args []exprValue, prologue []string) exprValue
 	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
 }
 
+// compileMapGet lowers `mapGet(m, k): V?`. The runtime helper exits 1 on a
+// missing key; the surrounding `if` rescues that exit so set -e doesn't fire,
+// and we drive the optional's null sidecar from the success/failure branch.
+func (g *Generator) compileMapGet(args []exprValue, prologue []string) exprValue {
+	g.usesMap = true
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	m := g.tmp("mg_m")
+	k := g.tmp("mg_k")
+	val := g.tmp("mg_v")
+	null := g.tmp("mg_n")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", m, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", k, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`if %s=$(__tt_map_get "$%s" "$%s"); then %s=0; else %s=""; %s=1; fi`,
+		val, m, k, null, val, null))
+	return exprValue{
+		prologue:  prologue,
+		value:     "${" + val + "}",
+		form:      formStr,
+		nullCheck: null,
+	}
+}
+
+// compileMapSet lowers `mapSet(m, k, v): map<K,V>`. The helper streams the
+// existing pairs through awk, replacing in place if the key was already
+// present and appending otherwise; the result is a new encoded map string.
+func (g *Generator) compileMapSet(args []exprValue, prologue []string) exprValue {
+	g.usesMap = true
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	prologue = append(prologue, args[2].prologue...)
+	m := g.tmp("ms_m")
+	k := g.tmp("ms_k")
+	v := g.tmp("ms_v")
+	out := g.tmp("ms_out")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", m, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", k, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", v, args[2].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=$(__tt_map_set "$%s" "$%s" "$%s")`, out, m, k, v))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// compileMapHas lowers `mapHas(m, k): bool`. The helper's exit code drives
+// the boolean result directly: 0 → 1 (true), 1 → 0 (false).
+func (g *Generator) compileMapHas(args []exprValue, prologue []string) exprValue {
+	g.usesMap = true
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	m := g.tmp("mh_m")
+	k := g.tmp("mh_k")
+	res := g.tmp("mh_b")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", m, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", k, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`if __tt_map_has "$%s" "$%s"; then %s=1; else %s=0; fi`, m, k, res, res))
+	return exprValue{prologue: prologue, value: res, form: formBool}
+}
+
+// compileMapDelete lowers `mapDelete(m, k): map<K,V>`. Streams the pairs
+// through awk dropping the matching key; the rest of the encoding is
+// preserved verbatim.
+func (g *Generator) compileMapDelete(args []exprValue, prologue []string) exprValue {
+	g.usesMap = true
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	m := g.tmp("md_m")
+	k := g.tmp("md_k")
+	out := g.tmp("md_out")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", m, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", k, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=$(__tt_map_delete "$%s" "$%s")`, out, m, k))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// compileMapKeys lowers `mapKeys(m): K[]`. The output is a newline-joined
+// string of keys in insertion order — the same encoding the rest of the
+// codegen uses for arrays.
+func (g *Generator) compileMapKeys(args []exprValue, prologue []string) exprValue {
+	g.usesMap = true
+	prologue = append(prologue, args[0].prologue...)
+	m := g.tmp("mk_m")
+	out := g.tmp("mk_out")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", m, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=$(__tt_map_keys "$%s")`, out, m))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// compileMapValues lowers `mapValues(m): V[]`. Insertion order, same array
+// encoding as mapKeys.
+func (g *Generator) compileMapValues(args []exprValue, prologue []string) exprValue {
+	g.usesMap = true
+	prologue = append(prologue, args[0].prologue...)
+	m := g.tmp("mv_m")
+	out := g.tmp("mv_out")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", m, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=$(__tt_map_values "$%s")`, out, m))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// compileMapLen lowers `mapLen(m): number`.
+func (g *Generator) compileMapLen(args []exprValue, prologue []string) exprValue {
+	g.usesMap = true
+	prologue = append(prologue, args[0].prologue...)
+	m := g.tmp("ml_m")
+	out := g.tmp("ml_n")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", m, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=$(__tt_map_len "$%s")`, out, m))
+	return exprValue{prologue: prologue, value: out, form: formArith}
+}
+
 // --- numeric vector lowering (numpy-lite) ---------------------------------
 //
 // Arrays in the sh backend are newline-joined strings. The reductions below
@@ -4028,6 +4214,25 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 			`printf 'tartalo: %s requires --target=native\n' >&2; exit 1`,
 			sym.Name))
 		return exprValue{prologue: prologue, value: "", form: formStr}
+
+	// --- map<K, V> ---
+	case "mapNew":
+		// An empty map is the empty string. No runtime helper needed.
+		return exprValue{prologue: prologue, value: "", form: formStr}
+	case "mapGet":
+		return g.compileMapGet(args, prologue)
+	case "mapSet":
+		return g.compileMapSet(args, prologue)
+	case "mapHas":
+		return g.compileMapHas(args, prologue)
+	case "mapDelete":
+		return g.compileMapDelete(args, prologue)
+	case "mapKeys":
+		return g.compileMapKeys(args, prologue)
+	case "mapValues":
+		return g.compileMapValues(args, prologue)
+	case "mapLen":
+		return g.compileMapLen(args, prologue)
 
 	// --- numeric vector (numpy-lite) ---
 	case "vSum", "vMean", "vMin", "vMax", "vVar", "vStd":

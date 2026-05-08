@@ -44,6 +44,12 @@ Generic functions are supported with inference-only call sites and
 monomorphisation in both backends; see [`SPEC.md`](SPEC.md#generic-functions)
 for the syntax and v0 limits.
 
+Maps (`map<K, V>`) ship with a small builtin set — `mapNew` / `mapGet` /
+`mapSet` / `mapHas` / `mapDelete` / `mapKeys` / `mapValues` / `mapLen` —
+where keys are primitive (`string` / `number` / `bool`) and values are
+non-optional primitives. See [`SPEC.md`](SPEC.md#maps) for the rules and
+v0 limits.
+
 ## Install
 
 Prebuilt binaries for darwin / linux / windows × amd64 / arm64 are attached
@@ -109,6 +115,14 @@ By default, sh-target build/run/test pipe the emitted sh through `shellcheck`
 before writing or executing it. Pass `--no-verify` (or set
 `TARTALO_NO_VERIFY=1`) to skip the safety check. The native target skips
 shellcheck — it's an sh-specific guardrail.
+
+If a `.env` file exists alongside the entry `.tt` file, `tartalo run`,
+`tartalo test`, `tartalo eval`, and `tartalo bench` load its `KEY=VALUE`
+pairs into the child process's environment before executing. Existing
+environment variables take precedence (they aren't overridden by `.env`).
+Quoted values, `export ` prefixes, and `#` comments are supported. `tartalo
+build` does not load `.env` — it's a runtime concern, not a compile-time
+one.
 
 Stdlib modules ship inside the binary and are imported via the `tartalo:`
 scheme, e.g. `import { padLeft, repeat } from "tartalo:strings/extra"`.

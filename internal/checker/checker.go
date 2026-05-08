@@ -826,6 +826,10 @@ func (c *Checker) resolveTypeExpr(te ast.TypeExpr) types.Type {
 			c.errorf(t.LBracket, "v0 does not support arrays of optionals")
 			return types.Invalid
 		}
+		if _, isMap := elem.(*types.Map); isMap {
+			c.errorf(t.LBracket, "v0 does not support arrays of maps")
+			return types.Invalid
+		}
 		return &types.Array{Elem: elem}
 	case *ast.OptionalType:
 		elem := c.resolveTypeExpr(t.Elem)
@@ -841,7 +845,30 @@ func (c *Checker) resolveTypeExpr(te ast.TypeExpr) types.Type {
 			c.errorf(t.QPos, "v0 does not support optional arrays")
 			return types.Invalid
 		}
+		if _, ok := elem.(*types.Map); ok {
+			c.errorf(t.QPos, "v0 does not support optional maps")
+			return types.Invalid
+		}
 		return &types.Optional{Elem: elem}
+	case *ast.MapType:
+		key := c.resolveTypeExpr(t.Key)
+		val := c.resolveTypeExpr(t.Value)
+		if key == types.Invalid || val == types.Invalid {
+			return types.Invalid
+		}
+		if !isMapKeyType(key) {
+			c.errorf(t.KwPos,
+				"map key type must be string, number, or bool; got %s",
+				types.Format(key))
+			return types.Invalid
+		}
+		if !isMapValueType(val) {
+			c.errorf(t.KwPos,
+				"map value type must be a primitive or optional primitive in v0; got %s",
+				types.Format(val))
+			return types.Invalid
+		}
+		return &types.Map{Key: key, Value: val}
 	case *ast.RecordType:
 		c.errorf(te.Pos(), "anonymous record types are not supported; declare with `type Name = { ... }`")
 		return types.Invalid
@@ -2193,6 +2220,22 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 			return c.checkReadCsvCall(e, expected)
 		case "writeCsv":
 			return c.checkWriteCsvCall(e)
+		case "mapNew":
+			return c.checkMapNewCall(e, expected)
+		case "mapGet":
+			return c.checkMapGetCall(e)
+		case "mapSet":
+			return c.checkMapSetCall(e)
+		case "mapHas":
+			return c.checkMapHasCall(e)
+		case "mapDelete":
+			return c.checkMapDeleteCall(e)
+		case "mapKeys":
+			return c.checkMapKeysCall(e)
+		case "mapValues":
+			return c.checkMapValuesCall(e)
+		case "mapLen":
+			return c.checkMapLenCall(e)
 		case "assertEq", "assertNe", "check", "fail", "skip":
 			return c.checkTestBuiltinCall(e, sym)
 		case "score", "expect":
@@ -2544,6 +2587,195 @@ func (c *Checker) checkUniqueCall(e *ast.CallExpr) types.Type {
 		"unique: element type must be a primitive (string, number, float, bool), got %s",
 		types.Format(arr.Elem))
 	return types.Invalid
+}
+
+// isMapKeyType reports whether t is a legal map key type. Float is excluded
+// because shell hashing of textual floats is fragile (NaN, trailing zeros) and
+// exact equality on floats is rarely what callers want anyway.
+func isMapKeyType(t types.Type) bool {
+	return t == types.String || t == types.Number || t == types.Bool
+}
+
+// isMapValueType reports whether t is a legal map value type. v0 limits values
+// to non-optional primitives so the sh encoding stays a flat string. Optional
+// values would require a per-pair null sidecar and would be ambiguous with the
+// implicit "missing key → null" channel surfaced by mapGet.
+func isMapValueType(t types.Type) bool {
+	switch t {
+	case types.String, types.Number, types.Float, types.Bool:
+		return true
+	}
+	return false
+}
+
+// checkMapNewCall validates `mapNew(): map<K, V>`. Like readCsv, mapNew has
+// no arguments to infer K/V from, so the surrounding context (typically a
+// `let`/`const` annotation) supplies them.
+func (c *Checker) checkMapNewCall(e *ast.CallExpr, want types.Type) types.Type {
+	if len(e.Args) != 0 {
+		c.errorf(e.LParenPos, "mapNew expects 0 arguments, got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+	}
+	if want == nil {
+		c.errorf(e.LParenPos,
+			"mapNew requires a typed context, e.g. `let m: map<string, number> = mapNew()`")
+		return types.Invalid
+	}
+	mt, ok := want.(*types.Map)
+	if !ok {
+		c.errorf(e.LParenPos, "mapNew: expected map type from context, got %s", types.Format(want))
+		return types.Invalid
+	}
+	return mt
+}
+
+// checkMapGetCall validates `mapGet(m: map<K, V>, k: K): V?`.
+func (c *Checker) checkMapGetCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "mapGet expects 2 arguments (map, key), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	mt := c.checkExpr(e.Args[0])
+	kt := c.checkExpr(e.Args[1])
+	m, ok := mt.(*types.Map)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "mapGet: first argument must be a map, got %s", types.Format(mt))
+		return types.Invalid
+	}
+	if kt != types.Invalid && !types.IsAssignable(kt, m.Key) {
+		c.errorf(e.Args[1].Pos(), "mapGet: key must be %s, got %s", types.Format(m.Key), types.Format(kt))
+	}
+	return &types.Optional{Elem: m.Value}
+}
+
+// checkMapSetCall validates `mapSet(m: map<K, V>, k: K, v: V): map<K, V>`.
+// The set is functional: it returns a new map; callers reassign.
+func (c *Checker) checkMapSetCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 3 {
+		c.errorf(e.LParenPos, "mapSet expects 3 arguments (map, key, value), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	mt := c.checkExpr(e.Args[0])
+	kt := c.checkExpr(e.Args[1])
+	vt := c.checkExpr(e.Args[2])
+	m, ok := mt.(*types.Map)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "mapSet: first argument must be a map, got %s", types.Format(mt))
+		return types.Invalid
+	}
+	if kt != types.Invalid && !types.IsAssignable(kt, m.Key) {
+		c.errorf(e.Args[1].Pos(), "mapSet: key must be %s, got %s", types.Format(m.Key), types.Format(kt))
+	}
+	if vt != types.Invalid && !types.IsAssignable(vt, m.Value) {
+		c.errorf(e.Args[2].Pos(), "mapSet: value must be %s, got %s", types.Format(m.Value), types.Format(vt))
+	}
+	return m
+}
+
+// checkMapHasCall validates `mapHas(m: map<K, V>, k: K): bool`.
+func (c *Checker) checkMapHasCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "mapHas expects 2 arguments (map, key), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	mt := c.checkExpr(e.Args[0])
+	kt := c.checkExpr(e.Args[1])
+	m, ok := mt.(*types.Map)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "mapHas: first argument must be a map, got %s", types.Format(mt))
+		return types.Invalid
+	}
+	if kt != types.Invalid && !types.IsAssignable(kt, m.Key) {
+		c.errorf(e.Args[1].Pos(), "mapHas: key must be %s, got %s", types.Format(m.Key), types.Format(kt))
+	}
+	return types.Bool
+}
+
+// checkMapDeleteCall validates `mapDelete(m: map<K, V>, k: K): map<K, V>`.
+// Functional: returns a new map without the given key.
+func (c *Checker) checkMapDeleteCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "mapDelete expects 2 arguments (map, key), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	mt := c.checkExpr(e.Args[0])
+	kt := c.checkExpr(e.Args[1])
+	m, ok := mt.(*types.Map)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "mapDelete: first argument must be a map, got %s", types.Format(mt))
+		return types.Invalid
+	}
+	if kt != types.Invalid && !types.IsAssignable(kt, m.Key) {
+		c.errorf(e.Args[1].Pos(), "mapDelete: key must be %s, got %s", types.Format(m.Key), types.Format(kt))
+	}
+	return m
+}
+
+// checkMapKeysCall validates `mapKeys(m: map<K, V>): K[]`.
+func (c *Checker) checkMapKeysCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 1 {
+		c.errorf(e.LParenPos, "mapKeys expects 1 argument, got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	mt := c.checkExpr(e.Args[0])
+	m, ok := mt.(*types.Map)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "mapKeys: argument must be a map, got %s", types.Format(mt))
+		return types.Invalid
+	}
+	return &types.Array{Elem: m.Key}
+}
+
+// checkMapValuesCall validates `mapValues(m: map<K, V>): V[]`.
+func (c *Checker) checkMapValuesCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 1 {
+		c.errorf(e.LParenPos, "mapValues expects 1 argument, got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	mt := c.checkExpr(e.Args[0])
+	m, ok := mt.(*types.Map)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "mapValues: argument must be a map, got %s", types.Format(mt))
+		return types.Invalid
+	}
+	return &types.Array{Elem: m.Value}
+}
+
+// checkMapLenCall validates `mapLen(m: map<K, V>): number`.
+func (c *Checker) checkMapLenCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 1 {
+		c.errorf(e.LParenPos, "mapLen expects 1 argument, got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	mt := c.checkExpr(e.Args[0])
+	if _, ok := mt.(*types.Map); !ok {
+		c.errorf(e.Args[0].Pos(), "mapLen: argument must be a map, got %s", types.Format(mt))
+		return types.Invalid
+	}
+	return types.Number
 }
 
 // checkReadCsvCall validates `readCsv(path: string): T[]`. The element type
@@ -2965,6 +3197,19 @@ func builtins() []*Symbol {
 		mk("unique", []types.Type{stringArr}, stringArr),
 		mk("readCsv", []types.Type{str}, stringArr),
 		mk("writeCsv", []types.Type{stringArr, str}, void),
+
+		// Map (associative-array) builtins. The signatures registered here
+		// are placeholders so symbol lookup succeeds; the real type checking
+		// dispatches to checkMap*Call handlers above, which inspect the
+		// argument's K/V to produce a well-typed result.
+		mk("mapNew", nil, str),
+		mk("mapGet", []types.Type{str, str}, &types.Optional{Elem: str}),
+		mk("mapSet", []types.Type{str, str, str}, str),
+		mk("mapHas", []types.Type{str, str}, bln),
+		mk("mapDelete", []types.Type{str, str}, str),
+		mk("mapKeys", []types.Type{str}, stringArr),
+		mk("mapValues", []types.Type{str}, stringArr),
+		mk("mapLen", []types.Type{str}, num),
 
 		// Testing builtins. assertEq/assertNe are polymorphic over the
 		// scalar primitives (string, number, bool, float); the placeholder

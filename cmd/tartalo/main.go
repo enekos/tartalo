@@ -170,6 +170,142 @@ func nativeBuildToTemp(input string, mode nativegen.EmitMode, opts nativegen.Bui
 	return binPath, cleanup, nil
 }
 
+// loadDotEnv looks for a `.env` file alongside ttPath and returns the
+// `KEY=VALUE` entries it defines, filtered to keys not already present in the
+// process environment. Existing env vars take precedence — matching the
+// convention used by python-dotenv, dotenv-rails, and node's dotenv. Returns
+// (nil, nil) when no .env file exists.
+//
+// Supported syntax (intentionally a small, common subset):
+//   - `KEY=value`, optional `export ` prefix, blank lines and `#` comments
+//   - double-quoted values with `\n`, `\r`, `\t`, `\\`, `\"` escapes
+//   - single-quoted values, taken literally
+//   - unquoted values: trailing ` #...` is treated as an inline comment
+func loadDotEnv(ttPath string) ([]string, error) {
+	envPath := filepath.Join(filepath.Dir(ttPath), ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	existing := make(map[string]struct{}, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if i := strings.IndexByte(e, '='); i > 0 {
+			existing[e[:i]] = struct{}{}
+		}
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		trimmed = strings.TrimPrefix(trimmed, "export ")
+		trimmed = strings.TrimLeft(trimmed, " \t")
+		eq := strings.IndexByte(trimmed, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(trimmed[:eq])
+		if key == "" {
+			continue
+		}
+		val := parseDotEnvValue(trimmed[eq+1:])
+		if _, set := existing[key]; set {
+			continue
+		}
+		out = append(out, key+"="+val)
+	}
+	return out, nil
+}
+
+// parseDotEnvValue strips surrounding whitespace, handles `"..."` and `'...'`
+// quoting, and removes inline `#` comments from unquoted values. Unterminated
+// quotes degrade to "treat the raw value literally" rather than erroring.
+func parseDotEnvValue(v string) string {
+	v = strings.TrimLeft(v, " \t")
+	if v == "" {
+		return v
+	}
+	if v[0] == '"' || v[0] == '\'' {
+		q := v[0]
+		end := -1
+		for i := 1; i < len(v); i++ {
+			if q == '"' && v[i] == '\\' && i+1 < len(v) {
+				i++
+				continue
+			}
+			if v[i] == q {
+				end = i
+				break
+			}
+		}
+		if end < 0 {
+			return strings.TrimRight(v, " \t")
+		}
+		inner := v[1:end]
+		if q == '"' {
+			inner = decodeDotEnvEscapes(inner)
+		}
+		return inner
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] == '#' && (i == 0 || v[i-1] == ' ' || v[i-1] == '\t') {
+			v = v[:i]
+			break
+		}
+	}
+	return strings.TrimRight(v, " \t")
+}
+
+func decodeDotEnvEscapes(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				b.WriteByte('\n')
+			case 'r':
+				b.WriteByte('\r')
+			case 't':
+				b.WriteByte('\t')
+			case '\\':
+				b.WriteByte('\\')
+			case '"':
+				b.WriteByte('"')
+			default:
+				b.WriteByte(s[i])
+				b.WriteByte(s[i+1])
+			}
+			i++
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// applyDotEnv loads `.env` next to ttPath (if any) and points cmd.Env at the
+// merged environment. No-op when the file is absent or empty.
+func applyDotEnv(cmd *exec.Cmd, ttPath string) error {
+	extras, err := loadDotEnv(ttPath)
+	if err != nil {
+		return err
+	}
+	if len(extras) == 0 {
+		return nil
+	}
+	cmd.Env = append(os.Environ(), extras...)
+	return nil
+}
+
 // verifySh is the compile-output guardrail: it pipes the emitted script
 // through shellcheck (POSIX sh mode) and aborts the command if anything
 // survives the suppression list. Skipped when noVerify is true or when the
@@ -386,6 +522,9 @@ func cmdTest(args []string) error {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		if err := applyDotEnv(cmd, input); err != nil {
+			return err
+		}
 		if err := cmd.Run(); err != nil {
 			var ee *exec.ExitError
 			if errors.As(err, &ee) {
@@ -404,6 +543,9 @@ func cmdTest(args []string) error {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		if err := applyDotEnv(cmd, input); err != nil {
+			return err
+		}
 		if err := cmd.Run(); err != nil {
 			var ee *exec.ExitError
 			if errors.As(err, &ee) {
@@ -531,6 +673,9 @@ func cmdEval(args []string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if err := applyDotEnv(cmd, input); err != nil {
+		return err
+	}
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -616,6 +761,9 @@ func runOneEvalFile(input string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if err := applyDotEnv(cmd, input); err != nil {
+		return err
+	}
 	return cmd.Run()
 }
 
@@ -648,6 +796,9 @@ func runOneTestFile(input, target string, noVerify bool) error {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		if err := applyDotEnv(cmd, input); err != nil {
+			return err
+		}
 		return cmd.Run()
 	case "native":
 		bin, cleanup, err := nativeBuildToTemp(input, nativegen.EmitTest, nativegen.BuildOptions{})
@@ -659,6 +810,9 @@ func runOneTestFile(input, target string, noVerify bool) error {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		if err := applyDotEnv(cmd, input); err != nil {
+			return err
+		}
 		return cmd.Run()
 	default:
 		return fmt.Errorf("test: unknown --target %q (expected sh or native)", target)
@@ -731,6 +885,9 @@ doneFlags:
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		if err := applyDotEnv(cmd, in); err != nil {
+			return err
+		}
 		if err := cmd.Run(); err != nil {
 			var ee *exec.ExitError
 			if errors.As(err, &ee) {
@@ -749,6 +906,9 @@ doneFlags:
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		if err := applyDotEnv(cmd, in); err != nil {
+			return err
+		}
 		if err := cmd.Run(); err != nil {
 			var ee *exec.ExitError
 			if errors.As(err, &ee) {
@@ -947,6 +1107,10 @@ func cmdBench(args []string) error {
 			cmd.Stdin = nil
 			cmd.Stdout = io.Discard
 			cmd.Stderr = io.Discard
+			if err := applyDotEnv(cmd, input); err != nil {
+				os.Remove(tmp.Name())
+				return err
+			}
 			runErr := cmd.Run()
 			timings["run"] = append(timings["run"], time.Since(t0))
 			os.Remove(tmp.Name())

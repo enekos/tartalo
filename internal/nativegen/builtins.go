@@ -475,6 +475,24 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 	case "writeCsv":
 		return g.compileWriteCsvNative(e, args, argTypes)
 
+	// --- map<K, V> ---
+	case "mapNew":
+		return g.compileMapNewNative(e)
+	case "mapGet":
+		return g.compileMapGetNative(args, argTypes)
+	case "mapSet":
+		return g.compileMapSetNative(args, argTypes)
+	case "mapHas":
+		return "func() bool { _, _ok := " + args[0] + "[" + args[1] + "]; return _ok }()"
+	case "mapDelete":
+		return g.compileMapDeleteNative(args, argTypes)
+	case "mapKeys":
+		return g.compileMapKeysNative(args, argTypes)
+	case "mapValues":
+		return g.compileMapValuesNative(args, argTypes)
+	case "mapLen":
+		return "int64(len(" + args[0] + "))"
+
 	// --- numeric vector (numpy-lite) ---
 	case "vSum":
 		g.usesRuntimeVec = true
@@ -770,6 +788,113 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 func (g *Generator) callLoc(e *ast.CallExpr) string {
 	p := e.LParenPos
 	return strconv.Quote(p.File + ":" + itoa(p.Line) + ":" + itoa(p.Col))
+}
+
+// --- map<K, V> ---------------------------------------------------------------
+//
+// Tartalo maps lower to Go map[K]V. mapSet / mapDelete are functional: they
+// return a fresh copy with the requested mutation applied. The cost is O(n)
+// per write, matching the sh backend's encoded-string semantics; users who
+// care about throughput should switch to lots of mapSet sequenced through
+// the same variable, since each step still walks the entire map.
+//
+// mapKeys and mapValues return their results in sorted-by-key order. Both
+// backends agree on this so cross-target stdout stays byte-identical.
+
+// compileMapNewNative emits `make(map[K]V)` based on the call expression's
+// inferred result type, which the checker derives from the surrounding typed
+// context (let / const / assign).
+func (g *Generator) compileMapNewNative(e *ast.CallExpr) string {
+	mt, ok := g.typeOf(e).(*types.Map)
+	if !ok {
+		return `nil /* mapNew: missing result type */`
+	}
+	return "make(map[" + g.goType(mt.Key) + "]" + g.goType(mt.Value) + ")"
+}
+
+// compileMapGetNative returns *V — nil for "missing key", &v otherwise. This
+// matches the optional encoding the rest of the native backend uses, so the
+// caller's existing optional handling (`?? default`, `!`, `== null`) just
+// works.
+func (g *Generator) compileMapGetNative(args []string, argTypes []types.Type) string {
+	mt, _ := argTypes[0].(*types.Map)
+	if mt == nil {
+		return `nil /* mapGet: not a map */`
+	}
+	valTy := g.goType(mt.Value)
+	return "func() *" + valTy + " { _v, _ok := " + args[0] + "[" + args[1] + "]; if !_ok { return nil }; return &_v }()"
+}
+
+// compileMapSetNative emits a copy-on-write set: a fresh map of length+1,
+// populated from the original then assigned. Same ergonomics as the sh
+// backend's reassignment pattern.
+func (g *Generator) compileMapSetNative(args []string, argTypes []types.Type) string {
+	mt, _ := argTypes[0].(*types.Map)
+	if mt == nil {
+		return `nil /* mapSet: not a map */`
+	}
+	keyTy := g.goType(mt.Key)
+	valTy := g.goType(mt.Value)
+	mapTy := "map[" + keyTy + "]" + valTy
+	return "func() " + mapTy + " { _o := make(" + mapTy + ", len(" + args[0] + ")+1); for _k, _v := range " + args[0] + " { _o[_k] = _v }; _o[" + args[1] + "] = " + args[2] + "; return _o }()"
+}
+
+// compileMapDeleteNative emits the functional counterpart of compileMapSet.
+func (g *Generator) compileMapDeleteNative(args []string, argTypes []types.Type) string {
+	mt, _ := argTypes[0].(*types.Map)
+	if mt == nil {
+		return `nil /* mapDelete: not a map */`
+	}
+	keyTy := g.goType(mt.Key)
+	valTy := g.goType(mt.Value)
+	mapTy := "map[" + keyTy + "]" + valTy
+	return "func() " + mapTy + " { _o := make(" + mapTy + ", len(" + args[0] + ")); for _k, _v := range " + args[0] + " { if _k != " + args[1] + " { _o[_k] = _v } }; return _o }()"
+}
+
+// compileMapKeysNative returns the map's keys in sorted order. The sort
+// function is keyed off the map's key type so the same expression compiles
+// for string/int64/bool maps without a polymorphic helper.
+func (g *Generator) compileMapKeysNative(args []string, argTypes []types.Type) string {
+	mt, _ := argTypes[0].(*types.Map)
+	if mt == nil {
+		return `nil /* mapKeys: not a map */`
+	}
+	keyTy := g.goType(mt.Key)
+	g.addImport("sort")
+	body := "func() []" + keyTy + " { _ks := make([]" + keyTy + ", 0, len(" + args[0] + ")); for _k := range " + args[0] + " { _ks = append(_ks, _k) }; "
+	switch mt.Key {
+	case types.String:
+		body += "sort.Strings(_ks); "
+	case types.Number:
+		body += "sort.Slice(_ks, func(i, j int) bool { return _ks[i] < _ks[j] }); "
+	case types.Bool:
+		body += "sort.Slice(_ks, func(i, j int) bool { return !_ks[i] && _ks[j] }); "
+	}
+	body += "return _ks }()"
+	return body
+}
+
+// compileMapValuesNative emits values ordered by their key (same canonical
+// order mapKeys uses), so iterating mapKeys/mapValues gives matching pairs.
+func (g *Generator) compileMapValuesNative(args []string, argTypes []types.Type) string {
+	mt, _ := argTypes[0].(*types.Map)
+	if mt == nil {
+		return `nil /* mapValues: not a map */`
+	}
+	keyTy := g.goType(mt.Key)
+	valTy := g.goType(mt.Value)
+	g.addImport("sort")
+	body := "func() []" + valTy + " { _ks := make([]" + keyTy + ", 0, len(" + args[0] + ")); for _k := range " + args[0] + " { _ks = append(_ks, _k) }; "
+	switch mt.Key {
+	case types.String:
+		body += "sort.Strings(_ks); "
+	case types.Number:
+		body += "sort.Slice(_ks, func(i, j int) bool { return _ks[i] < _ks[j] }); "
+	case types.Bool:
+		body += "sort.Slice(_ks, func(i, j int) bool { return !_ks[i] && _ks[j] }); "
+	}
+	body += "_vs := make([]" + valTy + ", 0, len(_ks)); for _, _k := range _ks { _vs = append(_vs, " + args[0] + "[_k]) }; return _vs }()"
+	return body
 }
 
 // assertArg widens a numeric assertion argument to float64 when its peer is

@@ -674,9 +674,20 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		p.advance()
 		ty = &ast.TypeName{NamePos: t.Pos, Name: t.Value}
 	case token.Ident:
-		// User-defined type reference; checker validates it resolves.
-		p.advance()
-		ty = &ast.TypeName{NamePos: t.Pos, Name: t.Value}
+		// `map<K, V>` is a built-in generic; everything else is a user-defined
+		// type reference whose resolution the checker handles.
+		if t.Value == "map" && p.peekAhead(1).Kind == token.Lt {
+			p.advance()
+			lt := p.advance() // <
+			key := p.parseTypeExpr()
+			p.expect(token.Comma, "map type")
+			val := p.parseTypeExpr()
+			p.expect(token.Gt, "map type")
+			ty = &ast.MapType{KwPos: lt.Pos, Key: key, Value: val}
+		} else {
+			p.advance()
+			ty = &ast.TypeName{NamePos: t.Pos, Name: t.Value}
+		}
 	case token.LBrace:
 		ty = p.parseRecordType()
 	case token.Func:

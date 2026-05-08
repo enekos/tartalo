@@ -42,6 +42,18 @@ type Optional struct {
 func (o *Optional) String() string { return o.Elem.String() + "?" }
 func (o *Optional) typeNode()      {}
 
+// Map is an associative type from a primitive key K to a value V. Keys are
+// restricted to string/number/bool so the runtime encodings (sh's flat string
+// pairs, Go's map[K]V) stay simple and lookup-cheap. The checker enforces the
+// key-type restriction at the syntactic point where a map type is introduced.
+type Map struct {
+	Key   Type
+	Value Type
+}
+
+func (m *Map) String() string { return "map<" + m.Key.String() + ", " + m.Value.String() + ">" }
+func (m *Map) typeNode()      {}
+
 // Unwrap returns t's element type if t is Optional, otherwise t itself.
 func Unwrap(t Type) Type {
 	if o, ok := t.(*Optional); ok {
@@ -161,6 +173,8 @@ func ContainsTypeVar(t Type) bool {
 		return ContainsTypeVar(tt.Elem)
 	case *Optional:
 		return ContainsTypeVar(tt.Elem)
+	case *Map:
+		return ContainsTypeVar(tt.Key) || ContainsTypeVar(tt.Value)
 	case *Func:
 		for _, p := range tt.Params {
 			if ContainsTypeVar(p) {
@@ -188,6 +202,8 @@ func Substitute(t Type, subst map[*TypeVar]Type) Type {
 		return &Array{Elem: Substitute(tt.Elem, subst)}
 	case *Optional:
 		return &Optional{Elem: Substitute(tt.Elem, subst)}
+	case *Map:
+		return &Map{Key: Substitute(tt.Key, subst), Value: Substitute(tt.Value, subst)}
 	case *Func:
 		ps := make([]Type, len(tt.Params))
 		for i, p := range tt.Params {
@@ -261,6 +277,12 @@ func Equal(a, b Type) bool {
 	if oa, ok := a.(*Optional); ok {
 		if ob, ok := b.(*Optional); ok {
 			return Equal(oa.Elem, ob.Elem)
+		}
+		return false
+	}
+	if ma, ok := a.(*Map); ok {
+		if mb, ok := b.(*Map); ok {
+			return Equal(ma.Key, mb.Key) && Equal(ma.Value, mb.Value)
 		}
 		return false
 	}

@@ -71,6 +71,8 @@ func (g *Generator) goType(t types.Type) string {
 			return _goTypeBoolOpt
 		}
 		return "*" + g.goType(t.Elem)
+	case *types.Map:
+		return "map[" + g.goType(t.Key) + "]" + g.goType(t.Value)
 	case *types.Record:
 		return goTypeName(t.Name)
 	case *types.Sum:
@@ -130,6 +132,8 @@ func (g *Generator) typeFromAnn(ann ast.TypeExpr) types.Type {
 		return &types.Array{Elem: g.typeFromAnn(ann.Elem)}
 	case *ast.OptionalType:
 		return &types.Optional{Elem: g.typeFromAnn(ann.Elem)}
+	case *ast.MapType:
+		return &types.Map{Key: g.typeFromAnn(ann.Key), Value: g.typeFromAnn(ann.Value)}
 	}
 	return nil
 }

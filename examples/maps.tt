@@ -1,0 +1,28 @@
+// Demonstrates the map<K, V> builtins.
+//
+// Keys can be string, number, or bool; values must be a non-optional
+// primitive. mapSet and mapDelete are functional — they return a new map,
+// matching how arrays are passed in Tartalo. Iteration order is sorted by
+// key so both backends produce identical stdout.
+
+func main(): void {
+  let m0: map<string, number> = mapNew()
+  let m1: map<string, number> = mapSet(m0, "charlie", 3)
+  let m2: map<string, number> = mapSet(m1, "alice", 1)
+  let m3: map<string, number> = mapSet(m2, "bob", 2)
+
+  echo("size: " + str(mapLen(m3)))
+
+  for k in mapKeys(m3) {
+    echo(k + " => " + str(mapGet(m3, k) ?? 0))
+  }
+
+  if mapHas(m3, "alice") {
+    let m4: map<string, number> = mapDelete(m3, "alice")
+    echo("after delete: " + str(mapLen(m4)))
+    let av: number? = mapGet(m4, "alice")
+    if av == null {
+      echo("alice gone")
+    }
+  }
+}

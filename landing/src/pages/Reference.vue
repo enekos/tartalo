@@ -309,6 +309,34 @@
           </ul>
         </section>
 
+        <!-- Maps -->
+        <section :id="ids.maps" ref="secRefs">
+          <h2>Maps</h2>
+          <p>
+            <code>map&lt;K, V&gt;</code> is an associative type. Keys are
+            primitive (<code>string</code> / <code>number</code> /
+            <code>bool</code>); values are non-optional primitives. Maps are
+            built empty and grown via <code>mapSet</code>; both
+            <code>mapSet</code> and <code>mapDelete</code> return a new map
+            rather than mutating the operand.
+          </p>
+          <CodeBlock :code="codeMap" />
+          <p>
+            <code>mapNew()</code> requires a typed context — the checker uses
+            the surrounding <code>let</code> / <code>const</code> annotation
+            (or assign target) to infer K and V.
+            <code>mapKeys</code> and <code>mapValues</code> iterate in
+            sorted-by-key order on both backends, so cross-target stdout
+            stays byte-identical.
+          </p>
+          <h3>v0 limitations</h3>
+          <ul class="bullets">
+            <li>No map literal syntax — start with <code>mapNew()</code>.</li>
+            <li>Values cannot be optional, arrays, records, sums, or maps.</li>
+            <li>Maps cannot be record fields, array elements, or map values.</li>
+          </ul>
+        </section>
+
         <!-- Defer -->
         <section :id="ids.defer" ref="secRefs">
           <h2>Defer</h2>
@@ -626,6 +654,7 @@ const ids = {
   optionals: "optionals",
   records: "records",
   sums: "sums",
+  maps: "maps",
   defer: "defer",
   parallel: "parallel",
   result: "result",
@@ -649,6 +678,7 @@ const toc = [
   { id: ids.optionals, label: "Optional types" },
   { id: ids.records, label: "Records" },
   { id: ids.sums, label: "Tagged unions" },
+  { id: ids.maps, label: "Maps" },
   { id: ids.defer, label: "Defer" },
   { id: ids.parallel, label: "Parallel tasks" },
   { id: ids.result, label: "Result & ?" },
@@ -999,6 +1029,20 @@ func area(s: Shape): number {
     Empty            => return 0
   }
   return -1
+}`;
+
+const codeMap = `func main(): void {
+  let m0: map<string, number> = mapNew()
+  let m1: map<string, number> = mapSet(m0, "alice", 30)
+  let m2: map<string, number> = mapSet(m1, "bob",   25)
+
+  if mapHas(m2, "alice") {
+    echo("alice is " + str(mapGet(m2, "alice") ?? -1))
+  }
+  for k in mapKeys(m2) {
+    echo(k + " => " + str(mapGet(m2, k) ?? 0))
+  }
+  echo("size: " + str(mapLen(m2)))
 }`;
 
 const codeDefer = `func work(): void {

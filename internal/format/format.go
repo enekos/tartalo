@@ -404,6 +404,12 @@ func (p *printer) printType(t ast.TypeExpr) {
 	case *ast.OptionalType:
 		p.printType(x.Elem)
 		p.write("?")
+	case *ast.MapType:
+		p.write("map<")
+		p.printType(x.Key)
+		p.write(", ")
+		p.printType(x.Value)
+		p.write(">")
 	case *ast.FuncType:
 		p.write("func(")
 		for i, pt := range x.Params {

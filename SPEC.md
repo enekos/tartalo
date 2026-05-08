@@ -288,6 +288,66 @@ expansion. `for p in xs { ... }` walks each row and binds the loop variable's
 leaves the same way. Mutating an element field in place (`xs[i].a = 5`) is
 not yet supported.
 
+## Maps
+
+`map<K, V>` is an associative type. Keys must be a primitive `string`,
+`number`, or `bool`; values must be a non-optional primitive (`string`,
+`number`, `float`, `bool`). Maps are constructed empty and populated through
+the `mapSet` builtin; both `mapSet` and `mapDelete` return a new map rather
+than mutating the operand, mirroring how arrays are passed in Tartalo.
+
+```tartalo
+func main(): void {
+  let m0: map<string, number> = mapNew()
+  let m1: map<string, number> = mapSet(m0, "alice", 30)
+  let m2: map<string, number> = mapSet(m1, "bob",   25)
+
+  if mapHas(m2, "alice") {
+    echo("alice is " + str(mapGet(m2, "alice") ?? -1))
+  }
+
+  for k in mapKeys(m2) {
+    echo(k + " => " + str(mapGet(m2, k) ?? 0))
+  }
+  echo("size: " + str(mapLen(m2)))
+}
+```
+
+`mapNew()` requires a typed context (a `let`/`const` annotation, an assign
+target, or a parameter type) — there is no other way for the checker to
+infer K and V.
+
+### Map builtins
+
+- `mapNew(): map<K, V>` — empty map; needs a typed context.
+- `mapGet(m: map<K, V>, k: K): V?` — value at `k`, or `null` if missing.
+- `mapSet(m: map<K, V>, k: K, v: V): map<K, V>` — copy of `m` with `k → v`.
+- `mapDelete(m: map<K, V>, k: K): map<K, V>` — copy of `m` without `k`.
+- `mapHas(m: map<K, V>, k: K): bool` — true iff `k` is present.
+- `mapKeys(m: map<K, V>): K[]` — keys in **sorted-by-key** order.
+- `mapValues(m: map<K, V>): V[]` — values in the same key order as `mapKeys`.
+- `mapLen(m: map<K, V>): number` — number of entries.
+
+### v0 limitations
+
+- No map literal syntax. Build via `mapNew()` + `mapSet`.
+- Values cannot be optional, arrays, records, sums, or other maps.
+- Maps cannot be record fields, array elements, or other map values.
+- Iteration order is sorted-by-key, not insertion order. Both backends agree
+  on this so cross-target stdout stays byte-identical.
+
+### Codegen sketch
+
+- **sh**: each map is one shell variable encoded as a flat string. Pairs are
+  separated by ASCII Record Separator (`\036`); within a pair, key and value
+  are separated by ASCII Unit Separator (`\037`). Every operation is an
+  `awk` one-liner over that string. `mapSet` and `mapDelete` build a new
+  string rather than mutating in place, so reassignment back into the
+  original variable (`m = mapSet(m, k, v)`) is the standard idiom.
+- **native**: `map<K, V>` lowers to Go's `map[K]V`. `mapSet`/`mapDelete`
+  copy the map before mutating to match the sh backend's value-style
+  semantics; `mapKeys`/`mapValues` sort the keys for the same reason.
+
 ### Codegen
 
 Each record value is represented as a **name prefix**: a record-typed variable
@@ -566,7 +626,13 @@ A command in statement position runs for side effects:
 - `num(s: string): number` — string → int (errors at runtime if not numeric)
 - `len(s | T[]): number` — UTF-8 codepoint (rune) count for strings; element
   count for arrays. For raw byte length use `byteLen`.
-- `env(name: string): string?` — read env var (`null` if unset, empty string if set to `""`)
+- `env(name: string): string?` — read env var (`null` if unset, empty string if set to `""`).
+  When invoked via `tartalo run` / `test` / `eval` / `bench`, a `.env` file
+  in the same directory as the entry `.tt` is auto-loaded into the child
+  process's environment before execution; existing env vars take precedence
+  over `.env` entries. Supported syntax: `KEY=VALUE` lines, optional
+  `export ` prefix, `#` comments, double-quoted values with `\n\r\t\\\"`
+  escapes, single-quoted values taken literally.
 - `exit(code: number): void` — exit with code
 
 ### Strings
