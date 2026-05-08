@@ -6,10 +6,10 @@
 package lexer
 
 import (
-	"fmt"
 	"strings"
 	"unicode"
 
+	"github.com/enekos/tartalo/internal/diag"
 	"github.com/enekos/tartalo/internal/token"
 )
 
@@ -126,8 +126,10 @@ func (l *Lexer) emit(k token.Kind, val string) {
 	l.emitAt(k, val, l.currentPos())
 }
 
-func (l *Lexer) errorf(p token.Pos, format string, args ...any) {
-	l.errs = append(l.errs, fmt.Errorf("%s: %s", p, fmt.Sprintf(format, args...)))
+func (l *Lexer) errorf(p token.Pos, format string, args ...any) *diag.Diag {
+	d := diag.Newf(p, format, args...)
+	l.errs = append(l.errs, d)
+	return d
 }
 
 func (l *Lexer) lexCode() {
@@ -326,7 +328,8 @@ func (l *Lexer) lexPunct() {
 			l.advance()
 			l.emitAt(token.AndAnd, "&&", p)
 		} else {
-			l.errorf(p, "unexpected character '&' (did you mean '&&'?)")
+			l.errorf(p, "unexpected character `&`").
+				WithHint("tartalo has no bitwise `&`; use `&&` for logical AND")
 			l.emitAt(token.Illegal, "&", p)
 		}
 	case '|':
@@ -422,13 +425,15 @@ func (l *Lexer) lexStringChunk() {
 			}
 			b.WriteByte(l.advance())
 		case '\n':
-			l.errorf(l.currentPos(), "newline in string literal (use \\n)")
+			l.errorf(l.currentPos(), "newline in string literal").
+				WithHint("strings cannot span multiple lines; use the escape `\\n` instead")
 			b.WriteByte(l.advance())
 		default:
 			b.WriteByte(l.advance())
 		}
 	}
-	l.errorf(l.currentPos(), "unterminated string literal")
+	l.errorf(l.currentPos(), "unterminated string literal").
+		WithHint(`add a closing " to end the string`)
 }
 
 func (l *Lexer) lexCmdChunk() {
@@ -479,7 +484,8 @@ func (l *Lexer) lexCmdChunk() {
 			b.WriteByte(l.advance())
 		}
 	}
-	l.errorf(l.currentPos(), "unterminated command literal")
+	l.errorf(l.currentPos(), "unterminated command literal").
+		WithHint("add a closing ` to end the command literal")
 }
 
 func isIdentStart(c byte) bool {

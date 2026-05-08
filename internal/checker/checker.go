@@ -9,11 +9,11 @@
 package checker
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
+	"github.com/enekos/tartalo/internal/diag"
 	"github.com/enekos/tartalo/internal/loader"
 	"github.com/enekos/tartalo/internal/token"
 	"github.com/enekos/tartalo/internal/types"
@@ -112,6 +112,18 @@ func (s *scope) resolve(name string) *Symbol {
 		}
 	}
 	return nil
+}
+
+// names walks the scope chain and returns every defined symbol name. Used
+// to power "did you mean" suggestions when a lookup misses.
+func (s *scope) names() []string {
+	var out []string
+	for cur := s; cur != nil; cur = cur.parent {
+		for n := range cur.syms {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // moduleEnv is the per-module checker state: its top-level value scope, its
@@ -493,8 +505,10 @@ func (s *scope) resolveLocal(name string) *Symbol {
 	return nil
 }
 
-func (c *Checker) errorf(pos token.Pos, format string, args ...any) {
-	c.errs = append(c.errs, fmt.Errorf("%s: %s", pos, fmt.Sprintf(format, args...)))
+func (c *Checker) errorf(pos token.Pos, format string, args ...any) *diag.Diag {
+	d := diag.Newf(pos, format, args...)
+	c.errs = append(c.errs, d)
+	return d
 }
 
 // resolveTypeName walks a module's typeNames + the predeclared types. While
@@ -802,7 +816,7 @@ func (c *Checker) resolveTypeExpr(te ast.TypeExpr) types.Type {
 		if got := c.resolveTypeName(t.Name); got != nil {
 			return got
 		}
-		c.errorf(t.NamePos, "unknown type %q", t.Name)
+		c.suggestUnknownType(t.NamePos, t.Name)
 		return types.Invalid
 	case *ast.ArrayType:
 		elem := c.resolveTypeExpr(t.Elem)
@@ -1113,7 +1127,7 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 	case *ast.AssignStmt:
 		sym := c.current.resolve(s.Name)
 		if sym == nil {
-			c.errorf(s.NamePos, "undefined name %q", s.Name)
+			c.suggestUndefinedName(s.NamePos, s.Name)
 			c.checkExpr(s.Value)
 			return
 		}
@@ -1489,7 +1503,7 @@ func (c *Checker) inferExpr(e ast.Expr) types.Type {
 	case *ast.Ident:
 		sym := c.current.resolve(e.Name)
 		if sym == nil {
-			c.errorf(e.NamePos, "undefined name %q", e.Name)
+			c.suggestUndefinedName(e.NamePos, e.Name)
 			return types.Invalid
 		}
 		c.info.Uses[e] = sym
@@ -1882,7 +1896,7 @@ func (c *Checker) checkRecordLit(e *ast.RecordLit) types.Type {
 	}
 	resolved := c.resolveTypeName(e.TypeName)
 	if resolved == nil {
-		c.errorf(e.NamePos, "unknown type %q", e.TypeName)
+		c.suggestUnknownType(e.NamePos, e.TypeName)
 		if e.Spread != nil {
 			c.checkExpr(e.Spread)
 		}
@@ -2016,7 +2030,7 @@ func (c *Checker) checkFieldExpr(e *ast.FieldExpr) types.Type {
 	}
 	f := rec.Lookup(e.Name)
 	if f == nil {
-		c.errorf(e.NamePos, "record %q has no field %q", rec.Name, e.Name)
+		c.suggestUnknownField(e.NamePos, rec, e.Name)
 		return types.Invalid
 	}
 	return f.Type
@@ -2195,7 +2209,7 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 	}
 	sym := c.current.resolve(id.Name)
 	if sym == nil {
-		c.errorf(id.NamePos, "undefined function %q", id.Name)
+		c.suggestUndefinedFunction(id.NamePos, id.Name)
 		for _, a := range e.Args {
 			c.checkExpr(a)
 		}
@@ -3363,4 +3377,76 @@ func builtinsWithTypes(typeNames map[string]types.Type) []*Symbol {
 		{Name: "mockExec", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, process}, Result: types.Void}},
 		{Name: "mockFetch", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, response}, Result: types.Void}},
 	}
+}
+
+// --- "did you mean" helpers ------------------------------------------------
+
+// suggestUndefinedName emits the standard undefined-name error and tries to
+// attach a "did you mean `X`?" suggestion based on the names visible in the
+// current lexical scope (locals, params, top-level functions, builtins).
+func (c *Checker) suggestUndefinedName(pos token.Pos, want string) {
+	d := c.errorf(pos, "undefined name %q", want)
+	if pick := diag.Suggest(want, c.visibleValueNames()); pick != "" {
+		d.WithSuggest(pick)
+	}
+}
+
+// suggestUndefinedFunction is the call-site variant: same suggestion logic,
+// but the message reads "undefined function".
+func (c *Checker) suggestUndefinedFunction(pos token.Pos, want string) {
+	d := c.errorf(pos, "undefined function %q", want)
+	if pick := diag.Suggest(want, c.visibleValueNames()); pick != "" {
+		d.WithSuggest(pick)
+	}
+}
+
+func (c *Checker) suggestUnknownType(pos token.Pos, want string) {
+	d := c.errorf(pos, "unknown type %q", want)
+	if pick := diag.Suggest(want, c.visibleTypeNames()); pick != "" {
+		d.WithSuggest(pick)
+	}
+}
+
+func (c *Checker) suggestUnknownField(pos token.Pos, rec *types.Record, want string) {
+	d := c.errorf(pos, "record %q has no field %q", rec.Name, want)
+	names := make([]string, 0, len(rec.Fields))
+	for _, f := range rec.Fields {
+		names = append(names, f.Name)
+	}
+	if pick := diag.Suggest(want, names); pick != "" {
+		d.WithSuggest(pick)
+	}
+}
+
+// visibleValueNames returns every value-namespace name reachable from the
+// current scope: chain-walked locals/params, top-level functions, imported
+// names, and builtins.
+func (c *Checker) visibleValueNames() []string {
+	if c.current == nil {
+		return nil
+	}
+	return c.current.names()
+}
+
+// visibleTypeNames is the type-namespace counterpart: primitives,
+// predeclared user-facing types, the module's own type decls, and any
+// imported types.
+func (c *Checker) visibleTypeNames() []string {
+	out := []string{"string", "number", "float", "bool", "void"}
+	for n := range c.predeclTypes {
+		out = append(out, n)
+	}
+	if c.currentMod != nil {
+		if env := c.envs[c.currentMod]; env != nil {
+			for n := range env.typeNames {
+				out = append(out, n)
+			}
+		}
+	}
+	if c.genericScope != nil {
+		for n := range c.genericScope {
+			out = append(out, n)
+		}
+	}
+	return out
 }

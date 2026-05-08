@@ -1,0 +1,498 @@
+// task_runner.tt — a project task ingestor and reporter.
+//
+// Exercises a substantial slice of the language: records, tagged unions
+// with payload, generic helpers, map<K, V>, parallel { task { ... } },
+// defer, match on both strings and sum variants, Result-shaped error
+// propagation with `?`, and the higher-order builtins.
+//
+// Inline tests live below the implementation; run them with:
+//   ./tartalo test examples/task_runner.tt
+
+type Status = Backlog | InProgress | Done | Blocked{reason: string}
+
+type Task = {
+  id: string,
+  title: string,
+  owner: string,
+  hours: number,
+  status: string,
+}
+
+type ParseResult = Ok{value: string} | Err{error: string}
+
+// statusOf parses a status string into the Status sum. Unknown statuses
+// land in `Backlog` so a row is never lost. The `Blocked` variant
+// accepts an inline reason after a colon, e.g. "blocked:waiting on QA".
+func statusOf(raw: string): Status {
+  let s = lower(trim(raw))
+  if startsWith(s, "blocked") {
+    let parts = split(s, ":")
+    if len(parts) > 1 {
+      return Blocked{reason: trim(parts[1])}
+    }
+    return Blocked{reason: "unspecified"}
+  }
+  match s {
+    "backlog" => return Backlog
+    "todo" => return Backlog
+    "in_progress" => return InProgress
+    "in-progress" => return InProgress
+    "doing" => return InProgress
+    "done" => return Done
+    "shipped" => return Done
+    _ => return Backlog
+  }
+  return Backlog
+}
+
+// describeStatus is the reverse: render a Status as a short tag.
+// Demonstrates `match` on a sum-typed subject with a payload binding.
+func describeStatus(s: Status): string {
+  match s {
+    Backlog => return "backlog"
+    InProgress => return "in_progress"
+    Done => return "done"
+    Blocked{reason} => return "blocked:" + reason
+  }
+  return "unknown"
+}
+
+// parseTask splits "id|title|owner|hours|status" into a Task. Returns
+// a Result-shaped sum; the encoded value carries the parsed columns
+// joined by ":::" so callers can rebuild without re-parsing.
+func parseTask(line: string): ParseResult {
+  let parts = split(line, "|")
+  if len(parts) != 5 {
+    return Err{error: "expected 5 fields, got " + str(len(parts)) + ": " + line}
+  }
+  let id = trim(parts[0])
+  let title = trim(parts[1])
+  let owner = trim(parts[2])
+  let hoursRaw = trim(parts[3])
+  let status = trim(parts[4])
+  if id == "" || title == "" || owner == "" {
+    return Err{error: "missing id/title/owner in: " + line}
+  }
+  let hoursOpt = parseInt(hoursRaw)
+  let hours = hoursOpt ?? -1
+  if hours < 0 {
+    return Err{error: "bad hours " + hoursRaw + " in: " + line}
+  }
+  return Ok{value: id + ":::" + title + ":::" + owner + ":::" + str(hours) + ":::" + status}
+}
+
+// decodeTask undoes parseTask's encoding. Splits on the canonical
+// ":::" separator we use throughout the file.
+func decodeTask(encoded: string): Task {
+  let parts = split(encoded, ":::")
+  return Task{
+    id: parts[0],
+    title: parts[1],
+    owner: parts[2],
+    hours: num(parts[3]),
+    status: parts[4],
+  }
+}
+
+// loadOne wraps parseTask, threading errors through `?`. Used by tests;
+// main() builds Task[] directly via literals.
+func loadOne(line: string): ParseResult {
+  let combined: string = parseTask(line)?
+  return Ok{value: combined}
+}
+
+// hoursByOwner sums hours across tasks per owner. Returns map<string, number>.
+// Demonstrates map<K, V> built up via repeated mapSet (immutable update).
+func hoursByOwner(tasks: Task[]): map<string, number> {
+  let acc: map<string, number> = mapNew()
+  for t in tasks {
+    let cur = mapGet(acc, t.owner) ?? 0
+    acc = mapSet(acc, t.owner, cur + t.hours)
+  }
+  return acc
+}
+
+// countByStatus tallies tasks by their string-encoded status. Native and
+// sh map iteration are both sorted-by-key, so callers see stable counts.
+func countByStatus(tasks: Task[]): map<string, number> {
+  let acc: map<string, number> = mapNew()
+  for t in tasks {
+    let cur = mapGet(acc, t.status) ?? 0
+    acc = mapSet(acc, t.status, cur + 1)
+  }
+  return acc
+}
+
+// blockedReasons collects every Blocked variant's reason. Demonstrates
+// match-with-payload over a sum-typed local.
+func blockedReasons(tasks: Task[]): string[] {
+  let collected = ""
+  let count = 0
+  for t in tasks {
+    let s = statusOf(t.status)
+    match s {
+      Blocked{reason} => {
+        if count == 0 {
+          collected = reason
+        } else {
+          collected = collected + "\n" + reason
+        }
+        count = count + 1
+      }
+      Backlog => {}
+      InProgress => {}
+      Done => {}
+    }
+  }
+  if count == 0 {
+    let empty: string[] = []
+    return empty
+  }
+  return split(collected, "\n")
+}
+
+// uniqueOwners returns each distinct owner the tasks reference, in
+// stable order. Builds the owner list with the join-on-newlines idiom,
+// then defers to the `unique` builtin.
+//
+// (We can't use map(tasks, pickOwner) here: the higher-order builtins
+// pass each row as a single positional arg, but a Task-typed param
+// expects one arg per leaf field. The for-loop sidesteps that.)
+func uniqueOwners(tasks: Task[]): string[] {
+  let acc = ""
+  for t in tasks {
+    if acc == "" {
+      acc = t.owner
+    } else {
+      acc = acc + "\n" + t.owner
+    }
+  }
+  if acc == "" {
+    let empty: string[] = []
+    return empty
+  }
+  return unique(split(acc, "\n"))
+}
+
+// totalHours sums the hours across tasks. Exercises an explicit fold
+// over a record array via for-loop.
+func totalHours(tasks: Task[]): number {
+  let total = 0
+  for t in tasks {
+    total = total + t.hours
+  }
+  return total
+}
+
+// topOwner returns the owner with the most logged hours, or "" if no
+// tasks. Iterates the map<string, number> via mapKeys/mapValues, which
+// agree on order across both backends.
+func topOwner(tasks: Task[]): string {
+  let m = hoursByOwner(tasks)
+  let best = ""
+  let bestHours = -1
+  for k in mapKeys(m) {
+    let v = mapGet(m, k) ?? 0
+    if v > bestHours {
+      best = k
+      bestHours = v
+    }
+  }
+  return best
+}
+
+// renderReport pretty-prints a summary. String-built via the
+// join-on-newlines idiom, since arrays don't support push.
+func renderReport(tasks: Task[]): string {
+  let header = "# Task report"
+  let summary = str(len(tasks)) + " task(s), " + str(totalHours(tasks)) + "h total"
+  let owners = uniqueOwners(tasks)
+  let topLine = "top owner: " + topOwner(tasks) + " (" + str(mapGet(hoursByOwner(tasks), topOwner(tasks)) ?? 0) + "h)"
+  let ownerBlock = ""
+  for o in owners {
+    let h = mapGet(hoursByOwner(tasks), o) ?? 0
+    if ownerBlock == "" {
+      ownerBlock = "- " + o + ": " + str(h) + "h"
+    } else {
+      ownerBlock = ownerBlock + "\n- " + o + ": " + str(h) + "h"
+    }
+  }
+  let statusBlock = ""
+  let counts = countByStatus(tasks)
+  for k in mapKeys(counts) {
+    let n = mapGet(counts, k) ?? 0
+    if statusBlock == "" {
+      statusBlock = "- " + k + ": " + str(n)
+    } else {
+      statusBlock = statusBlock + "\n- " + k + ": " + str(n)
+    }
+  }
+  let blockedBlock = ""
+  let reasons = blockedReasons(tasks)
+  if len(reasons) > 0 {
+    blockedBlock = "\n\n## blocked\n"
+    let first = true
+    for r in reasons {
+      if first {
+        blockedBlock = blockedBlock + "- " + r
+        first = false
+      } else {
+        blockedBlock = blockedBlock + "\n- " + r
+      }
+    }
+  }
+  return header + "\n" + summary + "\n" + topLine + "\n\n## by owner\n" + ownerBlock + "\n\n## by status\n" + statusBlock + blockedBlock
+}
+
+// runWithCleanup demonstrates `defer`. The cleanup line must always
+// fire after the body, even when the body returns early.
+func runWithCleanup(tasks: Task[], earlyOut: bool): string {
+  defer {
+    eprint("cleanup ran (" + str(len(tasks)) + " tasks)")
+  }
+  if earlyOut {
+    return "early"
+  }
+  return "full report:\n" + renderReport(tasks)
+}
+
+// fanOut spawns three parallel `task` blocks. They all only READ from
+// outer locals (writes are rejected by the checker), so the sh and
+// native backends produce equivalent observable output.
+func fanOut(label: string): void {
+  let prefix = "[" + label + "]"
+  parallel {
+    task {
+      eprint(prefix + " task A start")
+      eprint(prefix + " task A done")
+    }
+    task {
+      eprint(prefix + " task B start")
+      eprint(prefix + " task B done")
+    }
+    task {
+      eprint(prefix + " task C start")
+      eprint(prefix + " task C done")
+    }
+  }
+}
+
+func main(): void {
+  echo("== task_runner demo ==")
+  echo("")
+
+  let tasks: Task[] = [
+    Task{id: "T-1", title: "fix flaky test", owner: "alice", hours: 4, status: "in_progress"},
+    Task{id: "T-2", title: "ship deploy script", owner: "alice", hours: 6, status: "done"},
+    Task{id: "T-3", title: "write design doc", owner: "bob", hours: 8, status: "backlog"},
+    Task{id: "T-4", title: "wait on QA review", owner: "carol", hours: 2, status: "blocked:QA backlog"},
+    Task{id: "T-5", title: "review PR #42", owner: "bob", hours: 1, status: "done"},
+  ]
+
+  echo(renderReport(tasks))
+  echo("")
+  echo("== parallel fan-out ==")
+  fanOut("demo")
+
+  echo("")
+  echo("== defer ==")
+  let cleanupOut = runWithCleanup(tasks, true)
+  echo("returned: " + cleanupOut)
+}
+
+// --- inline tests ---------------------------------------------------------
+
+test "statusOf maps known strings" {
+  match statusOf("backlog") {
+    Backlog => check(true)
+    InProgress => fail("expected Backlog")
+    Done => fail("expected Backlog")
+    Blocked{reason} => fail("expected Backlog, got blocked:" + reason)
+  }
+  match statusOf("done") {
+    Backlog => fail("expected Done")
+    InProgress => fail("expected Done")
+    Done => check(true)
+    Blocked{reason} => fail("expected Done, got blocked:" + reason)
+  }
+}
+
+test "statusOf parses inline blocked reason" {
+  match statusOf("blocked:waiting on QA") {
+    Blocked{reason} => assertEq(reason, "waiting on qa")
+    Backlog => fail("expected Blocked")
+    InProgress => fail("expected Blocked")
+    Done => fail("expected Blocked")
+  }
+}
+
+test "statusOf falls back to Backlog on unknown" {
+  match statusOf("weird") {
+    Backlog => check(true)
+    InProgress => fail("expected Backlog")
+    Done => fail("expected Backlog")
+    Blocked{reason} => fail("expected Backlog, got blocked:" + reason)
+  }
+}
+
+test "describeStatus round-trips known variants" {
+  assertEq(describeStatus(Backlog), "backlog")
+  assertEq(describeStatus(InProgress), "in_progress")
+  assertEq(describeStatus(Done), "done")
+  assertEq(describeStatus(Blocked{reason: "stuck"}), "blocked:stuck")
+}
+
+test "parseTask happy path" {
+  match parseTask("T-1|fix bug|alice|3|in_progress") {
+    Ok{value} => {
+      let t = decodeTask(value)
+      assertEq(t.id, "T-1")
+      assertEq(t.title, "fix bug")
+      assertEq(t.owner, "alice")
+      assertEq(t.hours, 3)
+      assertEq(t.status, "in_progress")
+    }
+    Err{error} => fail("expected Ok, got " + error)
+  }
+}
+
+test "parseTask rejects wrong column count" {
+  match parseTask("T-1|fix bug|alice|3") {
+    Ok{value} => fail("expected Err, got " + value)
+    Err{error} => check(contains(error, "expected 5 fields"))
+  }
+}
+
+test "parseTask rejects non-numeric hours" {
+  match parseTask("T-1|fix|alice|nope|done") {
+    Ok{value} => fail("expected Err, got " + value)
+    Err{error} => check(contains(error, "bad hours nope"))
+  }
+}
+
+test "parseTask rejects empty fields" {
+  match parseTask("|fix|alice|3|done") {
+    Ok{value} => fail("expected Err, got " + value)
+    Err{error} => check(contains(error, "missing id"))
+  }
+}
+
+test "loadOne propagates errors via ?" {
+  match loadOne("garbage") {
+    Ok{value} => fail("expected Err, got " + value)
+    Err{error} => check(contains(error, "expected 5 fields"))
+  }
+  match loadOne("T-1|x|alice|2|done") {
+    Ok{value} => check(contains(value, "alice"))
+    Err{error} => fail("expected Ok, got " + error)
+  }
+}
+
+test "hoursByOwner sums per owner" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "a", hours: 3, status: "done"},
+    Task{id: "2", title: "y", owner: "b", hours: 2, status: "done"},
+    Task{id: "3", title: "z", owner: "a", hours: 5, status: "backlog"},
+  ]
+
+  let m = hoursByOwner(tasks)
+  assertEq(mapGet(m, "a") ?? -1, 8)
+  assertEq(mapGet(m, "b") ?? -1, 2)
+  assertEq(mapLen(m), 2)
+}
+
+test "countByStatus respects unknown labels" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "a", hours: 1, status: "done"},
+    Task{id: "2", title: "y", owner: "a", hours: 1, status: "done"},
+    Task{id: "3", title: "z", owner: "a", hours: 1, status: "weirdo"},
+  ]
+
+  let m = countByStatus(tasks)
+  assertEq(mapGet(m, "done") ?? -1, 2)
+  assertEq(mapGet(m, "weirdo") ?? -1, 1)
+  assertEq(mapHas(m, "missing"), false)
+}
+
+test "blockedReasons collects only blocked variant payloads" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "a", hours: 1, status: "done"},
+    Task{id: "2", title: "y", owner: "b", hours: 1, status: "blocked:QA"},
+    Task{id: "3", title: "z", owner: "c", hours: 1, status: "blocked:env"},
+    Task{id: "4", title: "w", owner: "d", hours: 1, status: "in_progress"},
+  ]
+
+  let r = blockedReasons(tasks)
+  assertEq(len(r), 2)
+  assertEq(r[0], "qa")
+  assertEq(r[1], "env")
+}
+
+test "uniqueOwners is order-stable" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "alice", hours: 1, status: "done"},
+    Task{id: "2", title: "y", owner: "bob", hours: 1, status: "done"},
+    Task{id: "3", title: "z", owner: "alice", hours: 1, status: "done"},
+    Task{id: "4", title: "w", owner: "carol", hours: 1, status: "done"},
+  ]
+
+  let owners = uniqueOwners(tasks)
+  assertEq(len(owners), 3)
+  assertEq(owners[0], "alice")
+  assertEq(owners[1], "bob")
+  assertEq(owners[2], "carol")
+}
+
+test "totalHours folds across the array" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "a", hours: 4, status: "done"},
+    Task{id: "2", title: "y", owner: "b", hours: 5, status: "done"},
+    Task{id: "3", title: "z", owner: "c", hours: 1, status: "done"},
+  ]
+
+  assertEq(totalHours(tasks), 10)
+}
+
+test "topOwner picks the largest hours bucket" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "a", hours: 4, status: "done"},
+    Task{id: "2", title: "y", owner: "b", hours: 5, status: "done"},
+    Task{id: "3", title: "z", owner: "a", hours: 6, status: "done"},
+  ]
+
+  assertEq(topOwner(tasks), "a")
+}
+
+test "renderReport contains the headline numbers" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "a", hours: 3, status: "done"},
+    Task{id: "2", title: "y", owner: "b", hours: 4, status: "in_progress"},
+  ]
+
+  let out = renderReport(tasks)
+  check(contains(out, "# Task report"))
+  check(contains(out, "2 task(s), 7h total"))
+  check(contains(out, "## by owner"))
+  check(contains(out, "## by status"))
+  check(contains(out, "- a: 3h"))
+  check(contains(out, "- b: 4h"))
+}
+
+test "runWithCleanup early-returns and still runs defer" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "a", hours: 1, status: "done"},
+  ]
+
+  let r = runWithCleanup(tasks, true)
+  assertEq(r, "early")
+}
+
+test "runWithCleanup full path produces a report" {
+  let tasks: Task[] = [
+    Task{id: "1", title: "x", owner: "a", hours: 2, status: "done"},
+  ]
+
+  let r = runWithCleanup(tasks, false)
+  check(contains(r, "# Task report"))
+  check(contains(r, "1 task(s), 2h total"))
+}

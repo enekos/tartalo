@@ -1722,6 +1722,13 @@ func (g *Generator) tryEmitDirectRet(e ast.Expr, target, declPrefix string) bool
 		return false
 	}
 	g.writeLines(v.prologue[:len(v.prologue)-1])
+	// When returning a function call's result directly, the last step in the
+	// callee's prologue is already `__ret="..."`. If the caller's target is
+	// also __ret with no decl prefix, emitting `__ret="$__ret"` is a no-op
+	// (and SC2269 flags it). Skip the redundant assignment.
+	if target == "__ret" && declPrefix == "" {
+		return true
+	}
 	g.writeLine(declPrefix + target + `="$__ret"`)
 	return true
 }

@@ -659,7 +659,18 @@ type _tt_mockStateT struct {
 
 var _tt_mock _tt_mockStateT
 
-func _tt_mock_reset() { _tt_mock = _tt_mockStateT{} }
+// _tt_mockResetHooks lets per-feature mock modules register their own
+// reset routines (e.g., the LLM mock state lives in the agent appendix
+// and only exists when llm() is used). Each hook is called between
+// tests, after the core _tt_mock state is cleared.
+var _tt_mockResetHooks []func()
+
+func _tt_mock_reset() {
+	_tt_mock = _tt_mockStateT{}
+	for _, h := range _tt_mockResetHooks {
+		h()
+	}
+}
 
 `
 

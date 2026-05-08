@@ -422,8 +422,31 @@ func (p *printer) printType(t ast.TypeExpr) {
 		p.printType(x.Result)
 	case *ast.RecordType:
 		p.printRecordType(x)
+	case *ast.SumType:
+		p.printSumType(x)
 	default:
 		p.write(fmt.Sprintf("/* unknown type %T */", t))
+	}
+}
+
+func (p *printer) printSumType(t *ast.SumType) {
+	for i, v := range t.Variants {
+		if i > 0 {
+			p.write(" | ")
+		}
+		p.write(v.Name)
+		if v.HasBraces {
+			p.write("{")
+			for j, f := range v.Fields {
+				if j > 0 {
+					p.write(", ")
+				}
+				p.write(f.Name)
+				p.write(": ")
+				p.printType(f.TypeAnn)
+			}
+			p.write("}")
+		}
 	}
 }
 
@@ -538,6 +561,11 @@ func (p *printer) printStmt(s ast.Stmt) {
 		p.printTask(x)
 	case *ast.Block:
 		p.printBlock(x)
+		p.nl()
+	case *ast.DeferStmt:
+		p.write("defer ")
+		p.printBlock(x.Body)
+		p.trailingOn(p.lastSrcLine)
 		p.nl()
 	default:
 		p.write(fmt.Sprintf("/* unknown stmt %T */", s))
@@ -672,6 +700,18 @@ func (p *printer) printPattern(pat ast.Pattern) {
 		p.printExpr(x.Lit, precLowest)
 	case *ast.WildcardPattern:
 		p.write("_")
+	case *ast.VariantPattern:
+		p.write(x.Name)
+		if x.HasBraces {
+			p.write("{")
+			for i, b := range x.Bindings {
+				if i > 0 {
+					p.write(", ")
+				}
+				p.write(b.Name)
+			}
+			p.write("}")
+		}
 	default:
 		p.write(fmt.Sprintf("/* unknown pattern %T */", pat))
 	}
@@ -758,7 +798,7 @@ func exprPrec(e ast.Expr) int {
 		return precCoalesce
 	case *ast.UnaryExpr:
 		return precUnary
-	case *ast.UnwrapExpr, *ast.CallExpr, *ast.IndexExpr, *ast.FieldExpr:
+	case *ast.UnwrapExpr, *ast.CallExpr, *ast.IndexExpr, *ast.FieldExpr, *ast.TryExpr:
 		return precCall
 	default:
 		return precPrimary
@@ -839,6 +879,9 @@ func (p *printer) printExprNoParens(e ast.Expr) {
 	case *ast.UnwrapExpr:
 		p.printExpr(x.Operand, precCall)
 		p.write("!")
+	case *ast.TryExpr:
+		p.printExpr(x.Operand, precCall)
+		p.write("?")
 	case *ast.CastExpr:
 		p.printExpr(x.Operand, precCall)
 		p.write(" as ")

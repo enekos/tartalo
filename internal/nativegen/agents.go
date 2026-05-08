@@ -325,9 +325,13 @@ func (g *Generator) emitAgentRuntimeAppendix(out *strings.Builder) {
 		out.WriteString(runtimeKimi)
 		if g.emitMode == EmitTest || g.emitMode == EmitEval {
 			out.WriteString(dispatcherLLMTest)
-			if g.usesMockLlm {
-				out.WriteString(mockSettersLLM)
-			}
+			// The dispatcher references _tt_mockLlmRules / _tt_mockLlmCallsLog
+			// unconditionally, so emit them whenever LLM is used in test or
+			// eval mode — even if the source never calls mockLlm() directly
+			// (a strict-mode panic on an unmocked llm() is still a valid
+			// outcome). The `_tt_resetLlmMock` hook clears state between
+			// tests; it's registered into _tt_mockResetHooks via init().
+			out.WriteString(mockSettersLLM)
 		} else {
 			out.WriteString(`func _tt_llm(prompt string) string { return _tt_llm_real(prompt) }` + "\n\n")
 		}
@@ -468,6 +472,13 @@ const mockSettersLLM = `type _tt_mockLlmRule struct {
 
 var _tt_mockLlmRules []_tt_mockLlmRule
 var _tt_mockLlmCallsLog []string
+
+func init() {
+	_tt_mockResetHooks = append(_tt_mockResetHooks, func() {
+		_tt_mockLlmRules = nil
+		_tt_mockLlmCallsLog = nil
+	})
+}
 
 func _tt_mockLlm(pat string, resp string) {
 	r, err := regexp.Compile(pat)

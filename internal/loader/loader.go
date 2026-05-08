@@ -43,6 +43,12 @@ type Module struct {
 
 	// IsEntry is true iff this is the file the program was started with.
 	IsEntry bool
+
+	// Source is the raw text the lexer was given. Held so the diagnostic
+	// renderer can show code frames without re-reading the file. SourceName
+	// matches the `File` field stamped onto every token.Pos in this module.
+	Source     string
+	SourceName string
 }
 
 // ResolvedImport is one import statement after path resolution.
@@ -56,15 +62,37 @@ type ResolvedImport struct {
 // always appear earlier in the slice). Errors from any file's lex/parse pass
 // are returned together; loading continues so multiple errors can be reported.
 func Load(entryPath string) ([]*Module, []error) {
+	mods, _, errs := load(entryPath)
+	return mods, errs
+}
+
+// LoadWithSources is Load that additionally returns a snapshot of every
+// source the loader read, keyed by the same name the lexer stamped into
+// token positions. The map is populated even when parsing fails — useful
+// for the diagnostic renderer, which needs the original text to show code
+// frames regardless of whether the AST is valid.
+func LoadWithSources(entryPath string) ([]*Module, map[string]string, []error) {
+	return load(entryPath)
+}
+
+func load(entryPath string) ([]*Module, map[string]string, []error) {
 	abs, err := filepath.Abs(entryPath)
 	if err != nil {
-		return nil, []error{err}
+		return nil, nil, []error{err}
 	}
 	l := &loader{cache: map[string]*Module{}}
 	root := l.startLoad(abs, true)
 	l.wg.Wait()
+
+	sources := make(map[string]string, len(l.cache))
+	for _, m := range l.cache {
+		if m.SourceName != "" {
+			sources[m.SourceName] = m.Source
+		}
+	}
+
 	if root == nil || root.File == nil {
-		return nil, l.errs
+		return nil, sources, l.errs
 	}
 
 	if cycErr := detectCycles(root); cycErr != nil {
@@ -94,7 +122,7 @@ func Load(entryPath string) ([]*Module, []error) {
 	for i, m := range ordered {
 		m.ID = i
 	}
-	return ordered, l.errs
+	return ordered, sources, l.errs
 }
 
 type loader struct {
@@ -147,7 +175,10 @@ func (l *loader) parseModule(m *Module) {
 		src = data
 		fileName = filepath.Base(m.AbsPath)
 	}
-	toks, lerrs := lexer.New(fileName, string(src)).Tokenize()
+	srcStr := string(src)
+	m.Source = srcStr
+	m.SourceName = fileName
+	toks, lerrs := lexer.New(fileName, srcStr).Tokenize()
 	l.addErrs(lerrs)
 	file, perrs := parser.New(toks).Parse(fileName)
 	l.addErrs(perrs)

@@ -1,0 +1,337 @@
+// research_agent.tt — a multi-tool issue-triage agent.
+//
+// Demonstrates a real agent workflow end-to-end: ingest a batch of
+// "id|body" report lines, classify each via the LLM, score, sort by
+// priority, and render a markdown-style digest. Inline tests stub the
+// LLM with `mockLlm`, so the whole pipeline runs hermetically under
+// `tartalo test`.
+//
+// Run a demo:
+//   ./tartalo run examples/research_agent.tt
+//
+// Run inline tests:
+//   ./tartalo test examples/research_agent.tt
+
+type ParseResult = Ok{value: string} | Err{error: string}
+
+// classifySeverity asks the LLM for a one-word severity. Wrapping it in
+// a `tool` makes it discoverable via toolSchemas() and lets tests mock
+// `llm()` directly.
+tool classifySeverity(body: string): string !ai {
+  desc("classify a report body as critical/warn/info")
+  let raw = lower(trim(llm("Reply with one word — critical, warn, or info — for: " + body)))
+  if contains(raw, "critical") {
+    return "critical"
+  }
+  if contains(raw, "warn") {
+    return "warn"
+  }
+  return "info"
+}
+
+// extractTags pulls `#tag` mentions out of a body. Pure, no side effects.
+tool extractTags(body: string): string {
+  desc("extract hashtag mentions from a body, joined with commas")
+  let hits = regexFindAll(body, "#[A-Za-z0-9_]+")
+  return join(hits, ",")
+}
+
+// scoreReport assigns a numeric score to a severity label. Stable, so
+// the digest stays sortable regardless of LLM jitter.
+tool scoreReport(severity: string): number {
+  desc("map a severity label to a numeric priority")
+  match severity {
+
+    "critical" => return 100
+    "warn" => return 50
+    "info" => return 10
+    _ => return 0
+  }
+  return 0
+}
+
+// parseReport splits "id|body" into its halves. Returns a Result-shaped
+// sum so callers can use `?` to short-circuit on parse errors.
+func parseReport(line: string): ParseResult {
+  let parts = split(line, "|")
+  if len(parts) != 2 {
+    return Err{error: "expected 'id|body', got: " + line}
+  }
+  let id = trim(parts[0])
+  let body = trim(parts[1])
+  if id == "" || body == "" {
+    return Err{error: "empty id or body in: " + line}
+  }
+  return Ok{value: id + ":::" + body}
+}
+
+// padScore zero-pads a 0..999 score to 3 digits so that lexicographic
+// sort matches numeric sort. The digest sorts descending by score, so
+// the row format starts with this prefix.
+func padScore(n: number): string {
+  if n >= 100 {
+    return str(n)
+  }
+  if n >= 10 {
+    return "0" + str(n)
+  }
+  return "00" + str(n)
+}
+
+// classifyLine runs one parse → classify → score pass and produces a
+// canonical encoded row, or an error string on failure. Encoded rows
+// look like "100|100|critical|R-1|service crashed", where the first
+// column is the zero-padded score for lexicographic sort and the second
+// column is the raw integer for display.
+func classifyLine(line: string): ParseResult {
+  let combined: string = parseReport(line)?
+  let parts = split(combined, ":::")
+  let id = parts[0]
+  let body = parts[1]
+  let sev = callTool("classifySeverity", body)
+  let score = scoreReport(sev)
+  return Ok{value: padScore(score) + "|" + str(score) + "|" + sev + "|" + id + "|" + body}
+}
+
+// classifyOrTag is the entry point used by `map(...)` inside the agent.
+// On parse failure we tag the row with an "ERR|" prefix so the agent
+// can split it back out cleanly.
+func classifyOrTag(line: string): string {
+  match classifyLine(line) {
+    Ok{value} => return value
+    Err{error} => return "ERR|" + error
+  }
+}
+
+// nonBlank: filter predicate. Top-level so its name appears in
+// toolSchemas() in the schema registry.
+func nonBlank(s: string): bool {
+  return trim(s) != ""
+}
+
+func notErr(s: string): bool {
+  return !startsWith(s, "ERR|")
+}
+
+func isErr(s: string): bool {
+  return startsWith(s, "ERR|")
+}
+
+// digest is the orchestrator agent. uses(...) declares the tools it may
+// reach for; budget(N) caps llm() invocations per call.
+agent digest(input: string) uses (classifySeverity, extractTags, scoreReport): string !ai {
+  desc("triage a newline-separated batch of id-body reports")
+  budget(20)
+  trace("digest.start", input)
+  let lines = filter(split(trim(input), "\n"), nonBlank)
+  let classified = map(lines, classifyOrTag)
+  let oks = filter(classified, notErr)
+  let errs = filter(classified, isErr)
+  let ranked = reversed(sorted(oks))
+  trace("digest.parsed", str(len(ranked)) + " ok, " + str(len(errs)) + " err")
+  return renderDigest(ranked, errs)
+}
+
+// sorted() is lexicographic ascending; reversed() flips the order.
+// Because we prefixed each row with a 0-padded score, this yields
+// descending-by-score with ties broken by severity then id.
+
+// renderDigest takes pre-sorted "padScore|score|sev|id|body" rows and
+// ERR-tagged errors, producing the final markdown blob. Builds the
+// output as a single string via concatenation — sidesteps the lack of
+// array push.
+func renderDigest(ranked: string[], errs: string[]): string {
+  let header = "# Digest\n\n"
+  let summary = str(len(ranked)) + " report(s) classified"
+  if len(errs) > 0 {
+    summary = summary + "\n" + str(len(errs)) + " parse error(s)"
+  }
+  let body = ""
+  for row in ranked {
+    let parts = split(row, "|")
+    let scoreText = parts[1]
+    let sev = parts[2]
+    let id = parts[3]
+    let bodyText = parts[4]
+    let icon = severityIcon(sev)
+    body = body + "\n" + icon + " " + id + " [" + sev + "/" + scoreText + "] " + bodyText
+  }
+  let errBlock = ""
+  if len(errs) > 0 {
+    errBlock = "\n\n## errors"
+    for e in errs {
+      errBlock = errBlock + "\n- " + slice(e, 4, len(e))
+    }
+  }
+  return header + summary + body + errBlock
+}
+
+func severityIcon(sev: string): string {
+  match sev {
+    "critical" => return "!!"
+    "warn" => return "*"
+    "info" => return "-"
+    _ => return "?"
+  }
+  return "?"
+}
+
+func main(): void {
+  echo("== research_agent demo ==")
+  echo("")
+
+  // The demo uses pre-known severities so it doesn't actually need the
+  // LLM (no TARTALO_LLM_CMD configured by default). Output mirrors what
+  // the agent produces under a real LLM.
+  let lines = [
+    "100|100|critical|R-001|service crashed in prod #ops",
+    "010|10|info|R-002|spelling typo in docs #docs",
+    "050|50|warn|R-003|rare race condition #ops #flaky",
+  ]
+
+  let ranked = reversed(sorted(lines))
+  let errs: string[] = []
+  echo(renderDigest(ranked, errs))
+
+  echo("")
+  echo("== schemas ==")
+  echo(toolSchemas())
+}
+
+// --- inline tests ---------------------------------------------------------
+
+test "scoreReport maps severities" {
+  assertEq(scoreReport("critical"), 100)
+  assertEq(scoreReport("warn"), 50)
+  assertEq(scoreReport("info"), 10)
+  assertEq(scoreReport("nonsense"), 0)
+}
+
+test "padScore zero-pads to width 3" {
+  assertEq(padScore(0), "000")
+  assertEq(padScore(7), "007")
+  assertEq(padScore(50), "050")
+  assertEq(padScore(100), "100")
+}
+
+test "extractTags pulls hashtags" {
+  assertEq(extractTags("nothing here"), "")
+  assertEq(extractTags("one #ops tag"), "#ops")
+  assertEq(extractTags("multi #ops #flaky #p1"), "#ops,#flaky,#p1")
+}
+
+test "classifySeverity routes via mocked LLM" {
+  mockLlm("crash", "Critical")
+  mockLlm("typo", "info")
+  mockLlm("race", " warn ")
+  assertEq(classifySeverity("the service crash"), "critical")
+  assertEq(classifySeverity("a small typo"), "info")
+  assertEq(classifySeverity("a race condition"), "warn")
+}
+
+test "classifySeverity falls back to info on unknown LLM output" {
+  mockLlm(".*", "potato")
+  assertEq(classifySeverity("anything"), "info")
+}
+
+test "parseReport rejects malformed lines" {
+  match parseReport("just one part") {
+    Ok{value} => fail("expected Err, got " + value)
+    Err{error} => check(contains(error, "expected 'id|body'"))
+  }
+  match parseReport("|nobody") {
+    Ok{value} => fail("expected Err, got " + value)
+    Err{error} => check(contains(error, "empty"))
+  }
+}
+
+test "parseReport accepts well-formed lines" {
+  match parseReport("R-1|kaboom") {
+    Ok{value} => {
+      let parts = split(value, ":::")
+      assertEq(parts[0], "R-1")
+      assertEq(parts[1], "kaboom")
+    }
+    Err{error} => fail("expected Ok, got " + error)
+  }
+}
+
+test "classifyLine combines parse, classify, and score" {
+  mockLlm("disk", "warn")
+  match classifyLine("R-9|disk full") {
+    Ok{value} => {
+      let parts = split(value, "|")
+      assertEq(parts[0], "050")
+      assertEq(parts[1], "50")
+      assertEq(parts[2], "warn")
+      assertEq(parts[3], "R-9")
+      assertEq(parts[4], "disk full")
+    }
+    Err{error} => fail("expected Ok, got " + error)
+  }
+}
+
+test "classifyLine threads parse errors through `?`" {
+  match classifyLine("malformed-line") {
+    Ok{value} => fail("expected Err, got " + value)
+    Err{error} => check(contains(error, "expected 'id|body'"))
+  }
+}
+
+test "digest agent ingests a batch and ranks" {
+  mockLlm("crash", "critical")
+  mockLlm("typo", "info")
+  mockLlm("race", "warn")
+  let input = "R-1|crash in prod\nR-2|typo on page\nR-3|race condition"
+  let out = spawnAgent("digest", input)
+  check(contains(out, "# Digest"))
+  check(contains(out, "3 report(s) classified"))
+  check(contains(out, "R-1 [critical/100]"))
+  check(contains(out, "R-2 [info/10]"))
+  check(contains(out, "R-3 [warn/50]"))
+  let critIdx = indexOf(out, "R-1")
+  let infoIdx = indexOf(out, "R-2")
+  check(critIdx < infoIdx)
+}
+
+test "digest agent flags parse errors" {
+  mockLlm(".*", "info")
+  let input = "R-1|alright\nbroken-line\nR-2|also fine"
+  let out = spawnAgent("digest", input)
+  check(contains(out, "1 parse error(s)"))
+  check(contains(out, "## errors"))
+  check(contains(out, "broken-line"))
+}
+
+test "digest agent skips blank lines" {
+  mockLlm(".*", "info")
+  let input = "R-1|first\n\n\nR-2|second\n"
+  let out = spawnAgent("digest", input)
+  check(contains(out, "2 report(s) classified"))
+}
+
+test "toolSchemas surfaces tools, agents, and effects" {
+  let schemas = toolSchemas()
+  check(contains(schemas, "\"name\":\"classifySeverity\""))
+  check(contains(schemas, "\"name\":\"digest\""))
+  check(contains(schemas, "\"kind\":\"agent\""))
+  check(contains(schemas, "\"kind\":\"tool\""))
+  check(contains(schemas, "\"effects\":[\"ai\"]"))
+  check(contains(schemas, "\"budget\":20"))
+}
+
+test "callTool dispatches by name" {
+  mockLlm("disk", "warn")
+  let sev = callTool("classifySeverity", "disk full")
+  assertEq(sev, "warn")
+}
+
+test "mockLlm tracks call history in order" {
+  mockLlm(".*", "info")
+  let _a = classifySeverity("first")
+  let _b = classifySeverity("second")
+  let calls = mockLlmCalls()
+  assertEq(len(calls), 2)
+  check(contains(calls[0], "first"))
+  check(contains(calls[1], "second"))
+}

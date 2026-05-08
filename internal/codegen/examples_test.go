@@ -47,6 +47,8 @@ func TestExamplesCompileAndRun(t *testing.T) {
 		{entry: "api.tt", skip: "network-dependent"},
 		{entry: "stats.tt", skip: "needs args/stdin; covered by unit tests"},
 		{entry: "modules/main.tt", substr: "env=prod"},
+		{entry: "research_agent.tt", substr: "# Digest"},
+		{entry: "task_runner.tt", substr: "# Task report"},
 	}
 
 	shells := []string{"/bin/sh"}
@@ -124,4 +126,50 @@ func findRepoRoot(t *testing.T) string {
 // TestPlatform documents the shells we ran against.
 func TestPlatform(t *testing.T) {
 	t.Logf("runtime: %s/%s", runtime.GOOS, runtime.GOARCH)
+}
+
+// TestExamplesInlineTests runs `tartalo test` against the examples that
+// ship inline `test "..." { ... }` declarations. The bigger example
+// programs (research_agent.tt, task_runner.tt) carry substantial test
+// suites that exercise records, sums, generics, maps, parallel, and the
+// agent-platform builtins end-to-end. This test pins down that they
+// keep passing on the sh target as the language evolves.
+func TestExamplesInlineTests(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	examplesDir := filepath.Join(repoRoot, "examples")
+
+	// Build the tartalo binary into a temp dir so the test doesn't depend on
+	// whatever happens to be on PATH.
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "tartalo")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/tartalo")
+	build.Dir = repoRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build tartalo: %v\n%s", err, out)
+	}
+
+	cases := []string{
+		"calc_test.tt",
+		"research_agent.tt",
+		"task_runner.tt",
+	}
+	for _, entry := range cases {
+		entry := entry
+		t.Run(strings.ReplaceAll(entry, ".", "_"), func(t *testing.T) {
+			path := filepath.Join(examplesDir, entry)
+			cmd := exec.Command(bin, "test", "--no-verify", path)
+			cmd.Env = append(os.Environ(), "NO_COLOR=1")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("`tartalo test %s` failed (%v):\n%s", entry, err, out)
+			}
+			if !strings.Contains(string(out), "passed") {
+				t.Errorf("expected pass summary, got:\n%s", out)
+			}
+			if strings.Contains(string(out), "failed") &&
+				!strings.Contains(string(out), "0 failed") {
+				t.Errorf("unexpected failure mention:\n%s", out)
+			}
+		})
+	}
 }

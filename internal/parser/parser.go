@@ -7,11 +7,11 @@
 package parser
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
+	"github.com/enekos/tartalo/internal/diag"
 	"github.com/enekos/tartalo/internal/token"
 )
 
@@ -134,15 +134,42 @@ func (p *Parser) accept(k token.Kind) (token.Token, bool) {
 func (p *Parser) expect(k token.Kind, ctx string) token.Token {
 	t := p.peek()
 	if t.Kind != k {
-		p.errorf(t.Pos, "expected %s in %s, got %s", k, ctx, t.Kind)
+		d := p.errorf(t.Pos, "expected %s in %s, got %s", k, ctx, t.Kind)
+		if hint := expectHint(k, t.Kind); hint != "" {
+			d.WithHint(hint)
+		}
 		// don't advance — the caller will try to recover
 		return t
 	}
 	return p.advance()
 }
 
-func (p *Parser) errorf(pos token.Pos, format string, args ...any) {
-	p.errs = append(p.errs, fmt.Errorf("%s: %s", pos, fmt.Sprintf(format, args...)))
+// expectHint returns a short, actionable hint for the most common
+// "expected X, got Y" mistakes. Empty string when nothing useful to say.
+func expectHint(want, got token.Kind) string {
+	switch {
+	case want == token.Semicolon && (got == token.RBrace || got == token.EOF):
+		return "tartalo statements end with `;` — add one before this point"
+	case want == token.LBrace:
+		return "block bodies are required — wrap the body in `{ ... }`"
+	case want == token.RBrace:
+		return "block was opened with `{` but never closed; add a matching `}`"
+	case want == token.RParen:
+		return "parenthesised expression was never closed; add a matching `)`"
+	case want == token.RBracket:
+		return "list or index expression was never closed; add a matching `]`"
+	case want == token.Colon && got == token.Assign:
+		return "type annotations use `:`, not `=` — write `let x: number = 1`"
+	case want == token.Assign && got == token.Colon:
+		return "did you mean `=` instead of `:`?"
+	}
+	return ""
+}
+
+func (p *Parser) errorf(pos token.Pos, format string, args ...any) *diag.Diag {
+	d := diag.Newf(pos, format, args...)
+	p.errs = append(p.errs, d)
+	return d
 }
 
 // recoverToStmt advances tokens until we reach something that looks like the

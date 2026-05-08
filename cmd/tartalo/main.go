@@ -15,6 +15,7 @@ import (
 
 	"github.com/enekos/tartalo/internal/checker"
 	"github.com/enekos/tartalo/internal/codegen"
+	"github.com/enekos/tartalo/internal/diag"
 	"github.com/enekos/tartalo/internal/format"
 	"github.com/enekos/tartalo/internal/loader"
 	"github.com/enekos/tartalo/internal/lsp"
@@ -24,13 +25,53 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "tartalo: "+err.Error())
 		var ce *compileErrors
 		if errors.As(err, &ce) {
+			renderCompileErrors(os.Stderr, ce)
 			os.Exit(1)
 		}
+		fmt.Fprintln(os.Stderr, "tartalo: "+err.Error())
 		os.Exit(2)
 	}
+}
+
+// renderCompileErrors prints structured diagnostics with code frames.
+// Falls back to the legacy file:line:col: format when stderr isn't a TTY
+// (so CI logs and grep pipelines stay machine-readable) or when
+// TARTALO_PLAIN_ERRORS=1 is set.
+func renderCompileErrors(w io.Writer, ce *compileErrors) {
+	if shouldRenderPlain() {
+		for _, e := range ce.errs {
+			fmt.Fprintln(w, "tartalo: "+e.Error())
+		}
+		return
+	}
+	srcs := diag.MapSources(ce.sources)
+	color := isTerminal(w)
+	diag.Render(w, diag.FromErrors(ce.errs), srcs, color)
+}
+
+func shouldRenderPlain() bool {
+	if os.Getenv("TARTALO_PLAIN_ERRORS") == "1" {
+		return true
+	}
+	return os.Getenv("NO_COLOR") != "" && !isTerminalFile(os.Stderr)
+}
+
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	return isTerminalFile(f)
+}
+
+func isTerminalFile(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 func run(args []string) error {
@@ -89,7 +130,12 @@ skip the safety check.`)
 
 // compileErrors is a typed wrapper around lex/parse/check error lists so the
 // `main` function can distinguish user-program errors from internal errors.
-type compileErrors struct{ errs []error }
+// sources holds every source the loader read so the renderer can show code
+// frames even when the entry file failed to parse.
+type compileErrors struct {
+	errs    []error
+	sources map[string]string
+}
 
 func (c *compileErrors) Error() string {
 	parts := make([]string, len(c.errs))
@@ -103,13 +149,13 @@ func (c *compileErrors) Error() string {
 // modules are in topological order (deps before dependents) so the codegen
 // can iterate them directly.
 func frontEnd(path string) ([]*loader.Module, *checker.TypeInfo, error) {
-	modules, lerrs := loader.Load(path)
+	modules, sources, lerrs := loader.LoadWithSources(path)
 	if len(lerrs) > 0 {
-		return nil, nil, &compileErrors{errs: lerrs}
+		return nil, nil, &compileErrors{errs: lerrs, sources: sources}
 	}
 	info, cerrs := checker.New().Check(modules)
 	if len(cerrs) > 0 {
-		return nil, nil, &compileErrors{errs: cerrs}
+		return nil, nil, &compileErrors{errs: cerrs, sources: sources}
 	}
 	return modules, info, nil
 }
@@ -439,6 +485,7 @@ func cmdCheck(args []string) error {
 		return fmt.Errorf("check: expected at least one input file")
 	}
 	var combined []error
+	combinedSources := map[string]string{}
 	for _, in := range args {
 		if strings.HasPrefix(in, "-") {
 			return fmt.Errorf("check: unknown flag %q", in)
@@ -447,13 +494,16 @@ func cmdCheck(args []string) error {
 			var ce *compileErrors
 			if errors.As(err, &ce) {
 				combined = append(combined, ce.errs...)
+				for k, v := range ce.sources {
+					combinedSources[k] = v
+				}
 			} else {
 				combined = append(combined, err)
 			}
 		}
 	}
 	if len(combined) > 0 {
-		return &compileErrors{errs: combined}
+		return &compileErrors{errs: combined, sources: combinedSources}
 	}
 	return nil
 }

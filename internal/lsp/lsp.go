@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/enekos/tartalo/internal/diag"
 	"github.com/enekos/tartalo/internal/lexer"
 	"github.com/enekos/tartalo/internal/parser"
 )
@@ -255,9 +256,9 @@ type position struct {
 	Char int `json:"character"`
 }
 
-// posRe pulls a `file:line:col: message` prefix off our error strings. The
-// file segment may contain a colon (e.g. `tartalo:strings/extra.tt`), so we
-// match the *last* `:N:N: ` triple instead of the first.
+// posRe pulls a `file:line:col: message` prefix off legacy error strings
+// (those not produced via diag.Diag). Kept as a fallback for any producer
+// not yet converted.
 var posRe = regexp.MustCompile(`:(\d+):(\d+):\s*(.*)$`)
 
 func diagnostics(uri, text string) []diagnostic {
@@ -266,14 +267,18 @@ func diagnostics(uri, text string) []diagnostic {
 	_, perrs := parser.New(toks).Parse(name)
 	out := []diagnostic{}
 	for _, e := range append(lerrs, perrs...) {
-		if d, ok := errToDiag(e); ok {
+		if d, ok := errToLSPDiag(e); ok {
 			out = append(out, d)
 		}
 	}
 	return out
 }
 
-func errToDiag(e error) (diagnostic, bool) {
+func errToLSPDiag(e error) (diagnostic, bool) {
+	if d := diag.As(e); d != nil {
+		return diagFromDiag(d), true
+	}
+	// Legacy fallback: parse the file:line:col: prefix.
 	m := posRe.FindStringSubmatch(e.Error())
 	if m == nil {
 		return diagnostic{}, false
@@ -295,6 +300,49 @@ func errToDiag(e error) (diagnostic, bool) {
 		Source:   "tartalo",
 		Message:  strings.TrimSpace(m[3]),
 	}, true
+}
+
+// diagFromDiag converts a structured *diag.Diag into the LSP wire shape.
+// When the diag carries a hint or suggestion, fold them into the message
+// (LSP doesn't have a separate hint channel — `relatedInformation` is the
+// closest, but it requires URIs and ranges per note). Single message with
+// help/suggestion folded in is what most editors render legibly.
+func diagFromDiag(d *diag.Diag) diagnostic {
+	startLine, startChar := zeroBased(d.Pos.Line, d.Pos.Col)
+	endLine, endChar := startLine, startChar+1
+	if d.End.Line > 0 {
+		endLine, endChar = zeroBased(d.End.Line, d.End.Col)
+	}
+	msg := d.Msg
+	if d.Suggest != "" {
+		msg += "\nsuggestion: " + d.Suggest
+	}
+	if d.Hint != "" {
+		msg += "\nhelp: " + d.Hint
+	}
+	severity := 1
+	if d.Severity == diag.Warning {
+		severity = 2
+	}
+	return diagnostic{
+		Range: rng{
+			Start: position{Line: startLine, Char: startChar},
+			End:   position{Line: endLine, Char: endChar},
+		},
+		Severity: severity,
+		Source:   "tartalo",
+		Message:  msg,
+	}
+}
+
+func zeroBased(line, col int) (int, int) {
+	if line < 1 {
+		line = 1
+	}
+	if col < 1 {
+		col = 1
+	}
+	return line - 1, col - 1
 }
 
 func uriBasename(uri string) string {
