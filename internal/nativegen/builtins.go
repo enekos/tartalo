@@ -456,6 +456,33 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("strconv")
 		g.addImport("strings")
 		return "_tt_ceil(" + args[0] + ")"
+	case "asInt":
+		g.usesRuntimeTypeError = true
+		g.addImport("fmt")
+		g.addImport("os")
+		g.addImport("strconv")
+		// `_s` binds the input once so the error message echoes the exact
+		// value the user passed, not whatever side effect a duplicated
+		// expression might have.
+		return "func() int64 { _s := " + args[0] + "; _v, _err := strconv.ParseInt(_s, 10, 64); if _err != nil { _tt_typeError(" + g.callLoc(e) + ", \"int\", _s) }; return _v }()"
+	case "asFloat":
+		g.usesRuntimeTypeError = true
+		g.addImport("fmt")
+		g.addImport("os")
+		g.addImport("strconv")
+		g.addImport("strings")
+		return "func() float64 { _s := " + args[0] + "; _v, _err := strconv.ParseFloat(strings.TrimSpace(_s), 64); if _err != nil { _tt_typeError(" + g.callLoc(e) + ", \"float\", _s) }; return _v }()"
+	case "asBool":
+		g.usesRuntimeTypeError = true
+		g.addImport("fmt")
+		g.addImport("os")
+		// _tt_typeError exits, but Go can't see through os.Exit so the
+		// trailing `return false` is required to satisfy the type checker.
+		return "func() bool { _s := " + args[0] + "; if _s == \"true\" { return true }; if _s == \"false\" { return false }; _tt_typeError(" + g.callLoc(e) + ", \"bool\", _s); return false }()"
+	case "asString":
+		// asString is a runtime no-op: the static signature already proves
+		// the input is a string. Kept for symmetry with the other asXxx.
+		return args[0]
 	case "round":
 		g.usesRuntimeFloat = true
 		g.addImport("math")

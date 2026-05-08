@@ -74,6 +74,9 @@ func (g *Generator) writeRuntimeTo(out *strings.Builder) {
 	if g.usesRuntimeFloat {
 		out.WriteString(runtimeFloat)
 	}
+	if g.usesRuntimeTypeError {
+		out.WriteString(runtimeTypeError)
+	}
 	if g.usesRuntimeVec {
 		out.WriteString(runtimeVec)
 	}
@@ -202,6 +205,7 @@ func (g *Generator) anyRuntimeUsed() bool {
 		g.usesRuntimeHigherOrder || g.usesRuntimeFetch || g.usesRuntimeTestState ||
 		g.usesRuntimeEvalState ||
 		g.usesRuntimeEnv || g.usesRuntimeNow || g.usesRuntimeTry ||
+		g.usesRuntimeTypeError ||
 		g.usesAgentLLM || g.usesAgentApproval || g.usesAgentTrace ||
 		g.usesAgentSpawn
 }
@@ -958,6 +962,17 @@ func _tt_runTests(suite string, tests []_tt_testCase) {
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+`
+
+// runtimeTypeError is the shared abort helper for boundary type assertions
+// (asInt / asFloat / asBool). Mirrors the sh backend's __tartalo_typeerror:
+// prints `tartalo: type error at FILE:LINE:COL: expected EXPECTED, got GOT`
+// to stderr and exits 1.
+const runtimeTypeError = `func _tt_typeError(loc, expected, got string) {
+	fmt.Fprintf(os.Stderr, "tartalo: type error at %s: expected %s, got %s\n", loc, expected, got)
+	os.Exit(1)
 }
 
 `

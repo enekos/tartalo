@@ -705,6 +705,31 @@ A command in statement position runs for side effects:
 - `ceil(f: float): number` — smallest integer ≥ f
 - `round(f: float): number` — round to nearest integer (half away from zero)
 
+### Boundary type assertions
+
+These convert a string from the untyped world (shell exec output, fetch
+bodies, env vars, `readFile` contents) into a concretely typed value at
+the trust boundary. On a mismatch the script aborts with a runtime type
+error citing the call site:
+
+```
+tartalo: type error at FILE:LINE:COL: expected EXPECTED, got VALUE
+```
+
+Use them sparingly — internal Tartalo code is already type-checked, so
+the static signature does the work. They earn their keep where the
+checker can't see (untyped strings crossing in from outside).
+
+- `asInt(s: string): number` — assert decimal int (`-?[0-9]+`); aborts otherwise
+- `asFloat(s: string): float` — assert float (matches `parseFloat` grammar); aborts otherwise
+- `asBool(s: string): bool` — assert exactly `"true"` or `"false"`; aborts otherwise
+- `asString(s: string): string` — runtime no-op; documents the boundary check
+
+```tartalo
+let p = exec("wc -l < data.csv")
+let lines: number = asInt(trim(p.stdout))   // proceeds typed, or aborts here
+```
+
 ### Numeric vectors (numpy-lite)
 
 Element-wise and reduction ops on `float[]` (and `arange` on `number[]`).

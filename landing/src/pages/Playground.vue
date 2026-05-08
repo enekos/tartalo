@@ -159,7 +159,8 @@ func main(): void {
   },
   {
     name: "records",
-    code: `type Person = {
+    code: `// nominal record types; literals must name the type
+type Person = {
   name: string,
   age: number,
 }
@@ -169,19 +170,25 @@ func birthday(p: Person): Person {
 }
 
 func main(): void {
-  let alice: Person = { name: "Alice", age: 30 }
-  let older: Person = birthday(alice)
-  echo(older.name + " is " + str(older.age))
+  let people: Person[] = [
+    Person{ name: "Alice", age: 30 },
+    Person{ name: "Bob",   age: 41 },
+  ]
+  for p in people {
+    let older: Person = birthday(p)
+    echo("\${older.name} is now \${older.age}")
+  }
 }
 `,
   },
   {
     name: "commands",
-    code: `func main(): void {
+    code: `// backticks shell out and capture stdout
+func main(): void {
   let files: string = \`ls -1\`
   for line in split(files, "\\n") {
     if endsWith(line, ".tt") {
-      echo("source: " + line)
+      echo("source: \${line}")
     }
   }
 }
@@ -195,20 +202,36 @@ func main(): void {
     "build" | "compile" => echo("compiling")
     "run"               => echo("running")
     ""                  => echo("usage: ACTION=...")
-    _                   => echo("unknown: " + action)
+    _                   => echo("unknown: \${action}")
   }
 }
 `,
   },
   {
     name: "optionals",
-    code: `func main(): void {
+    code: `// env() returns string?; ?? unwraps with a default
+func main(): void {
   let token: string? = env("API_TOKEN")
   let key: string = token ?? "anon"
   if token == null {
     eprint("warning: no API_TOKEN set")
   }
-  echo("key=" + key)
+  echo("key=\${key}")
+}
+`,
+  },
+  {
+    name: "boundaries",
+    code: `// asInt/asFloat/asBool convert untyped strings into typed values
+// at the boundary. On a mismatch the script aborts with a runtime
+// type error citing the call site — no silent NaN, no zero-default.
+func main(): void {
+  let raw: string = env("PORT") ?? "8080"
+  let port: number = asInt(raw)
+  if port < 1024 {
+    eprint("warning: privileged port \${port}")
+  }
+  echo("listening on :\${port}")
 }
 `,
   },

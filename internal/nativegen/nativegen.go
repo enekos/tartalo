@@ -97,6 +97,7 @@ type Generator struct {
 	usesRuntimeEnv         bool
 	usesRuntimeNow         bool
 	usesRuntimeTry         bool
+	usesRuntimeTypeError   bool
 
 	// usesMockedBuiltin records, per builtin, whether the program calls the
 	// matching mock setter / inspector. The runtime emits the dispatcher in

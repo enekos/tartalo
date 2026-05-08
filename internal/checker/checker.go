@@ -3223,6 +3223,17 @@ func builtins() []*Symbol {
 		mk("ceil", []types.Type{flt}, num),
 		mk("round", []types.Type{flt}, num),
 
+		// Boundary type assertions. Unlike `parseInt`/`parseFloat` (which
+		// signal failure by returning null), these abort the script with a
+		// runtime type error citing the call site. They exist so user code
+		// can convert untyped strings (exec output, fetch bodies, env vars,
+		// readFile contents) into a concretely-typed value at the trust
+		// boundary, then move on without optional-handling boilerplate.
+		mk("asInt", []types.Type{str}, num),
+		mk("asFloat", []types.Type{str}, flt),
+		mk("asBool", []types.Type{str}, bln),
+		mk("asString", []types.Type{str}, str),
+
 		// Numeric vector builtins (numpy-lite). All operate on float[];
 		// arange returns number[]. Reductions return float; element-wise
 		// ops return float[]. Mismatched-length binary ops use the shorter

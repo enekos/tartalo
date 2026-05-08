@@ -797,6 +797,18 @@ const builtins = [
     ],
   },
   {
+    id: "asx",
+    title: "Boundary type assertions",
+    intro:
+      'Convert untyped strings (exec output, fetch bodies, env vars, readFile contents) into a concretely typed value at the trust boundary. On a mismatch the script aborts with a runtime type error citing the call site (<code>tartalo: type error at FILE:LINE:COL: expected EXPECTED, got VALUE</code>). Use sparingly &mdash; internal Tartalo code is already type-checked.',
+    items: [
+      { sig: "asInt(s: string): number", desc: "assert decimal int (<code>-?[0-9]+</code>); aborts otherwise" },
+      { sig: "asFloat(s: string): float", desc: "assert float (same grammar as <code>parseFloat</code>); aborts otherwise" },
+      { sig: "asBool(s: string): bool", desc: 'assert exactly <code>"true"</code> or <code>"false"</code>; aborts otherwise' },
+      { sig: "asString(s: string): string", desc: "runtime no-op; documents the boundary check" },
+    ],
+  },
+  {
     id: "fileio",
     title: "File I/O",
     intro:

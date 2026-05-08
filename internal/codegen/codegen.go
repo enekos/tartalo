@@ -150,6 +150,10 @@ type Generator struct {
 	// fragment, so the flag also gates emission of __tt_map_rs / __tt_map_us.
 	usesMap bool
 
+	// usesTypeError is set when any emitted asInt/asFloat/asBool call site
+	// needs the shared __tartalo_typeerror runtime helper.
+	usesTypeError bool
+
 	// pendingLambdas accumulates anonymous-function literals encountered
 	// during expression compilation. Each one is hoisted to a top-level
 	// sh function emitted at the end of emitModules, before the main
@@ -520,7 +524,7 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		g.emitTestHarness(entry)
 	}
 	result := g.out.String()
-	if g.needsArgv || g.usesRecordArrays || g.usesUtf8 || g.usesMap {
+	if g.needsArgv || g.usesRecordArrays || g.usesUtf8 || g.usesMap || g.usesTypeError {
 		var cond strings.Builder
 		if g.usesRecordArrays {
 			cond.WriteString(`__tt_us=$(printf '\037')` + "\n")
@@ -533,6 +537,9 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		}
 		if g.usesMap {
 			cond.WriteString(mapRuntimeHelpers)
+		}
+		if g.usesTypeError {
+			cond.WriteString(typeErrorRuntimeHelper)
 		}
 		result = result[:insertPos] + cond.String() + result[insertPos:]
 	}
@@ -581,6 +588,17 @@ __tt_runeslice() {
       }
       printf "%s", out
     }'
+}
+`
+
+// typeErrorRuntimeHelper is injected into the preamble when any asInt /
+// asFloat / asBool call site needs to abort with a runtime type error. The
+// helper takes a `file:line:col`, the expected type name, and the offending
+// value; prints them to stderr; and exits 1. Single-quoted format string so
+// the user-supplied value (positional arg) cannot trigger format expansion.
+const typeErrorRuntimeHelper = `__tartalo_typeerror() {
+  printf 'tartalo: type error at %s: expected %s, got %s\n' "$1" "$2" "$3" >&2
+  exit 1
 }
 `
 
@@ -3321,6 +3339,76 @@ func (g *Generator) compileParseFloat(args []exprValue, prologue []string) exprV
 	}
 }
 
+// compileAsInt asserts that the input string parses as a signed decimal
+// integer. On mismatch the script aborts via __tartalo_typeerror citing the
+// call site. Pure POSIX: no awk fork, just a cascade of `case` globs.
+//
+// The accepted grammar is `-?[0-9]+` (no leading `+`, no whitespace, no
+// underscores). That matches `parseInt`'s grammar so users get consistent
+// behaviour when they swap a `parseInt(s) ?? 0` for `asInt(s)`.
+func (g *Generator) compileAsInt(args []exprValue, prologue []string, pos token.Pos) exprValue {
+	g.usesTypeError = true
+	loc := fmt.Sprintf("%s:%d:%d", pos.File, pos.Line, pos.Col)
+	srcVar := g.tmp("ai_s")
+	tailVar := g.tmp("ai_t")
+	resVar := g.tmp("ai_v")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", srcVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`case "$%s" in `+
+			`''|-) __tartalo_typeerror '%s' int "$%s" ;; `+
+			`-*) %s=${%s#-}; case "$%s" in *[!0-9]*) __tartalo_typeerror '%s' int "$%s" ;; esac ;; `+
+			`*[!0-9]*) __tartalo_typeerror '%s' int "$%s" ;; `+
+			`esac`,
+		srcVar,
+		escForSingleQuoted(loc), srcVar,
+		tailVar, srcVar, tailVar, escForSingleQuoted(loc), srcVar,
+		escForSingleQuoted(loc), srcVar))
+	prologue = append(prologue, fmt.Sprintf(`%s="$%s"`, resVar, srcVar))
+	return exprValue{prologue: prologue, value: resVar, form: formArith}
+}
+
+// compileAsFloat asserts that the input string parses as a float. Same
+// grammar as `parseFloat` (signed, optional decimal, optional exponent).
+// Implementation routes through awk for the regex match; on mismatch the
+// script aborts via __tartalo_typeerror.
+func (g *Generator) compileAsFloat(args []exprValue, prologue []string, pos token.Pos) exprValue {
+	g.usesTypeError = true
+	loc := fmt.Sprintf("%s:%d:%d", pos.File, pos.Line, pos.Col)
+	srcVar := g.tmp("af_s")
+	okVar := g.tmp("af_ok")
+	resVar := g.tmp("af_v")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", srcVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`%s=$(awk -v s="$%s" 'BEGIN {`+
+			` if (s ~ /^[ \t]*[-+]?([0-9]+(\.[0-9]+)?|\.[0-9]+)([eE][-+]?[0-9]+)?[ \t]*$/) print "1"; else print "0"`+
+			` }')`,
+		okVar, srcVar))
+	prologue = append(prologue, fmt.Sprintf(
+		`if [ "$%s" != "1" ]; then __tartalo_typeerror '%s' float "$%s"; fi`,
+		okVar, escForSingleQuoted(loc), srcVar))
+	prologue = append(prologue, fmt.Sprintf(`%s="$%s"`, resVar, srcVar))
+	return exprValue{prologue: prologue, value: "${" + resVar + "}", form: formStr}
+}
+
+// compileAsBool asserts that the input is exactly "true" or "false" and
+// produces the corresponding 1/0 boolean encoding the rest of codegen
+// expects. Anything else aborts via __tartalo_typeerror.
+func (g *Generator) compileAsBool(args []exprValue, prologue []string, pos token.Pos) exprValue {
+	g.usesTypeError = true
+	loc := fmt.Sprintf("%s:%d:%d", pos.File, pos.Line, pos.Col)
+	srcVar := g.tmp("ab_s")
+	resVar := g.tmp("ab_v")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", srcVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`case "$%s" in `+
+			`true) %s=1 ;; `+
+			`false) %s=0 ;; `+
+			`*) __tartalo_typeerror '%s' bool "$%s" ;; `+
+			`esac`,
+		srcVar, resVar, resVar, escForSingleQuoted(loc), srcVar))
+	return exprValue{prologue: prologue, value: resVar, form: formBool}
+}
+
 // compileFormatFloat formats a float to the given decimal precision.
 func (g *Generator) compileFormatFloat(args []exprValue, prologue []string) exprValue {
 	t := g.tmp("ff")
@@ -4267,6 +4355,19 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		return g.compileFormatFloat(args, prologue)
 	case "floor", "ceil", "round":
 		return g.compileFloatRound(args, prologue, sym.Name)
+
+	// --- boundary type assertions ---
+	case "asInt":
+		return g.compileAsInt(args, prologue, callPos)
+	case "asFloat":
+		return g.compileAsFloat(args, prologue, callPos)
+	case "asBool":
+		return g.compileAsBool(args, prologue, callPos)
+	case "asString":
+		// asString is a runtime no-op: every Tartalo value of this builtin's
+		// input type is already a string. The cast exists so user code can
+		// document the boundary check; the static signature does the work.
+		return args[0]
 
 	// --- pandas-lite ---
 	case "count":
