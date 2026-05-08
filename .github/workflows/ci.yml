@@ -33,6 +33,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build playground WASM
+        run: make wasm
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:

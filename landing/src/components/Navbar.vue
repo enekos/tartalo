@@ -8,6 +8,7 @@
       </router-link>
 
       <div class="nav-links">
+        <router-link to="/playground">Playground</router-link>
         <router-link to="/reference">Reference</router-link>
         <router-link to="/#features">Features</router-link>
         <router-link to="/#install">Install</router-link>

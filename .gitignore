@@ -43,3 +43,5 @@ autoresearch.jsonl
 # Landing page build artifacts
 landing/node_modules/
 landing/dist/
+landing/public/tartalo.wasm
+landing/public/wasm_exec.js

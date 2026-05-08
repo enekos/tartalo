@@ -1,4 +1,4 @@
-.PHONY: all build install test cover bench fmt fmt-check lint vet check examples clean help
+.PHONY: all build install test cover bench fmt fmt-check lint vet check examples wasm clean help
 
 GO         ?= go
 BIN        ?= tartalo
@@ -63,10 +63,17 @@ examples: build
 		./$(BIN) check $$f; \
 	done
 
+## wasm: build the browser-playground compiler bundle into landing/public
+wasm:
+	GOOS=js GOARCH=wasm $(GO) build -o landing/public/tartalo.wasm ./cmd/tartalo-wasm
+	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" landing/public/wasm_exec.js
+	@echo "wrote landing/public/tartalo.wasm and landing/public/wasm_exec.js"
+
 ## clean: remove the binary and coverage artifacts
 clean:
 	rm -f $(BIN) coverage.out coverage.html
 	rm -f examples/*.sh
+	rm -f landing/public/tartalo.wasm landing/public/wasm_exec.js
 
 ## help: list available targets
 help:
