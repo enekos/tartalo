@@ -109,7 +109,7 @@ func run(args []string) error {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
   tartalo build <file.tt> [-o <out>] [--target=sh|native] [--goos=<os>] [--goarch=<arch>] [--no-verify] [--trace]
-  tartalo run   [--target=sh|native] [--no-verify] [--trace] <file.tt> [-- args...]
+  tartalo run   [--target=sh|native] [--no-verify] [--no-trace] <file.tt> [-- args...]
   tartalo test  [--target=sh|native] [--no-verify] <file.tt>   # run all `+"`test \"...\" { ... }`"+` declarations
   tartalo eval  <file-or-dir>                                # run all `+"`eval \"...\" { ... }`"+` declarations (native target)
   tartalo check <file.tt>             # type-check without emitting sh
@@ -873,10 +873,13 @@ func cmdRun(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("run: expected an input file")
 	}
-	// Strip leading run-only flags (--no-verify, --trace, --target). Anything
-	// after the input file is forwarded to the script.
+	// Strip leading run-only flags (--no-verify, --trace/--no-trace, --target).
+	// Anything after the input file is forwarded to the script. Trace is on by
+	// default for `run` so users get Rust-style runtime error frames out of
+	// the box; --no-trace opts out (e.g., to capture the exact stderr the
+	// produced .sh would emit on its own).
 	noVerify := false
-	trace := false
+	trace := true
 	target := "sh"
 	for len(args) > 0 {
 		switch {
@@ -885,6 +888,9 @@ func cmdRun(args []string) error {
 			args = args[1:]
 		case args[0] == "--trace":
 			trace = true
+			args = args[1:]
+		case args[0] == "--no-trace":
+			trace = false
 			args = args[1:]
 		case strings.HasPrefix(args[0], "--target="):
 			target = strings.TrimPrefix(args[0], "--target=")

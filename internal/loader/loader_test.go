@@ -337,6 +337,159 @@ func TestStdlibNumbersExtra(t *testing.T) {
 	}
 }
 
+func TestStdlibResult(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { Result, ok, err, isOk, isErr, unwrapOr, errorOf } from "tartalo:result/result"
+		func mk(s: string): Result {
+			if s == "bad" { return err("nope") }
+			return ok("got " + s)
+		}
+		func main(): void {
+			let r1: Result = mk("foo")
+			let r2: Result = mk("bad")
+			echo(unwrapOr(r1, "?"))
+			echo(unwrapOr(r2, "default"))
+			if isOk(r1)  { echo("r1 ok") }
+			if isErr(r2) { echo("r2 err") }
+			echo(errorOf(r2) ?? "")
+		}
+	`)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "got foo\ndefault\nr1 ok\nr2 err\nnope\n"
+	if out != want {
+		t.Errorf("got %q\nwant %q", out, want)
+	}
+}
+
+func TestStdlibPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { join3, withExt, stripExt, isAbs, stem } from "tartalo:path/path"
+		func main(): void {
+			echo(join3("a", "b", "c.txt"))
+			echo(withExt("foo/bar.txt", ".log"))
+			echo(stripExt("foo/bar.txt"))
+			echo(stem("/var/log/x.gz"))
+			if isAbs("/etc")  { echo("abs") } else { echo("rel") }
+			if isAbs("./foo") { echo("abs") } else { echo("rel") }
+		}
+	`)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "a/b/c.txt\nfoo/bar.log\nfoo/bar\nx\nabs\nrel\n"
+	if out != want {
+		t.Errorf("got %q\nwant %q", out, want)
+	}
+}
+
+func TestStdlibRegex(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { matches, findOr, replaceAll, hasAny, hasAll, countMatches } from "tartalo:regex/regex"
+		func main(): void {
+			if matches("hello42", "[0-9]+") { echo("digit") }
+			echo(findOr("abc-def", "[a-z]+", "?"))
+			echo(replaceAll("a a a", "a", "b"))
+			echo(str(countMatches("ababab", "a")))
+			if hasAny("hello", ["xyz", "ell"]) { echo("any") }
+			if hasAll("hello", ["he", "llo"]) { echo("all") }
+		}
+	`)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "digit\nabc\nb b b\n3\nany\nall\n"
+	if out != want {
+		t.Errorf("got %q\nwant %q", out, want)
+	}
+}
+
+func TestStdlibTime(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { unixNow, since, formatNow } from "tartalo:time/time"
+		func main(): void {
+			let t: number = unixNow()
+			if t > 0 { echo("got time") }
+			echo(str(since(t - 100) >= 100))
+			let y: string = formatNow("%Y")
+			if len(y) == 4 { echo("4-digit year") }
+		}
+	`)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "got time\n1\n4-digit year\n"
+	if out != want {
+		t.Errorf("got %q\nwant %q", out, want)
+	}
+}
+
+func TestStdlibFs(t *testing.T) {
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	src := `
+		import { readLines, writeLines, ensureDir, listFiles, readFileOr } from "tartalo:fs/fs"
+		func main(): void {
+			let dir: string = "` + work + `"
+			ensureDir(dir)
+			writeLines(dir + "/a.txt", ["one", "two", "three"])
+			let lines: string[] = readLines(dir + "/a.txt")
+			echo(str(len(lines)))
+			for l in lines { echo(l) }
+			echo(readFileOr("/no/such/file", "[empty]"))
+			let files: string[] = listFiles(dir)
+			echo(str(len(files)))
+		}
+	`
+	writeFile(t, filepath.Join(dir, "main.tt"), src)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "3\none\ntwo\nthree\n[empty]\n1\n"
+	if out != want {
+		t.Errorf("got %q\nwant %q", out, want)
+	}
+}
+
+func TestStdlibJson(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.tt"), `
+		import { getOr, getIntOr, getBoolOr, escape } from "tartalo:json/json"
+		func main(): void {
+			echo(getOr("{\"name\":\"Alice\"}", ".name", "?"))
+			echo(getOr("{\"name\":\"Alice\"}", ".missing", "fallback"))
+			echo(str(getIntOr("{\"n\":42}", ".n", -1)))
+			echo(str(getIntOr("{\"x\":1}", ".n", -1)))
+			if getBoolOr("{\"ok\":true}", ".ok", false) { echo("yes") }
+			echo(escape("a\"b"))
+		}
+	`)
+	sh, err := compileEntry(t, filepath.Join(dir, "main.tt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := runScript(t, sh)
+	want := "Alice\nfallback\n42\n-1\nyes\n\"a\\\"b\"\n"
+	if out != want {
+		t.Errorf("got %q\nwant %q", out, want)
+	}
+}
+
 func TestStdlibImportMissing(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "main.tt"), `

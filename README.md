@@ -86,7 +86,7 @@ make examples
 
 ```
 tartalo build <file.tt> [-o <out>] [--target=sh|native] [--goos=<os>] [--goarch=<arch>] [--no-verify] [--trace]
-tartalo run   [--target=sh|native] [--no-verify] [--trace] <file.tt> [-- args...]
+tartalo run   [--target=sh|native] [--no-verify] [--no-trace] <file.tt> [-- args...]
 tartalo check <file.tt>...                                       # type-check only, no codegen
 tartalo test  [--target=sh|native] [--no-verify] <file-or-dir>   # run every `test "..."` block, recursively for a dir
 tartalo eval  <file-or-dir>                                      # run every `eval "..."` block (native target)
@@ -106,10 +106,13 @@ the host's `go` toolchain into a statically-linked binary; `--goos` and
 requires `go` on `PATH` at build time but produces binaries with no runtime
 toolchain dependency.
 
-`--trace` (build/run) emits per-statement source-line tracking and an EXIT
-trap that prints the last known `.tt` location on a non-zero exit. Off by
-default; opt in when debugging a script that aborts under `set -e`. Sh
-target only.
+Source-mapped runtime errors are on by default for `tartalo run`: when a
+script aborts under `set -e`, the EXIT trap prints a Rust-style frame with
+the absolute `.tt` path, the failing source line, and a caret column marker.
+Pass `--no-trace` to suppress it (e.g., to capture the bare stderr the
+script would emit on its own). For `tartalo build`, source-mapping is opt-in
+via `--trace` since shipped scripts usually want the smaller, cleaner
+output. Sh target only.
 
 By default, sh-target build/run/test pipe the emitted sh through `shellcheck`
 before writing or executing it. Pass `--no-verify` (or set
@@ -125,7 +128,18 @@ build` does not load `.env` — it's a runtime concern, not a compile-time
 one.
 
 Stdlib modules ship inside the binary and are imported via the `tartalo:`
-scheme, e.g. `import { padLeft, repeat } from "tartalo:strings/extra"`.
+scheme:
+
+```tartalo
+import { padLeft, repeat }       from "tartalo:strings/extra"
+import { clamp, gcd, pow }       from "tartalo:numbers/extra"
+import { Result, ok, err }       from "tartalo:result/result"
+import { getOr, getIntOr }       from "tartalo:json/json"
+import { isoNow, since }         from "tartalo:time/time"
+import { join3, withExt, stem }  from "tartalo:path/path"
+import { readLines, listFiles }  from "tartalo:fs/fs"
+import { matches, findOr }       from "tartalo:regex/regex"
+```
 
 ## LLM providers
 

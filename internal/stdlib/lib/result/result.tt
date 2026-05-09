@@ -1,0 +1,78 @@
+// result — the canonical string-error Result type.
+//
+// Tartalo's `?` propagation operator works on any sum type with the shape
+// `Ok{value: T} | Err{error: E}`. This module ships the most common case
+// (string both ways) so projects can adopt a shared convention without
+// declaring their own per-(T,E) shape:
+//
+//   import { Result, ok, err, unwrapOr } from "tartalo:result/result"
+//
+//   func parseAge(s: string): Result {
+//     let n: number = num(s)
+//     if n < 0 { return err("negative age") }
+//     return ok(str(n))
+//   }
+//
+//   func main(): void {
+//     let v: string = unwrapOr(parseAge("42"), "?")
+//     echo(v)
+//   }
+//
+// Other shapes (Result<Person, MyError>, etc.) still need a user-declared
+// sum — the language doesn't yet support generic type declarations. The
+// declared sum just needs the same Ok/Err shape and `?` will work on it.
+
+export type Result = Ok{value: string} | Err{error: string}
+
+export func ok(v: string): Result {
+  return Ok{value: v}
+}
+
+export func err(msg: string): Result {
+  return Err{error: msg}
+}
+
+export func isOk(r: Result): bool {
+  match r {
+    Ok{value} => return true
+    Err{error} => return false
+  }
+  return false
+}
+
+export func isErr(r: Result): bool {
+  match r {
+    Ok{value} => return false
+    Err{error} => return true
+  }
+  return false
+}
+
+// unwrapOr returns the Ok value, or `default` when the Result is Err.
+export func unwrapOr(r: Result, default: string): string {
+  match r {
+    Ok{value} => return value
+    Err{error} => return default
+  }
+  return default
+}
+
+// errorOf returns the Err message, or null when the Result is Ok. Useful
+// for logging / surfacing the failure without unwrapping the Ok branch.
+export func errorOf(r: Result): string? {
+  match r {
+    Ok{value} => return null
+    Err{error} => return error
+  }
+  return null
+}
+
+// valueOf returns the Ok value, or null when the Result is Err. Pairs with
+// errorOf when you want both branches as nullable strings.
+export func valueOf(r: Result): string? {
+  match r {
+    Ok{value} => return value
+    Err{error} => return null
+  }
+  return null
+}

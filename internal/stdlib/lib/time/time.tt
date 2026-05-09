@@ -1,0 +1,43 @@
+// time — wrappers around `now`, `sleep`, and `formatTime`.
+//
+//   import { unixNow, since, isoNow, sleepMs } from "tartalo:time/time"
+
+// unixNow is `now()` under a more explicit name — Unix epoch seconds.
+export func unixNow(): number {
+  return now()
+}
+
+// since returns how many seconds have elapsed since `t` (a Unix timestamp).
+// Negative values mean `t` is in the future.
+export func since(t: number): number {
+  return now() - t
+}
+
+// isoNow renders the current time as an ISO-8601 timestamp in UTC, e.g.
+// "2026-05-09T14:23:45Z". Handy for log lines.
+export func isoNow(): string {
+  return formatTime(now(), "%Y-%m-%dT%H:%M:%SZ")
+}
+
+// formatNow renders the current time using the supplied strftime-style
+// format string. Equivalent to `formatTime(now(), fmt)`.
+export func formatNow(fmt: string): string {
+  return formatTime(now(), fmt)
+}
+
+// sleepMs sleeps for the given number of milliseconds, rounded up to the
+// nearest second on the sh backend (the underlying `sleep` builtin takes
+// integer seconds). The native backend honours sub-second precision.
+export func sleepMs(ms: number): void {
+  let s: number = ms / 1000
+  if ms > 0 && s == 0 { sleep(1); return }
+  sleep(s)
+}
+
+// elapsed runs `body()` (a thunk) and reports how many seconds it took.
+// Pass a closure that captures any inputs you need.
+export func elapsed(body: func(): void): number {
+  let start: number = now()
+  body()
+  return now() - start
+}

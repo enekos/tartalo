@@ -1,0 +1,58 @@
+// fs — wrappers around the file-I/O builtins (`readFile`, `writeFile`,
+// `appendFile`, `removeFile`, `mkdir`, `listDir`, `exists`, `isFile`,
+// `isDir`).
+//
+//   import { readLines, ensureDir, listFiles, replaceFile } from "tartalo:fs/fs"
+
+// readLines reads the file and splits on newlines, dropping a trailing
+// empty line if the file ends with `\n`. Convenient for line-oriented
+// processing.
+export func readLines(path: string): string[] {
+  let body: string = readFile(path)
+  if len(body) == 0 {
+    let empty: string[] = []
+    return empty
+  }
+  // Drop a single trailing newline so "a\nb\n" yields ["a","b"], not
+  // ["a","b",""]. Files without a trailing newline are kept verbatim.
+  if endsWith(body, "\n") {
+    body = slice(body, 0, len(body) - 1)
+  }
+  return split(body, "\n")
+}
+
+// writeLines is the dual of readLines: joins with `\n` and ensures a
+// trailing newline.
+export func writeLines(path: string, lines: string[]): void {
+  writeFile(path, join(lines, "\n") + "\n")
+}
+
+// ensureDir creates `path` (idempotently) — does nothing if it already
+// exists as a directory; errors via the underlying mkdir if it exists as
+// a file.
+export func ensureDir(path: string): void {
+  if !isDir(path) { mkdir(path) }
+}
+
+// listFiles returns just the regular files in `dir` (not subdirectories,
+// not symlinks-to-dirs). Pairs with `listDirs` for the inverse view.
+export func listFiles(dir: string): string[] {
+  return filter(listDir(dir), func(name: string): bool {
+    return isFile(pathJoin(dir, name))
+  })
+}
+
+// listDirs returns just the subdirectories of `dir` (basenames, not full
+// paths).
+export func listDirs(dir: string): string[] {
+  return filter(listDir(dir), func(name: string): bool {
+    return isDir(pathJoin(dir, name))
+  })
+}
+
+// readFileOr returns the file's contents, or `default` if the file is
+// missing. Avoids needing an explicit `exists` check at the call site.
+export func readFileOr(path: string, default: string): string {
+  if !exists(path) { return default }
+  return readFile(path)
+}

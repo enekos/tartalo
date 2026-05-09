@@ -125,3 +125,29 @@ func TestNativeMapWithNumberKeys(t *testing.T) {
 		t.Errorf("got %q want %q", got, want)
 	}
 }
+
+// Record-valued maps are supported on the native backend (Go's map[K]Struct
+// composes naturally). The sh backend rejects this at codegen time with a
+// runtime error pointing users to --target=native.
+func TestNativeMapWithRecordValues(t *testing.T) {
+	bin := build(t, `
+		type Person = { name: string, age: number }
+
+		func main(): void {
+			let m0: map<string, Person> = mapNew()
+			let m1: map<string, Person> = mapSet(m0, "alice", Person{name: "Alice", age: 30})
+			let m2: map<string, Person> = mapSet(m1, "bob",   Person{name: "Bob",   age: 25})
+			let p: Person? = mapGet(m2, "alice")
+			if p != null {
+				echo(p.name)
+				echo(str(p.age))
+			}
+			echo(str(mapLen(m2)))
+			for k in mapKeys(m2) { echo(k) }
+		}
+	`)
+	want := "Alice\n30\n2\nalice\nbob\n"
+	if got := runBin(t, bin); got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}

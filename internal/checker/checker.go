@@ -2656,13 +2656,18 @@ func isMapKeyType(t types.Type) bool {
 	return t == types.String || t == types.Number || t == types.Bool
 }
 
-// isMapValueType reports whether t is a legal map value type. v0 limits values
-// to non-optional primitives so the sh encoding stays a flat string. Optional
-// values would require a per-pair null sidecar and would be ambiguous with the
-// implicit "missing key → null" channel surfaced by mapGet.
+// isMapValueType reports whether t is a legal map value type. Primitives work
+// on both backends. Records work on the native backend; the sh backend rejects
+// non-primitives at codegen time with a target-specific error pointing users
+// to --target=native. Optionals, nested maps, sums and arrays are still
+// reserved — optional<V> would collide with mapGet's "missing key → null"
+// channel, and the rest need encoding work on sh that's not yet wired up.
 func isMapValueType(t types.Type) bool {
 	switch t {
 	case types.String, types.Number, types.Float, types.Bool:
+		return true
+	}
+	if _, ok := t.(*types.Record); ok {
 		return true
 	}
 	return false

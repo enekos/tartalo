@@ -291,10 +291,13 @@ not yet supported.
 ## Maps
 
 `map<K, V>` is an associative type. Keys must be a primitive `string`,
-`number`, or `bool`; values must be a non-optional primitive (`string`,
-`number`, `float`, `bool`). Maps are constructed empty and populated through
-the `mapSet` builtin; both `mapSet` and `mapDelete` return a new map rather
-than mutating the operand, mirroring how arrays are passed in Tartalo.
+`number`, or `bool`. Values may be a primitive (`string`, `number`, `float`,
+`bool`) on both backends, or a record on `--target=native` (the sh backend
+rejects record-valued maps at runtime with a hint to switch targets — its
+flat-string encoding can't represent composite values yet). Maps are
+constructed empty and populated through the `mapSet` builtin; both `mapSet`
+and `mapDelete` return a new map rather than mutating the operand, mirroring
+how arrays are passed in Tartalo.
 
 ```tartalo
 func main(): void {
@@ -331,7 +334,8 @@ infer K and V.
 ### v0 limitations
 
 - No map literal syntax. Build via `mapNew()` + `mapSet`.
-- Values cannot be optional, arrays, records, sums, or other maps.
+- Values cannot be optional, arrays, sums, or other maps. Records are
+  supported on the native backend only.
 - Maps cannot be record fields, array elements, or other map values.
 - Iteration order is sorted-by-key, not insertion order. Both backends agree
   on this so cross-target stdout stays byte-identical.
@@ -586,19 +590,39 @@ to shared locals would race — so the language forbids both.
 
 ## Result and the `?` operator
 
-There is no built-in `Result` type — the user defines their own sum that
-matches the Result shape:
-
-```tartalo
-type IntResult = Ok{value: number} | Err{error: string}
-```
-
 A "Result-shaped sum" is any sum with exactly two variants named `Ok` and
 `Err`, where `Ok` has a single field named `value` and `Err` has a single
 field named `error`. The `?` postfix operator on a Result-shaped value
-short-circuits to the enclosing function's matching `Err`:
+short-circuits to the enclosing function's matching `Err`.
+
+For string-error pipelines, the stdlib ships a canonical Result with
+constructor and accessor helpers:
 
 ```tartalo
+import { Result, ok, err, unwrapOr } from "tartalo:result/result"
+
+func parseAge(s: string): Result {
+  if s == "bad" { return err("invalid age") }
+  return ok("age=" + s)
+}
+
+func formatAge(s: string): Result {
+  let v: string = parseAge(s)?       // Err short-circuits formatAge
+  return ok("[" + v + "]")
+}
+
+func main(): void {
+  echo(unwrapOr(formatAge("42"),  "?"))
+  echo(unwrapOr(formatAge("bad"), "?"))
+}
+```
+
+For other (T, E) shapes (`Result<Person, MyError>`, etc.) declare your own
+sum with the same Ok/Err shape and `?` will work on it directly:
+
+```tartalo
+type IntResult = Ok{value: number} | Err{error: string}
+
 func parseInt(s: string): IntResult {
   if s == "bad" { return Err{error: "bad input"} }
   return Ok{value: 1}

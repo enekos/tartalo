@@ -1,0 +1,44 @@
+// regex — wrappers around the POSIX-ERE regex builtins. Mostly thin
+// renamings, plus a couple of common compositions.
+//
+//   import { matches, findOr, replaceAll, hasAny } from "tartalo:regex/regex"
+
+// matches is `regexMatch` under a more readable name for boolean predicates.
+export func matches(s: string, pattern: string): bool {
+  return regexMatch(s, pattern)
+}
+
+// findOr returns the first match, or `default` when the pattern doesn't
+// hit. Saves a `?? "..."` at every call site.
+export func findOr(s: string, pattern: string, default: string): string {
+  return regexFind(s, pattern) ?? default
+}
+
+// replaceAll is `regexReplace`; the builtin already replaces every match
+// in s. The wrapper exists so callers can read code without remembering
+// the all-vs-first distinction.
+export func replaceAll(s: string, pattern: string, repl: string): string {
+  return regexReplace(s, pattern, repl)
+}
+
+// hasAny reports whether any element of `patterns` matches `s`.
+export func hasAny(s: string, patterns: string[]): bool {
+  for p in patterns {
+    if regexMatch(s, p) { return true }
+  }
+  return false
+}
+
+// hasAll reports whether every pattern in `patterns` matches `s` somewhere.
+export func hasAll(s: string, patterns: string[]): bool {
+  for p in patterns {
+    if !regexMatch(s, p) { return false }
+  }
+  return true
+}
+
+// countMatches returns how many non-overlapping matches of `pattern` exist
+// in `s`.
+export func countMatches(s: string, pattern: string): number {
+  return len(regexFindAll(s, pattern))
+}

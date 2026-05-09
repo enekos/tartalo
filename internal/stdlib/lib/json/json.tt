@@ -1,0 +1,56 @@
+// json — convenience wrappers around the core JSON builtins (`jsonGet`,
+// `jsonHas`, `jsonArray`, `jsonEscape`).
+//
+//   import { getOr, getInt, getBool, escape } from "tartalo:json/json"
+//
+// The underlying builtins shell out to `jq` at runtime, so `jq` must be on
+// PATH for sh-target programs that import this module. The native target
+// uses Go's encoding/json and has no external dependency.
+
+// getOr extracts a string field from `json` at the dotted `path`, returning
+// `default` when the field is missing or null.
+export func getOr(json: string, path: string, default: string): string {
+  let v: string? = jsonGet(json, path)
+  return v ?? default
+}
+
+// getInt extracts a numeric field as a number. Returns null when the field
+// is missing or not a parseable integer.
+export func getInt(json: string, path: string): number? {
+  let v: string? = jsonGet(json, path)
+  if v == null { return null }
+  return parseInt(v!)
+}
+
+// getIntOr is the unwrap-or-default variant of getInt.
+export func getIntOr(json: string, path: string, default: number): number {
+  return getInt(json, path) ?? default
+}
+
+// getBool reads a JSON boolean. The underlying jq filter emits "true" or
+// "false"; everything else is treated as null.
+export func getBool(json: string, path: string): bool? {
+  let v: string? = jsonGet(json, path)
+  if v == null { return null }
+  let s: string = v!
+  if s == "true"  { return true }
+  if s == "false" { return false }
+  return null
+}
+
+// getBoolOr is the unwrap-or-default variant of getBool.
+export func getBoolOr(json: string, path: string, default: bool): bool {
+  return getBool(json, path) ?? default
+}
+
+// escape quotes a string for safe interpolation into a JSON document.
+// Mirrors the `jsonEscape` builtin under a friendlier name.
+export func escape(s: string): string {
+  return jsonEscape(s)
+}
+
+// stringField builds a JSON `"key": "value"` fragment with both sides
+// properly escaped. Useful for assembling small JSON bodies inline.
+export func stringField(key: string, value: string): string {
+  return jsonEscape(key) + ":" + jsonEscape(value)
+}

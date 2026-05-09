@@ -1,0 +1,41 @@
+// path — convenience wrappers around `pathJoin`, `basename`, `dirname`,
+// `extname`, and `parsePath`.
+//
+//   import { join3, withExt, stripExt, isAbs } from "tartalo:path/path"
+
+// join3 joins three path segments with the platform separator.
+export func join3(a: string, b: string, c: string): string {
+  return pathJoin(pathJoin(a, b), c)
+}
+
+// join4 joins four path segments.
+export func join4(a: string, b: string, c: string, d: string): string {
+  return pathJoin(join3(a, b, c), d)
+}
+
+// stripExt returns the path without its extension. "foo/bar.txt" -> "foo/bar".
+// Paths with no extension are returned unchanged.
+export func stripExt(p: string): string {
+  let ext: string = extname(p)
+  if ext == "" { return p }
+  let n: number = len(p) - len(ext)
+  return slice(p, 0, n)
+}
+
+// withExt swaps a path's extension. The replacement should include the
+// leading dot (e.g. ".log"). Paths without an extension get the new ext
+// appended.
+export func withExt(p: string, ext: string): string {
+  return stripExt(p) + ext
+}
+
+// isAbs reports whether p is an absolute path. POSIX-only: starts with "/".
+// Windows drive letters are not handled — pass them through path normally.
+export func isAbs(p: string): bool {
+  return startsWith(p, "/")
+}
+
+// stem returns the basename without its extension. "/var/log/x.gz" -> "x".
+export func stem(p: string): string {
+  return stripExt(basename(p))
+}

@@ -123,6 +123,27 @@ func TestMapWithNumberKeys(t *testing.T) {
 	}
 }
 
+// Record-valued maps are not supported on the sh backend. The compiler
+// accepts the program (the type is valid) but emits a runtime stub that
+// directs users to the native target.
+func TestMapWithRecordValuesShRejection(t *testing.T) {
+	sh := compile(t, `
+		type Person = { name: string, age: number }
+		func main(): void {
+			let m0: map<string, Person> = mapNew()
+			let m: map<string, Person> = mapSet(m0, "a", Person{name: "Alice", age: 30})
+			echo(str(mapLen(m)))
+		}
+	`)
+	out, code := runShellExpectFail(t, sh)
+	if code == 0 {
+		t.Fatalf("expected sh program to fail, got exit 0; output=%q", out)
+	}
+	if !strings.Contains(out, "requires --target=native") {
+		t.Errorf("expected native-target hint in output, got %q", out)
+	}
+}
+
 func TestMapValuesSurviveSpaces(t *testing.T) {
 	sh := compile(t, `
 		func main(): void {

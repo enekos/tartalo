@@ -1,23 +1,23 @@
 <template>
-  <div class="home">
+  <div class="home" ref="homeRef">
     <!-- Hero -->
     <section class="hero">
       <div class="container hero-grid">
         <div class="hero-text">
-          <div class="badge mono">
+          <div class="badge mono" ref="badgeRef">
             <span class="badge-dot"></span>
             <span>pre-alpha · v0</span>
           </div>
-          <h1>
+          <h1 ref="titleRef">
             A typed scripting language<br />
             that compiles to <span class="gradient-text">POSIX&nbsp;sh</span>.
           </h1>
-          <p class="subtitle">
+          <p class="subtitle" ref="subtitleRef">
             Tartalo is a thin TypeScript-ish layer over shell scripting. Catch type
             errors at compile time, get readable <code>.sh</code> at the other end —
             no bashisms, no runtime surprises, no <code>"foo" + 1</code>.
           </p>
-          <div class="actions">
+          <div class="actions" ref="actionsRef">
             <router-link to="/reference" class="btn-primary">
               Read the spec
               <span class="arrow">→</span>
@@ -26,14 +26,14 @@
               <span class="mono">$</span> install
             </a>
           </div>
-          <div class="meta mono">
+          <div class="meta mono" ref="metaRef">
             <span><span class="dot"></span> statically typed</span>
             <span><span class="dot"></span> POSIX-portable output</span>
             <span><span class="dot"></span> quote-by-default</span>
           </div>
         </div>
 
-        <div class="hero-code">
+        <div class="hero-code" ref="heroCodeRef">
           <CodeBlock
             filename="hello.tt"
             :code="heroCode"
@@ -108,6 +108,9 @@
       </div>
     </section>
 
+    <!-- Mandala -->
+    <Mandala />
+
     <!-- Pipeline -->
     <section class="pipeline">
       <div class="container">
@@ -158,7 +161,7 @@
     <!-- CTA -->
     <section class="cta">
       <div class="container">
-        <div class="cta-card">
+        <div class="cta-card" ref="ctaCardRef">
           <div>
             <span class="eyebrow mono">// next</span>
             <h2>Read the language reference.</h2>
@@ -177,7 +180,171 @@
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted } from "vue";
+import { animate, inView, stagger } from "motion";
 import CodeBlock from "../components/CodeBlock.vue";
+import Mandala from "../components/Mandala.vue";
+
+const homeRef = ref<HTMLElement | null>(null);
+const badgeRef = ref<HTMLElement | null>(null);
+const titleRef = ref<HTMLElement | null>(null);
+const subtitleRef = ref<HTMLElement | null>(null);
+const actionsRef = ref<HTMLElement | null>(null);
+const metaRef = ref<HTMLElement | null>(null);
+const heroCodeRef = ref<HTMLElement | null>(null);
+const ctaCardRef = ref<HTMLElement | null>(null);
+
+onMounted(() => {
+  // Hero entrance: stagger blur+opacity+scale on text, then fade code panel
+  const heroText = [
+    badgeRef.value,
+    titleRef.value,
+    subtitleRef.value,
+    actionsRef.value,
+    metaRef.value,
+  ].filter(Boolean) as HTMLElement[];
+
+  if (heroText.length > 0) {
+    // @ts-ignore — motion's variadic types
+    animate(
+      heroText,
+      {
+        filter: ["blur(14px)", "blur(0px)"],
+        opacity: [0, 1],
+        transform: ["translateY(12px) scale(0.97)", "translateY(0px) scale(1)"],
+      },
+      { delay: stagger(0.12, { start: 0.1 }), duration: 1.2, ease: "easeOut" }
+    );
+  }
+
+  if (heroCodeRef.value) {
+    // @ts-ignore
+    animate(
+      heroCodeRef.value,
+      { opacity: [0, 1], transform: ["translateY(20px)", "translateY(0px)"] },
+      { delay: 0.5, duration: 1.2, ease: "easeOut" }
+    );
+  }
+
+  // inView reveal for every section-head and grid card on the home page
+  if (!homeRef.value) return;
+
+  homeRef.value.querySelectorAll<HTMLElement>(".section-head").forEach((el) => {
+    el.style.opacity = "0";
+    inView(
+      el,
+      () => {
+        // @ts-ignore
+        animate(
+          el,
+          {
+            filter: ["blur(10px)", "blur(0px)"],
+            opacity: [0, 1],
+            transform: ["translateY(16px)", "translateY(0px)"],
+          },
+          { duration: 1.1, ease: "easeOut" }
+        );
+      },
+      { amount: 0.3 }
+    );
+  });
+
+  // Feature cards: alternating slide-in
+  const featureCards = Array.from(
+    homeRef.value.querySelectorAll<HTMLElement>(".feature-card")
+  );
+  featureCards.forEach((card, i) => {
+    card.style.opacity = "0";
+    const fromLeft = i % 2 === 0;
+    inView(
+      card,
+      () => {
+        // @ts-ignore
+        animate(
+          card,
+          {
+            transform: [
+              `translateX(${fromLeft ? -40 : 40}px)`,
+              "translateX(0px)",
+            ],
+            opacity: [0, 1],
+          },
+          { delay: (i % 3) * 0.06, duration: 0.6, ease: [0.16, 1, 0.3, 1] }
+        );
+      },
+      { amount: 0.2 }
+    );
+  });
+
+  // Example blocks + install blocks: subtle rise
+  const blocks = Array.from(
+    homeRef.value.querySelectorAll<HTMLElement>(".example-block, .install-grid > div")
+  );
+  blocks.forEach((el, i) => {
+    el.style.opacity = "0";
+    inView(
+      el,
+      () => {
+        // @ts-ignore
+        animate(
+          el,
+          {
+            opacity: [0, 1],
+            transform: ["translateY(24px)", "translateY(0px)"],
+            filter: ["blur(6px)", "blur(0px)"],
+          },
+          { delay: (i % 2) * 0.08, duration: 0.9, ease: "easeOut" }
+        );
+      },
+      { amount: 0.2 }
+    );
+  });
+
+  // Pipeline stages: tight stagger
+  const stageEls = Array.from(
+    homeRef.value.querySelectorAll<HTMLElement>(".pipe-stage")
+  );
+  stageEls.forEach((el) => (el.style.opacity = "0"));
+  const pipelineRow = homeRef.value.querySelector<HTMLElement>(".pipeline-row");
+  if (pipelineRow && stageEls.length > 0) {
+    inView(
+      pipelineRow,
+      () => {
+        // @ts-ignore
+        animate(
+          stageEls,
+          {
+            opacity: [0, 1],
+            transform: ["translateY(14px)", "translateY(0px)"],
+          },
+          { delay: stagger(0.07), duration: 0.55, ease: "easeOut" }
+        );
+      },
+      { amount: 0.4 }
+    );
+  }
+
+  // CTA card: scale+blur reveal
+  if (ctaCardRef.value) {
+    ctaCardRef.value.style.opacity = "0";
+    inView(
+      ctaCardRef.value,
+      () => {
+        // @ts-ignore
+        animate(
+          ctaCardRef.value!,
+          {
+            opacity: [0, 1],
+            filter: ["blur(14px)", "blur(0px)"],
+            transform: ["scale(0.94)", "scale(1)"],
+          },
+          { duration: 1.4, ease: "easeOut" }
+        );
+      },
+      { amount: 0.3 }
+    );
+  }
+});
 
 const heroCode = `// hello.tt
 func greet(name: string): string {
@@ -408,6 +575,15 @@ tartalo fmt -w ./examples/*.tt`;
   font-size: 0.78rem;
   color: var(--text-muted);
   background: rgba(255, 255, 255, 0.02);
+  opacity: 0;
+}
+
+.hero-text h1,
+.subtitle,
+.actions,
+.meta,
+.hero-code {
+  opacity: 0;
 }
 
 .badge-dot {
