@@ -149,6 +149,18 @@ const predeclaredTypes = `type Tt_Response struct {
 	F_headers string
 }
 
+type Tt_Request struct {
+	F_url string
+	F_method string
+	F_headers []string
+	F_body string
+	F_timeout int64
+	F_followRedirects bool
+	F_insecure bool
+	F_user string
+	F_password string
+}
+
 type Tt_Process struct {
 	F_code int64
 	F_ok bool

@@ -65,7 +65,8 @@ syn keyword tartaloBuiltin
   \ readFile writeFile appendFile removeFile mkdir listDir
   \ exists isFile isDir stat readStdin
   \ pathJoin basename dirname extname parsePath
-  \ exec execTimeout fetch
+  \ exec execTimeout
+  \ fetch fetchTimeout fetchHeaders postJson postForm request header urlEncode
   \ regexMatch regexFind regexFindAll regexReplace
   \ readCsv writeCsv
   \ env args now sleep formatTime

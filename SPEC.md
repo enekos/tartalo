@@ -827,7 +827,14 @@ the failure, drop down to `exec(...)` which gives you `code`, `stdout`, and
 
 - `exec(cmd: string): Process` — run a shell command, capture stdout, stderr, and exit code
 - `execTimeout(cmd: string, secs: number): Process` — like `exec` but kills the command after `secs`. Aborts the script if neither `timeout` (GNU) nor `gtimeout` (macOS coreutils) is on PATH. Process.code is `124` on timeout.
-- `fetch(url: string): Response` — HTTP GET (via `curl -sS -L`)
+- `fetch(url: string): Response` — HTTP GET (via `curl -sS -L`).
+- `fetchTimeout(url: string, secs: number): Response` — same shape as `fetch`, but caps wall-clock with `curl --max-time`. A timeout surfaces as `status: 0, ok: false`.
+- `fetchHeaders(url: string, headers: string[]): Response` — GET with caller-supplied request headers. Each entry is a raw `Name: value` line.
+- `postJson(url: string, body: string): Response` — POST `body` with `Content-Type: application/json`.
+- `postForm(url: string, body: string): Response` — POST `body` with `Content-Type: application/x-www-form-urlencoded`.
+- `request(opts: Request): Response` — fully-typed request. The `Request` predeclared type is `{ url, method, headers: string[], body, timeout, followRedirects, insecure, user, password }`. `timeout` of `0` keeps the runtime default (30s on native; curl's default on sh). `followRedirects: false` returns the redirect response itself instead of following it. `insecure: true` skips TLS verification. A non-empty `user` triggers HTTP basic auth.
+- `header(r: Response, name: string): string?` — case-insensitive lookup against `r.headers`; null when the header is absent.
+- `urlEncode(s: string): string` — percent-encode per RFC 3986 (unreserved set is `A-Za-z0-9-._~`).
 
 ### Regex (POSIX ERE via awk)
 
@@ -1237,9 +1244,36 @@ type PathParts = {
 ```
 
 `fetch` shells out to `curl -sS -L`; connection/DNS failures produce
-`status: 0, ok: false`. `exec` runs the command via `sh -c`, captures
+`status: 0, ok: false`. The same applies to the rest of the fetch
+family (`fetchTimeout`, `fetchHeaders`, `postJson`, `postForm`,
+`request`) — they share the same `__tt_request` curl shell helper on
+the sh backend and the same `_tt_request_real` Go function on native,
+so transport / DNS failures look identical regardless of which entry
+point you call. `exec` runs the command via `sh -c`, captures
 streams to temp files, and uses `|| code=$?` so the host script's `set -e`
 doesn't propagate non-zero exits.
+
+The `Request` predeclared type matches the parameter shape of `request`:
+
+```tartalo
+type Request = {
+  url: string,
+  method: string,            // "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"
+  headers: string[],         // ["Content-Type: application/json", "Authorization: Bearer xxx"]
+  body: string,              // "" for no body
+  timeout: number,           // seconds; 0 leaves the runtime default
+  followRedirects: bool,
+  insecure: bool,             // skip TLS verification
+  user: string,               // "" disables basic auth
+  password: string,
+}
+```
+
+Test mocks: `mockFetch(pat, resp)` matches `pat` (regex) against the
+request URL. The same store is consulted by every fetch-family entry
+point on the native target — that means a single `mockFetch` rule covers
+`fetch`, `fetchTimeout`, `fetchHeaders`, `postJson`, `postForm`, and
+`request`. `mockFetchCalls()` returns every URL the SUT hit, in order.
 
 ## Operators
 

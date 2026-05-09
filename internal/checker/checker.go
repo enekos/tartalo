@@ -3389,6 +3389,24 @@ func builtinTypes() []*types.Record {
 			},
 		},
 		{
+			// Request bundles every fetch knob the runtime exposes. All
+			// fields are required so the record has a deterministic shape;
+			// callers that don't care about a knob pass the documented zero
+			// (empty string, 0 timeout, true followRedirects, etc.).
+			Name: "Request",
+			Fields: []types.Field{
+				{Name: "url", Type: types.String},
+				{Name: "method", Type: types.String},
+				{Name: "headers", Type: &types.Array{Elem: types.String}},
+				{Name: "body", Type: types.String},
+				{Name: "timeout", Type: types.Number},
+				{Name: "followRedirects", Type: types.Bool},
+				{Name: "insecure", Type: types.Bool},
+				{Name: "user", Type: types.String},
+				{Name: "password", Type: types.String},
+			},
+		},
+		{
 			Name: "Process",
 			Fields: []types.Field{
 				{Name: "code", Type: types.Number},
@@ -3426,8 +3444,17 @@ func builtinsWithTypes(typeNames map[string]types.Type) []*Symbol {
 	process := typeNames["Process"]
 	fileInfo := typeNames["FileInfo"]
 	pathParts := typeNames["PathParts"]
+	request := typeNames["Request"]
+	stringArr := &types.Array{Elem: types.String}
 	return []*Symbol{
 		{Name: "fetch", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: response}},
+		{Name: "fetchTimeout", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, types.Number}, Result: response}},
+		{Name: "fetchHeaders", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, stringArr}, Result: response}},
+		{Name: "postJson", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, types.String}, Result: response}},
+		{Name: "postForm", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, types.String}, Result: response}},
+		{Name: "request", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{request}, Result: response}},
+		{Name: "header", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{response, types.String}, Result: &types.Optional{Elem: types.String}}},
+		{Name: "urlEncode", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: types.String}},
 		{Name: "exec", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: process}},
 		{Name: "execTimeout", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, types.Number}, Result: process}},
 		{Name: "stat", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String}, Result: fileInfo}},

@@ -159,6 +159,20 @@ type Generator struct {
 	// needs the shared __tartalo_typeerror runtime helper.
 	usesTypeError bool
 
+	// usesRequest gates emission of the `__tt_request` shell function used
+	// by the full-featured `request(opts)` builtin and by the convenience
+	// shims (`fetchTimeout`, `fetchHeaders`, `postJson`, `postForm`).
+	usesRequest bool
+
+	// usesUrlEncode gates emission of the `__tt_url_encode` awk helper
+	// used by `urlEncode(s)`.
+	usesUrlEncode bool
+
+	// usesHeaderLookup gates emission of the `__tt_header_lookup` awk
+	// helper used by `header(r, name)` to extract a single response header
+	// case-insensitively.
+	usesHeaderLookup bool
+
 	// pendingLambdas accumulates anonymous-function literals encountered
 	// during expression compilation. Each one is hoisted to a top-level
 	// sh function emitted at the end of emitModules, before the main
@@ -585,7 +599,8 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		g.emitTestHarness(entry)
 	}
 	result := g.out.String()
-	if g.needsArgv || g.usesRecordArrays || g.usesUtf8 || g.usesMap || g.usesTypeError {
+	if g.needsArgv || g.usesRecordArrays || g.usesUtf8 || g.usesMap || g.usesTypeError ||
+		g.usesRequest || g.usesUrlEncode || g.usesHeaderLookup {
 		var cond strings.Builder
 		if g.usesRecordArrays {
 			cond.WriteString(`__tt_us=$(printf '\037')` + "\n")
@@ -601,6 +616,15 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		}
 		if g.usesTypeError {
 			cond.WriteString(typeErrorRuntimeHelper)
+		}
+		if g.usesRequest {
+			cond.WriteString(requestRuntimeHelper)
+		}
+		if g.usesUrlEncode {
+			cond.WriteString(urlEncodeRuntimeHelper)
+		}
+		if g.usesHeaderLookup {
+			cond.WriteString(headerLookupRuntimeHelper)
 		}
 		result = result[:insertPos] + cond.String() + result[insertPos:]
 	}
@@ -726,6 +750,114 @@ __tt_map_len() {
     BEGIN { RS = "\036"; FS = "\037"; n = 0 }
     { if ($0 != "") n++ }
     END { printf "%d", n }'
+}
+`
+
+// requestRuntimeHelper emits the single shell function that backs the
+// full-featured `request(opts)` builtin (and the convenience wrappers
+// `fetchTimeout`, `fetchHeaders`, `postJson`, `postForm`). It builds a
+// curl invocation incrementally with `set -- "$@"` so per-header `-H`
+// flags and a per-call `--max-time` / `--user` / `--data-binary` survive
+// arbitrary content (newlines, spaces, glob chars) without re-quoting.
+//
+// Outputs the four Response leaves into __ret__status/body/headers/ok so
+// the caller's snapshot loop matches the existing fetch / exec shape.
+//
+// Positional contract:
+//
+//	$1 url   $2 method        $3 body          $4 timeout
+//	$5 follow (0|1)           $6 insecure (0|1)
+//	$7 user (or "")           $8 password
+//	$9 headers (newline-joined; empty means "no extra headers")
+const requestRuntimeHelper = `__tt_request() {
+  __tt_rq_url=$1; __tt_rq_method=$2; __tt_rq_body=$3; __tt_rq_timeout=$4
+  __tt_rq_follow=$5; __tt_rq_insecure=$6; __tt_rq_user=$7; __tt_rq_pass=$8
+  __tt_rq_hdrs=$9
+  __tt_rq_btmp=$(mktemp 2>/dev/null || printf '/tmp/tt_rb_%s' "$$")
+  __tt_rq_htmp=$(mktemp 2>/dev/null || printf '/tmp/tt_rh_%s' "$$")
+  set --
+  set -- "$@" -sS -X "$__tt_rq_method"
+  if [ "$__tt_rq_follow" = 1 ]; then set -- "$@" -L; fi
+  if [ "$__tt_rq_insecure" = 1 ]; then set -- "$@" -k; fi
+  if [ "$__tt_rq_timeout" -gt 0 ] 2>/dev/null; then set -- "$@" --max-time "$__tt_rq_timeout"; fi
+  if [ -n "$__tt_rq_user" ]; then set -- "$@" --user "$__tt_rq_user:$__tt_rq_pass"; fi
+  if [ -n "$__tt_rq_body" ]; then set -- "$@" --data-binary "$__tt_rq_body"; fi
+  if [ -n "$__tt_rq_hdrs" ]; then
+    while IFS= read -r __tt_rq_h; do
+      if [ -n "$__tt_rq_h" ]; then set -- "$@" -H "$__tt_rq_h"; fi
+    done <<__TARTALO_REQ_HDRS__
+$__tt_rq_hdrs
+__TARTALO_REQ_HDRS__
+  fi
+  set -- "$@" -o "$__tt_rq_btmp" -D "$__tt_rq_htmp" -w '%{http_code}'
+  __tt_rq_status=$(curl "$@" "$__tt_rq_url" 2>/dev/null) || __tt_rq_status=0
+  __tt_rq_body_out=$(cat "$__tt_rq_btmp" 2>/dev/null || printf '')
+  __tt_rq_hdrs_out=$(cat "$__tt_rq_htmp" 2>/dev/null || printf '')
+  rm -f "$__tt_rq_btmp" "$__tt_rq_htmp"
+  __ret__status=$__tt_rq_status
+  __ret__body=$__tt_rq_body_out
+  __ret__headers=$__tt_rq_hdrs_out
+  __ret__ok=$(( __tt_rq_status >= 200 && __tt_rq_status < 300 ))
+}
+`
+
+// urlEncodeRuntimeHelper percent-encodes a string per RFC 3986
+// "unreserved" set (ALPHA / DIGIT / - . _ ~). Bytes outside that set
+// become %HH. Walks the input one byte at a time so multi-byte UTF-8
+// sequences are encoded as multiple %HH groups, which is what every
+// HTTP client expects.
+const urlEncodeRuntimeHelper = `__tt_url_encode() {
+  __tt_ue_s="$1" LC_ALL=C awk '
+    BEGIN {
+      s = ENVIRON["__tt_ue_s"]
+      n = length(s)
+      for (i = 0; i < 256; i++) hex[sprintf("%c", i)] = sprintf("%%%02X", i)
+      safe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+      for (i = 1; i <= length(safe); i++) keep[substr(safe, i, 1)] = 1
+      out = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (keep[c]) out = out c
+        else         out = out hex[c]
+      }
+      printf "%s", out
+    }'
+}
+`
+
+// headerLookupRuntimeHelper extracts the value of a single response
+// header from the raw headers blob produced by curl -D. Matching is
+// case-insensitive; trailing CR is stripped. Prints the value (no
+// trailing newline) on success and exits 1 if the header is absent so
+// the caller can model the result as `string?`.
+const headerLookupRuntimeHelper = `__tt_header_lookup() {
+  printf '%s' "$1" | __tt_hl_n="$2" awk '
+    BEGIN {
+      want = ENVIRON["__tt_hl_n"]
+      n = length(want); lower = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(want, i, 1)
+        if (c >= "A" && c <= "Z") c = tolower(c)
+        lower = lower c
+      }
+      want = lower; found = 0
+    }
+    {
+      idx = index($0, ":")
+      if (idx == 0) next
+      hdr = substr($0, 1, idx - 1)
+      hl = ""; m = length(hdr)
+      for (i = 1; i <= m; i++) {
+        c = substr(hdr, i, 1)
+        if (c >= "A" && c <= "Z") c = tolower(c)
+        hl = hl c
+      }
+      if (hl != want) next
+      val = substr($0, idx + 1)
+      sub(/^[ \t]+/, "", val); sub(/[\r\n]+$/, "", val)
+      printf "%s", val; found = 1; exit
+    }
+    END { if (!found) exit 1 }'
 }
 `
 
@@ -4283,6 +4415,20 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		}
 	case "fetch":
 		return g.compileFetch(args, prologue)
+	case "fetchTimeout":
+		return g.compileFetchTimeout(args, prologue)
+	case "fetchHeaders":
+		return g.compileFetchHeaders(args, prologue)
+	case "postJson":
+		return g.compilePostJson(args, prologue)
+	case "postForm":
+		return g.compilePostForm(args, prologue)
+	case "request":
+		return g.compileRequest(args, prologue)
+	case "header":
+		return g.compileHeaderLookup(args, prologue)
+	case "urlEncode":
+		return g.compileUrlEncode(args, prologue)
 	case "exec":
 		return g.compileExec(args, prologue)
 	case "execTimeout":
@@ -5385,6 +5531,134 @@ func (g *Generator) compileFetch(args []exprValue, prologue []string) exprValue 
 		prologue = append(prologue, fmt.Sprintf(`%s__%s="${__ret__%s}"`, out, f, f))
 	}
 	return exprValue{prologue: prologue, value: out, form: formRecord}
+}
+
+// emitRequestCall lowers a single `__tt_request` invocation given its nine
+// shell-quoted arguments. Snapshots __ret__* into a fresh record prefix so
+// the caller's chained calls (e.g. `request(...).status`) don't clobber
+// each other when used in the same statement.
+func (g *Generator) emitRequestCall(prologue []string, urlExpr, methodExpr, bodyExpr, timeoutExpr, followExpr, insecureExpr, userExpr, passExpr, hdrsExpr string) exprValue {
+	g.usesRequest = true
+	prologue = append(prologue, fmt.Sprintf(
+		`__tt_request %s %s %s %s %s %s %s %s %s`,
+		urlExpr, methodExpr, bodyExpr, timeoutExpr,
+		followExpr, insecureExpr, userExpr, passExpr, hdrsExpr))
+	out := g.tmp("rec")
+	for _, f := range []string{"status", "ok", "body", "headers"} {
+		prologue = append(prologue, fmt.Sprintf(`%s__%s="${__ret__%s}"`, out, f, f))
+	}
+	return exprValue{prologue: prologue, value: out, form: formRecord}
+}
+
+// compileFetchTimeout lowers `fetchTimeout(url, secs)` — a GET with a
+// wall-clock cap. Routed through __tt_request with a synthesised options
+// payload so users get the same Response shape.
+func (g *Generator) compileFetchTimeout(args []exprValue, prologue []string) exprValue {
+	urlVar := g.tmp("ftu")
+	secsVar := g.tmp("fts")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", urlVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", secsVar, args[1].assignmentRHS()))
+	return g.emitRequestCall(prologue,
+		`"$`+urlVar+`"`, `'GET'`, `''`, `"$`+secsVar+`"`,
+		`1`, `0`, `''`, `''`, `''`)
+}
+
+// compileFetchHeaders lowers `fetchHeaders(url, headers)` — a GET with
+// caller-supplied request headers. The headers array is encoded as a
+// newline-joined string; __tt_request splits it back into one -H per
+// non-empty line.
+func (g *Generator) compileFetchHeaders(args []exprValue, prologue []string) exprValue {
+	urlVar := g.tmp("fhu")
+	hdrsVar := g.tmp("fhh")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", urlVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", hdrsVar, args[1].assignmentRHS()))
+	return g.emitRequestCall(prologue,
+		`"$`+urlVar+`"`, `'GET'`, `''`, `0`,
+		`1`, `0`, `''`, `''`, `"$`+hdrsVar+`"`)
+}
+
+// compilePostJson and compilePostForm are thin wrappers that pre-set a
+// Content-Type header and a body. They share __tt_request with the rest
+// of the family, keeping curl semantics consistent.
+func (g *Generator) compilePostJson(args []exprValue, prologue []string) exprValue {
+	urlVar := g.tmp("pju")
+	bodyVar := g.tmp("pjb")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", urlVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", bodyVar, args[1].assignmentRHS()))
+	return g.emitRequestCall(prologue,
+		`"$`+urlVar+`"`, `'POST'`, `"$`+bodyVar+`"`, `0`,
+		`1`, `0`, `''`, `''`, `'Content-Type: application/json'`)
+}
+
+func (g *Generator) compilePostForm(args []exprValue, prologue []string) exprValue {
+	urlVar := g.tmp("pfu")
+	bodyVar := g.tmp("pfb")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", urlVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", bodyVar, args[1].assignmentRHS()))
+	return g.emitRequestCall(prologue,
+		`"$`+urlVar+`"`, `'POST'`, `"$`+bodyVar+`"`, `0`,
+		`1`, `0`, `''`, `''`, `'Content-Type: application/x-www-form-urlencoded'`)
+}
+
+// compileRequest lowers `request(opts)` directly, pulling each leaf of the
+// Request record out of the encoded prefix__field shell vars the checker
+// has already laid down for us.
+func (g *Generator) compileRequest(args []exprValue, prologue []string) exprValue {
+	rec := args[0].value
+	follow := g.tmp("rqf")
+	insecure := g.tmp("rqi")
+	// The bool leaves are encoded as 0/1 strings; copy them into a temp so
+	// __tt_request's `[ "$5" = 1 ]` check sees a clean numeric value even
+	// when the caller wrote `false` (encoded as 0).
+	prologue = append(prologue, fmt.Sprintf("%s=${%s__followRedirects}", follow, rec))
+	prologue = append(prologue, fmt.Sprintf("%s=${%s__insecure}", insecure, rec))
+	return g.emitRequestCall(prologue,
+		`"${`+rec+`__url}"`,
+		`"${`+rec+`__method}"`,
+		`"${`+rec+`__body}"`,
+		`"${`+rec+`__timeout}"`,
+		`"$`+follow+`"`,
+		`"$`+insecure+`"`,
+		`"${`+rec+`__user}"`,
+		`"${`+rec+`__password}"`,
+		`"${`+rec+`__headers}"`)
+}
+
+// compileUrlEncode lowers `urlEncode(s)` to the awk-based runtime helper.
+// The result is a regular formStr value so it composes with `+` and the
+// rest of the string ops without ceremony.
+func (g *Generator) compileUrlEncode(args []exprValue, prologue []string) exprValue {
+	g.usesUrlEncode = true
+	t := g.tmp("ue")
+	srcVar := g.tmp("ue_s")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", srcVar, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(
+		`%s=$(__tt_url_encode "$%s")`, t, srcVar))
+	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
+}
+
+// compileHeaderLookup lowers `header(r, name)` to a case-insensitive scan
+// of r.headers for the named header. The result is `string?` — null when
+// the header is absent — so it slots into the standard optional shape
+// (sidecar __null flag, ?? / ! consumers, etc.).
+func (g *Generator) compileHeaderLookup(args []exprValue, prologue []string) exprValue {
+	g.usesHeaderLookup = true
+	rec := args[0].value
+	val := g.tmp("hdr")
+	nullVar := g.tmp("hdrn")
+	nameVar := g.tmp("hdrname")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", nameVar, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=\"\"", val))
+	prologue = append(prologue, fmt.Sprintf("%s=0", nullVar))
+	prologue = append(prologue, fmt.Sprintf(
+		`if %s=$(__tt_header_lookup "${%s__headers}" "$%s"); then %s=0; else %s=""; %s=1; fi`,
+		val, rec, nameVar, nullVar, val, nullVar))
+	return exprValue{
+		prologue:  prologue,
+		value:     "${" + val + "}",
+		form:      formStr,
+		nullCheck: nullVar,
+	}
 }
 
 // --- condition compilation --------------------------------------------------

@@ -62,7 +62,6 @@ onUnmounted(() => {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--border);
-  padding: 0.8rem 2rem;
 }
 
 .nav-content {

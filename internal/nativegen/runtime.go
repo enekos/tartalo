@@ -132,8 +132,18 @@ func (g *Generator) writeMockableDispatchers(out *strings.Builder) {
 	if g.usesRuntimeFetch {
 		if test {
 			out.WriteString(dispatcherFetchTest)
+			out.WriteString(dispatcherFetchTimeoutTest)
+			out.WriteString(dispatcherFetchHeadersTest)
+			out.WriteString(dispatcherPostJsonTest)
+			out.WriteString(dispatcherPostFormTest)
+			out.WriteString(dispatcherRequestTest)
 		} else {
 			out.WriteString(`func _tt_fetch(url string) Tt_Response { return _tt_fetch_real(url) }` + "\n\n")
+			out.WriteString(`func _tt_fetchTimeout(url string, secs int64) Tt_Response { return _tt_fetchTimeout_real(url, secs) }` + "\n\n")
+			out.WriteString(`func _tt_fetchHeaders(url string, headers []string) Tt_Response { return _tt_fetchHeaders_real(url, headers) }` + "\n\n")
+			out.WriteString(`func _tt_postJson(url, body string) Tt_Response { return _tt_postJson_real(url, body) }` + "\n\n")
+			out.WriteString(`func _tt_postForm(url, body string) Tt_Response { return _tt_postForm_real(url, body) }` + "\n\n")
+			out.WriteString(`func _tt_request(opts Tt_Request) Tt_Response { return _tt_request_real(opts) }` + "\n\n")
 		}
 	}
 	if g.usesRuntimeFile {
@@ -598,13 +608,55 @@ func _tt_reduce[T, U any](xs []T, init U, f func(U, T) U) U {
 
 `
 
-const runtimeFetch = `// _tt_fetch performs a single GET, follows up to 10 redirects, and surfaces
-// transport errors as ok=false / status=0 to match the sh backend's curl
-// failure behaviour. The default 30s timeout prevents binaries from hanging
-// indefinitely; users who need a longer fetch should run their own client.
-func _tt_fetch_real(url string) Tt_Response {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+const runtimeFetch = `// _tt_request_real is the shared engine: every fetch-family builtin
+// (fetch, fetchTimeout, fetchHeaders, postJson, postForm, request) ends
+// up here. Transport / DNS errors surface as ok=false / status=0 so the
+// caller can branch on r.ok or r.status == 0 the same way they would
+// against the sh backend's curl failure behaviour. The default 30s
+// timeout prevents binaries from hanging indefinitely; an opts.timeout
+// of 0 keeps that default.
+func _tt_request_real(opts Tt_Request) Tt_Response {
+	timeout := time.Duration(opts.F_timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	if !opts.F_followRedirects {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+	if opts.F_insecure {
+		client.Transport = &http.Transport{TLSClientConfig: _tt_insecureTLSConfig()}
+	}
+	method := opts.F_method
+	if method == "" {
+		method = "GET"
+	}
+	var bodyReader io.Reader
+	if opts.F_body != "" {
+		bodyReader = strings.NewReader(opts.F_body)
+	}
+	req, err := http.NewRequest(method, opts.F_url, bodyReader)
+	if err != nil {
+		return Tt_Response{F_status: 0, F_ok: false}
+	}
+	for _, h := range opts.F_headers {
+		idx := strings.Index(h, ":")
+		if idx < 0 {
+			continue
+		}
+		name := strings.TrimSpace(h[:idx])
+		value := strings.TrimSpace(h[idx+1:])
+		if name == "" {
+			continue
+		}
+		req.Header.Add(name, value)
+	}
+	if opts.F_user != "" {
+		req.SetBasicAuth(opts.F_user, opts.F_password)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return Tt_Response{F_status: 0, F_ok: false}
 	}
@@ -623,6 +675,79 @@ func _tt_fetch_real(url string) Tt_Response {
 		F_body:    string(body),
 		F_headers: hdrs.String(),
 	}
+}
+
+func _tt_fetch_real(url string) Tt_Response {
+	return _tt_request_real(Tt_Request{F_url: url, F_method: "GET", F_followRedirects: true})
+}
+
+func _tt_fetchTimeout_real(url string, secs int64) Tt_Response {
+	return _tt_request_real(Tt_Request{F_url: url, F_method: "GET", F_timeout: secs, F_followRedirects: true})
+}
+
+func _tt_fetchHeaders_real(url string, headers []string) Tt_Response {
+	return _tt_request_real(Tt_Request{F_url: url, F_method: "GET", F_headers: headers, F_followRedirects: true})
+}
+
+func _tt_postJson_real(url, body string) Tt_Response {
+	return _tt_request_real(Tt_Request{
+		F_url: url, F_method: "POST", F_body: body,
+		F_headers:         []string{"Content-Type: application/json"},
+		F_followRedirects: true,
+	})
+}
+
+func _tt_postForm_real(url, body string) Tt_Response {
+	return _tt_request_real(Tt_Request{
+		F_url: url, F_method: "POST", F_body: body,
+		F_headers:         []string{"Content-Type: application/x-www-form-urlencoded"},
+		F_followRedirects: true,
+	})
+}
+
+// _tt_header walks a curl-style raw headers blob and returns the first
+// matching value (case-insensitive). Returns nil for missing so the call
+// site can model the result as ` + "`string?`" + ` and use ?? / ! naturally.
+func _tt_header(r Tt_Response, name string) *string {
+	want := strings.ToLower(strings.TrimSpace(name))
+	for _, line := range strings.Split(r.F_headers, "\n") {
+		line = strings.TrimRight(line, "\r")
+		idx := strings.Index(line, ":")
+		if idx < 0 {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(line[:idx])) != want {
+			continue
+		}
+		v := strings.TrimSpace(line[idx+1:])
+		return &v
+	}
+	return nil
+}
+
+// _tt_urlEncode percent-encodes per RFC 3986's "unreserved" set
+// (ALPHA / DIGIT / - . _ ~). Other bytes become %HH. Mirrors the awk
+// helper in the sh backend so cross-target output is byte-identical.
+func _tt_urlEncode(s string) string {
+	const safe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if strings.IndexByte(safe, c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			const hex = "0123456789ABCDEF"
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0F])
+		}
+	}
+	return b.String()
+}
+
+func _tt_insecureTLSConfig() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true}
 }
 
 `
@@ -725,6 +850,87 @@ const dispatcherFetchTest = `func _tt_fetch(url string) Tt_Response {
 		panic(_tt_testFailure{msg: "fetch: no mock matched: " + url})
 	}
 	return _tt_fetch_real(url)
+}
+
+`
+
+// The remaining fetch-family builtins funnel through the same mock
+// store. mockFetch matches against the request URL so a single rule
+// covers fetch / fetchTimeout / fetchHeaders / postJson / postForm /
+// request alike — what the SUT did with the URL is its business; the
+// test only cares that the URL got hit.
+
+const dispatcherFetchTimeoutTest = `func _tt_fetchTimeout(url string, secs int64) Tt_Response {
+	_tt_mock.fetchCalls = append(_tt_mock.fetchCalls, url)
+	if len(_tt_mock.fetchRules) > 0 {
+		for _, r := range _tt_mock.fetchRules {
+			if r.pat.MatchString(url) {
+				return r.resp
+			}
+		}
+		panic(_tt_testFailure{msg: "fetchTimeout: no mock matched: " + url})
+	}
+	return _tt_fetchTimeout_real(url, secs)
+}
+
+`
+
+const dispatcherFetchHeadersTest = `func _tt_fetchHeaders(url string, headers []string) Tt_Response {
+	_tt_mock.fetchCalls = append(_tt_mock.fetchCalls, url)
+	if len(_tt_mock.fetchRules) > 0 {
+		for _, r := range _tt_mock.fetchRules {
+			if r.pat.MatchString(url) {
+				return r.resp
+			}
+		}
+		panic(_tt_testFailure{msg: "fetchHeaders: no mock matched: " + url})
+	}
+	return _tt_fetchHeaders_real(url, headers)
+}
+
+`
+
+const dispatcherPostJsonTest = `func _tt_postJson(url, body string) Tt_Response {
+	_tt_mock.fetchCalls = append(_tt_mock.fetchCalls, url)
+	if len(_tt_mock.fetchRules) > 0 {
+		for _, r := range _tt_mock.fetchRules {
+			if r.pat.MatchString(url) {
+				return r.resp
+			}
+		}
+		panic(_tt_testFailure{msg: "postJson: no mock matched: " + url})
+	}
+	return _tt_postJson_real(url, body)
+}
+
+`
+
+const dispatcherPostFormTest = `func _tt_postForm(url, body string) Tt_Response {
+	_tt_mock.fetchCalls = append(_tt_mock.fetchCalls, url)
+	if len(_tt_mock.fetchRules) > 0 {
+		for _, r := range _tt_mock.fetchRules {
+			if r.pat.MatchString(url) {
+				return r.resp
+			}
+		}
+		panic(_tt_testFailure{msg: "postForm: no mock matched: " + url})
+	}
+	return _tt_postForm_real(url, body)
+}
+
+`
+
+const dispatcherRequestTest = `func _tt_request(opts Tt_Request) Tt_Response {
+	_tt_mock.fetchCalls = append(_tt_mock.fetchCalls, opts.F_url)
+	if len(_tt_mock.fetchRules) > 0 {
+		for _, r := range _tt_mock.fetchRules {
+			if r.pat.MatchString(opts.F_url) {
+				return r.resp
+			}
+		}
+		panic(_tt_testFailure{msg: "request: no mock matched: " + opts.F_url})
+	}
+	return _tt_request_real(opts)
 }
 
 `

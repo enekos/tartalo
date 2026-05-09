@@ -1,11 +1,24 @@
 // fetch.tt — make HTTP requests from a tartalo script.
 //
-// `fetch` is a built-in that returns a `Response` record:
+// The fetch family returns a `Response` record:
 //
 //   type Response = { status: number, ok: bool, body: string, headers: string }
 //
-// Under the hood it shells out to curl. A network failure or unreachable host
-// gives back `status: 0, ok: false`.
+// Under the hood the sh backend shells out to curl; the native backend uses
+// `net/http`. A network / DNS failure surfaces as `status: 0, ok: false`.
+//
+// The full set of fetch builtins:
+//
+//   fetch(url)                      — simple GET
+//   fetchTimeout(url, secs)         — GET with a wall-clock cap
+//   fetchHeaders(url, headers)      — GET with custom request headers
+//   postJson(url, body)             — POST application/json
+//   postForm(url, body)             — POST application/x-www-form-urlencoded
+//   request(Request{...})           — fully typed request: method, headers,
+//                                     body, timeout, redirects, basic auth,
+//                                     insecure TLS
+//   header(r, name)                 — case-insensitive header lookup → string?
+//   urlEncode(s)                    — percent-encode an arbitrary string
 
 func main(): void {
   let url = env("TARTALO_FETCH_URL") ?? "https://example.com"
@@ -16,6 +29,7 @@ func main(): void {
   if r.ok {
     echo("HTTP " + str(r.status))
     echo("body length: " + str(len(r.body)))
+    echo("content-type: " + (header(r, "Content-Type") ?? "(none)"))
   } else if r.status == 0 {
     eprint("fetch failed (network/curl error)")
     exit(1)
@@ -23,4 +37,21 @@ func main(): void {
     eprint("HTTP " + str(r.status))
     exit(1)
   }
+
+  // Showcase the typed request: a 5-second GET with a custom header that
+  // does not follow redirects. `Request` is a predeclared record so users
+  // can construct it directly without an `import`.
+  let q = urlEncode("hello world")
+  let r2 = request(Request{
+    url: url + "?q=" + q,
+    method: "GET",
+    headers: ["Accept: text/plain", "X-Tartalo: example"],
+    body: "",
+    timeout: 5,
+    followRedirects: true,
+    insecure: false,
+    user: "",
+    password: "",
+  })
+  echo("request status: " + str(r2.status))
 }

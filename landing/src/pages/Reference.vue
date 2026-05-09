@@ -845,6 +845,13 @@ const builtins = [
       { sig: "exec(cmd: string): Process", desc: "run a shell command, capture stdout, stderr, and exit code" },
       { sig: "execTimeout(cmd: string, secs: number): Process", desc: "like <code>exec</code> but kills the command after <code>secs</code>. Aborts the script if neither <code>timeout</code> (GNU) nor <code>gtimeout</code> (macOS coreutils) is on PATH. <code>Process.code</code> is <code>124</code> on timeout." },
       { sig: "fetch(url: string): Response", desc: "HTTP GET (via <code>curl -sS -L</code>)" },
+      { sig: "fetchTimeout(url: string, secs: number): Response", desc: "GET with <code>curl --max-time secs</code>; on timeout returns <code>status: 0, ok: false</code>" },
+      { sig: "fetchHeaders(url: string, headers: string[]): Response", desc: "GET with caller-supplied request headers (each entry is a raw <code>Name: value</code> line)" },
+      { sig: "postJson(url: string, body: string): Response", desc: "POST <code>body</code> with <code>Content-Type: application/json</code>" },
+      { sig: "postForm(url: string, body: string): Response", desc: "POST <code>body</code> with <code>Content-Type: application/x-www-form-urlencoded</code>" },
+      { sig: "request(opts: Request): Response", desc: "fully-typed request (method, headers, body, timeout, redirects, basic auth, insecure TLS)" },
+      { sig: "header(r: Response, name: string): string?", desc: "case-insensitive lookup against <code>r.headers</code>; <code>null</code> when absent" },
+      { sig: "urlEncode(s: string): string", desc: "percent-encode per RFC 3986 unreserved set (<code>A-Za-z0-9-._~</code>)" },
     ],
   },
   {
@@ -1188,6 +1195,18 @@ const codePredeclared = `type Response = {
   ok: bool,          // true iff 200 ≤ status < 300
   body: string,      // response body
   headers: string,   // raw response headers, one per line
+}
+
+type Request = {
+  url: string,
+  method: string,            // "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"
+  headers: string[],         // ["Content-Type: application/json", "Authorization: Bearer xxx"]
+  body: string,              // "" for no body
+  timeout: number,           // seconds; 0 leaves the runtime default
+  followRedirects: bool,
+  insecure: bool,             // skip TLS verification
+  user: string,               // "" disables basic auth
+  password: string,
 }
 
 type Process = {

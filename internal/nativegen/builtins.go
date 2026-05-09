@@ -588,11 +588,68 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 	// --- HTTP ---
 	case "fetch":
 		g.usesRuntimeFetch = true
+		g.addImport("crypto/tls")
 		g.addImport("io")
 		g.addImport("net/http")
 		g.addImport("strings")
 		g.addImport("time")
 		return "_tt_fetch(" + args[0] + ")"
+	case "fetchTimeout":
+		g.usesRuntimeFetch = true
+		g.addImport("crypto/tls")
+		g.addImport("io")
+		g.addImport("net/http")
+		g.addImport("strings")
+		g.addImport("time")
+		return "_tt_fetchTimeout(" + args[0] + ", " + args[1] + ")"
+	case "fetchHeaders":
+		g.usesRuntimeFetch = true
+		g.addImport("crypto/tls")
+		g.addImport("io")
+		g.addImport("net/http")
+		g.addImport("strings")
+		g.addImport("time")
+		return "_tt_fetchHeaders(" + args[0] + ", " + args[1] + ")"
+	case "postJson":
+		g.usesRuntimeFetch = true
+		g.addImport("crypto/tls")
+		g.addImport("io")
+		g.addImport("net/http")
+		g.addImport("strings")
+		g.addImport("time")
+		return "_tt_postJson(" + args[0] + ", " + args[1] + ")"
+	case "postForm":
+		g.usesRuntimeFetch = true
+		g.addImport("crypto/tls")
+		g.addImport("io")
+		g.addImport("net/http")
+		g.addImport("strings")
+		g.addImport("time")
+		return "_tt_postForm(" + args[0] + ", " + args[1] + ")"
+	case "request":
+		g.usesRuntimeFetch = true
+		g.addImport("crypto/tls")
+		g.addImport("io")
+		g.addImport("net/http")
+		g.addImport("strings")
+		g.addImport("time")
+		return "_tt_request(" + args[0] + ")"
+	case "header":
+		g.usesRuntimeFetch = true
+		g.addImport("crypto/tls")
+		g.addImport("io")
+		g.addImport("net/http")
+		g.addImport("strings")
+		g.addImport("time")
+		return "_tt_header(" + args[0] + ", " + args[1] + ")"
+	case "urlEncode":
+		g.usesRuntimeFetch = true
+		g.addImport("crypto/tls")
+		g.addImport("io")
+		g.addImport("net/http")
+		g.addImport("strings")
+		g.addImport("time")
+		return "_tt_urlEncode(" + args[0] + ")"
 
 	// --- test assertions (only legal inside `test "..." { ... }`) ---
 	case "assertEq":
