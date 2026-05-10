@@ -95,7 +95,7 @@ func buildWithMode(modules []*loader.Module, info *checker.TypeInfo, opts BuildO
 		return fmt.Errorf("nativegen: resolve output path: %w", err)
 	}
 
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", absOut, ".")
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w -buildid=", "-o", absOut, ".")
 	cmd.Dir = stage
 	cmd.Env = append(os.Environ(),
 		// Prevent the user's module cache from being consulted; we have no

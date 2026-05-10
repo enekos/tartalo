@@ -3982,17 +3982,34 @@ func (g *Generator) arithOp(b *ast.BinaryExpr) exprValue {
 	lv := g.compileExpr(b.Lhs)
 	rv := g.compileExpr(b.Rhs)
 
-	// Optimization: if the right operand is a function-call result whose
-	// prologue ends with a scalar __ret snapshot (e.g. __ret2="$__ret"),
-	// and the value is used directly in this arithmetic expression, strip
+	// Optimization: if one operand is a function-call result whose prologue
+	// ends with a scalar __ret snapshot (e.g. __ret2="$__ret"), and the
+	// other operand is simple (no prologue, no __ret references), strip
 	// the snapshot and use __ret directly. This saves one variable
-	// assignment per binary-op with a function call on the right side.
-	if len(rv.prologue) > 0 && (rv.form == formArith || rv.form == formBool) {
-		last := rv.prologue[len(rv.prologue)-1]
-		if last == rv.value+`="$__ret"` {
-			rv.prologue = rv.prologue[:len(rv.prologue)-1]
-			rv.value = "__ret"
+	// assignment per binary-op with a function call.
+	// Optimization: if one operand is a function-call result whose prologue
+	// ends with a scalar __ret snapshot (e.g. __ret2="$__ret"), and the
+	// other operand is simple (no prologue, no __ret references), strip
+	// the snapshot and use __ret directly. This saves one variable
+	// assignment per binary-op with a function call.
+	stripRetSnapshot := func(v *exprValue) {
+		if len(v.prologue) > 0 && (v.form == formArith || v.form == formBool) {
+			last := v.prologue[len(v.prologue)-1]
+			if last == v.value+`="$__ret"` {
+				v.prologue = v.prologue[:len(v.prologue)-1]
+				v.value = "__ret"
+			}
 		}
+	}
+	isSimple := func(v exprValue) bool {
+		return len(v.prologue) == 0 && !strings.Contains(v.value, "__ret")
+	}
+	// Prefer stripping the right operand (original behaviour).
+	stripRetSnapshot(&rv)
+	if rv.value != "__ret" && isSimple(rv) {
+		// Right operand was not a ret snapshot but is simple, so it's safe
+		// to strip the left operand instead.
+		stripRetSnapshot(&lv)
 	}
 
 	op := arithSym(b.Op)
