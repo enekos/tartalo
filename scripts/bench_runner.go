@@ -116,6 +116,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Warm-up: build a native binary once to populate the Go build cache
+	// so subsequent benchmark iterations measure warm-cache performance.
+	warmupPath := "/tmp/tartalo_bench_warmup"
+	cmd := exec.Command("./tartalo", "build", "bench_perf.tt", "-o", warmupPath, "--target=native", "--no-verify")
+	_, _ = cmd.CombinedOutput()
+	os.Remove(warmupPath)
+
 	// Ensure heavy benchmark file exists
 	for i := range workloads {
 		if workloads[i].isInline {
