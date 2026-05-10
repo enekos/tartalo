@@ -193,6 +193,10 @@ type Generator struct {
 	// contains at least one defer; emitReturn prepends a defer-runner call.
 	currentFuncHasDefers bool
 
+	// inFunc is true while emitting inside a function body. Loop variables
+	// and other block-scoped temporaries are declared local when true.
+	inFunc bool
+
 	// testMode is true while emitting a test runner script (EmitTest).
 	// Builtins that check mock state branch on this flag — production
 	// scripts stay free of any test-only code.
@@ -1461,6 +1465,7 @@ func (g *Generator) emitFuncWithName(fd *ast.FuncDecl, mangled string) {
 	}
 	prevDefers := g.currentFuncDefers
 	prevHasDefers := g.currentFuncHasDefers
+	g.inFunc = true
 	var defers []*ast.DeferStmt
 	if hasDeferIn(fd.Body) {
 		defers = collectDefers(fd.Body)
@@ -1521,6 +1526,7 @@ func (g *Generator) emitFuncWithName(fd *ast.FuncDecl, mangled string) {
 	if g.currentFuncHasDefers && !allPathsReturn(fd.Body.Stmts) {
 		g.writeLine("__tt_run_defers")
 	}
+	g.inFunc = false
 	g.indent--
 	g.writeLine("}")
 
@@ -2373,7 +2379,11 @@ func (g *Generator) emitForRange(s *ast.ForStmt, r *ast.RangeExpr) {
 		// somehow a string-form value lands here, route it through a temp.
 		startExpr = "$" + start.value
 	}
-	g.writeLine(vname + "=$((" + startExpr + " - 1))")
+	if g.inFunc {
+		g.writeLine("local " + vname + "=$((" + startExpr + " - 1))")
+	} else {
+		g.writeLine(vname + "=$((" + startExpr + " - 1))")
+	}
 
 	// Resolve the end into a stable form we can re-test on each iteration.
 	var endTest string
