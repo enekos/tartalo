@@ -1,0 +1,40 @@
+func fib(n: number): number {
+  if n <= 1 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+
+func sumTo(n: number): number {
+  let total = 0
+  for i in 0..n {
+    total = total + i
+  }
+  return total
+}
+
+func buildString(n: number): string {
+  let s = ""
+  for i in 0..n {
+    s = s + "x"
+  }
+  return s
+}
+
+func work(n: number): number {
+  let result = 0
+  for i in 0..n {
+    if i % 2 == 0 {
+      result = result + i
+    } else {
+      result = result - i
+    }
+  }
+  return result
+}
+
+func main(): void {
+  let f = fib(20)
+  let s = sumTo(1000)
+  let s2 = buildString(100)
+  let w = work(1000)
+  echo("fib=" + str(f) + " sum=" + str(s) + " len=" + str(len(s2)) + " work=" + str(w))
+}
