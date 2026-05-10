@@ -55,7 +55,7 @@ var (
 	benchMatch    = loadFile("../../examples/match.tt")
 	benchNumpy    = loadFile("../../examples/numpy.tt")
 	benchPandas   = loadFile("../../examples/pandas.tt")
-	benchPerf     = loadFile("../../bench_perf.tt")
+	benchPerf     = loadFile("../../scripts/bench_perf.tt")
 
 	benchAgentDemo = mustLoad("agent_demo.tt", `
 // agent_demo.tt — a self-contained agent that uses every piece of the

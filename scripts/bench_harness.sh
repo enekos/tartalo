@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-FILE="${1:-bench_perf.tt}"
+FILE="${1:-scripts/bench_perf.tt}"
 N="${2:-20}"
 
 echo "=== Benchmarking $FILE ==="

@@ -47,7 +47,7 @@ SH_BYTES=$(wc -c < /tmp/bench_fizzbuzz.sh | tr -d ' ')
 echo "fizzbuzz_lines: $SH_LINES"
 echo "fizzbuzz_bytes: $SH_BYTES"
 
-./tartalo build bench_perf.tt -o /tmp/bench_perf.sh --no-verify
+./tartalo build scripts/bench_perf.tt -o /tmp/bench_perf.sh --no-verify
 PERF_LINES=$(wc -l < /tmp/bench_perf.sh | tr -d ' ')
 PERF_BYTES=$(wc -c < /tmp/bench_perf.sh | tr -d ' ')
 echo "perf_lines: $PERF_LINES"

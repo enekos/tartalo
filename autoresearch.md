@@ -21,7 +21,7 @@ Lower is better.
 `go run scripts/bench_runner.go`
 
 ## Workloads
-- perf: fib(10), arrays, strings, records (from bench_perf.tt)
+- perf: fib(10), arrays, strings, records (from scripts/bench_perf.tt)
 - fizzbuzz: loops and conditionals
 - array: array operations
 - strings: string manipulation
