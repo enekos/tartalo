@@ -377,12 +377,12 @@ func (g *Generator) emitVarDecl(d *ast.VarDecl) {
 		g.out.WriteString(" ")
 		g.out.WriteString(g.goType(to))
 		g.out.WriteString(" = ")
-		g.out.WriteString(rhs)
+		g.writeReflowed(rhs)
 	} else {
 		g.out.WriteString("tt_")
 		g.out.WriteString(d.Name)
 		g.out.WriteString(" := ")
-		g.out.WriteString(rhs)
+		g.writeReflowed(rhs)
 	}
 	g.out.WriteString("; _ = tt_")
 	g.out.WriteString(d.Name)
@@ -404,7 +404,7 @@ func (g *Generator) emitAssign(s *ast.AssignStmt) {
 		g.out.WriteString(s.Name)
 	}
 	g.out.WriteString(" = ")
-	g.out.WriteString(rhs)
+	g.writeReflowed(rhs)
 	g.out.WriteByte('\n')
 }
 
@@ -419,11 +419,11 @@ func (g *Generator) emitFieldAssign(s *ast.FieldAssignStmt) {
 	}
 	rhs = g.coerce(rhs, g.typeOf(s.Value), fieldTy)
 	g.writeIndent()
-	g.out.WriteString(g.compileExpr(s.Target))
+	g.writeReflowed(g.compileExpr(s.Target))
 	g.out.WriteString(".F_")
 	g.out.WriteString(s.Name)
 	g.out.WriteString(" = ")
-	g.out.WriteString(rhs)
+	g.writeReflowed(rhs)
 	g.out.WriteByte('\n')
 }
 
@@ -439,14 +439,14 @@ func (g *Generator) emitReturn(s *ast.ReturnStmt) {
 	}
 	g.writeIndent()
 	g.out.WriteString("return ")
-	g.out.WriteString(rhs)
+	g.writeReflowed(rhs)
 	g.out.WriteByte('\n')
 }
 
 func (g *Generator) emitIf(s *ast.IfStmt) {
 	g.writeIndent()
 	g.out.WriteString("if ")
-	g.out.WriteString(g.compileExpr(s.Cond))
+	g.writeReflowed(g.compileExpr(s.Cond))
 	g.out.WriteString(" {\n")
 	g.indent++
 	for _, st := range s.Then.Stmts {
@@ -480,7 +480,7 @@ func (g *Generator) emitIf(s *ast.IfStmt) {
 // indentation — the caller is responsible for placement (used by `else if`).
 func (g *Generator) emitIfTail(s *ast.IfStmt) {
 	g.out.WriteString("if ")
-	g.out.WriteString(g.compileExpr(s.Cond))
+	g.writeReflowed(g.compileExpr(s.Cond))
 	g.out.WriteString(" {\n")
 	g.indent++
 	for _, st := range s.Then.Stmts {
@@ -511,7 +511,7 @@ func (g *Generator) emitIfTail(s *ast.IfStmt) {
 func (g *Generator) emitWhile(s *ast.WhileStmt) {
 	g.writeIndent()
 	g.out.WriteString("for ")
-	g.out.WriteString(g.compileExpr(s.Cond))
+	g.writeReflowed(g.compileExpr(s.Cond))
 	g.out.WriteString(" {\n")
 	g.indent++
 	for _, st := range s.Body.Stmts {
@@ -531,11 +531,11 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 		g.out.WriteString("for tt_")
 		g.out.WriteString(s.Var)
 		g.out.WriteString(" := ")
-		g.out.WriteString(start)
+		g.writeReflowed(start)
 		g.out.WriteString("; tt_")
 		g.out.WriteString(s.Var)
 		g.out.WriteString(" < ")
-		g.out.WriteString(end)
+		g.writeReflowed(end)
 		g.out.WriteString("; tt_")
 		g.out.WriteString(s.Var)
 		g.out.WriteString("++ {")
@@ -556,7 +556,7 @@ func (g *Generator) emitFor(s *ast.ForStmt) {
 			g.out.WriteString("for _, tt_")
 			g.out.WriteString(s.Var)
 			g.out.WriteString(" := range ")
-			g.out.WriteString(g.compileExpr(s.Iter))
+			g.writeReflowed(g.compileExpr(s.Iter))
 			g.out.WriteString(" {")
 			g.out.WriteByte('\n')
 		default:
@@ -594,7 +594,7 @@ func (g *Generator) emitMatch(s *ast.MatchStmt) {
 	g.writeIndent()
 	g.out.WriteString(subj)
 	g.out.WriteString(" := ")
-	g.out.WriteString(g.compileExpr(s.Subject))
+	g.writeReflowed(g.compileExpr(s.Subject))
 	g.out.WriteByte('\n')
 	g.writeIndent()
 	g.out.WriteString("switch ")
@@ -638,7 +638,7 @@ func (g *Generator) emitMatchSum(s *ast.MatchStmt, sum *types.Sum) {
 	g.writeIndent()
 	g.out.WriteString(subj)
 	g.out.WriteString(" := ")
-	g.out.WriteString(g.compileExpr(s.Subject))
+	g.writeReflowed(g.compileExpr(s.Subject))
 	g.out.WriteByte('\n')
 	g.writeIndent()
 	g.out.WriteString("switch ")
@@ -747,24 +747,24 @@ func (g *Generator) emitExprStmt(x ast.Expr) {
 		t := g.typeOf(x)
 		if t == nil || t == types.Void {
 			g.writeIndent()
-			g.out.WriteString(expr)
+			g.writeReflowed(expr)
 			g.out.WriteByte('\n')
 			return
 		}
 		g.writeIndent()
 		g.out.WriteString("_ = ")
-		g.out.WriteString(expr)
+		g.writeReflowed(expr)
 		g.out.WriteByte('\n')
 	case *ast.CmdLit:
 		// Discard the output but still execute the command.
 		g.writeIndent()
 		g.out.WriteString("_ = ")
-		g.out.WriteString(g.compileCmdLit(x))
+		g.writeReflowed(g.compileCmdLit(x))
 		g.out.WriteByte('\n')
 	default:
 		g.writeIndent()
 		g.out.WriteString("_ = ")
-		g.out.WriteString(g.compileExpr(x))
+		g.writeReflowed(g.compileExpr(x))
 		g.out.WriteByte('\n')
 	}
 }

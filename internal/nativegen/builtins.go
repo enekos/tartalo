@@ -6,8 +6,17 @@ import (
 
 	"github.com/enekos/tartalo/internal/ast"
 	"github.com/enekos/tartalo/internal/checker"
+	"github.com/enekos/tartalo/internal/goprint"
 	"github.com/enekos/tartalo/internal/types"
 )
+
+// iife returns a multi-line Go immediately-invoked function expression with
+// the given return type (empty for void) and one statement per body string.
+// Embedded newlines are reflowed by writeLine when the result lands in a
+// statement context, so the block sits flush under the surrounding indent.
+func iife(retType string, stmts ...string) string {
+	return goprint.IIFE{ReturnType: retType, Body: stmts}.String()
+}
 
 // compileCall produces the Go expression text for a Tartalo call. Builtins
 // dispatch to compileBuiltin for stdlib lowering; user functions become
@@ -170,13 +179,16 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return "fmt.Fprintln(os.Stderr, " + g.toString(args[0], argTypes[0]) + ")"
 	case "exit":
 		g.addImport("os")
-		return "func() { os.Exit(int(" + args[0] + ")) }()"
+		return iife("", "os.Exit(int("+args[0]+"))")
 	case "str":
 		return g.toString(args[0], argTypes[0])
 	case "num":
 		g.addImport("strconv")
 		g.addImport("strings")
-		return "func() int64 { v, _ := strconv.ParseInt(strings.TrimSpace(" + args[0] + "), 10, 64); return v }()"
+		return iife("int64",
+			"v, _ := strconv.ParseInt(strings.TrimSpace("+args[0]+"), 10, 64)",
+			"return v",
+		)
 	case "len":
 		// `len` on strings counts UTF-8 codepoints (runes); on arrays,
 		// counts elements. The checker accepts either; we dispatch on the
@@ -189,8 +201,15 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 	case "byteLen":
 		return "int64(len(" + args[0] + "))"
 	case "byteSlice":
-		return "func() string { _s := " + args[0] + "; _i := int(" + args[1] + "); _j := int(" + args[2] +
-			"); if _i < 0 { _i = 0 }; if _j > len(_s) { _j = len(_s) }; if _i > _j { _i = _j }; return _s[_i:_j] }()"
+		return iife("string",
+			"_s := "+args[0],
+			"_i := int("+args[1]+")",
+			"_j := int("+args[2]+")",
+			"if _i < 0 { _i = 0 }",
+			"if _j > len(_s) { _j = len(_s) }",
+			"if _i > _j { _i = _j }",
+			"return _s[_i:_j]",
+		)
 	case "env":
 		g.usesRuntimeEnv = true
 		g.usesRuntimePtr = true
@@ -206,7 +225,7 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return "_tt_now()"
 	case "sleep":
 		g.addImport("time")
-		return "func() { time.Sleep(time.Duration(" + args[0] + ") * time.Second) }()"
+		return iife("", "time.Sleep(time.Duration("+args[0]+") * time.Second)")
 
 	// --- string operations ---
 	case "upper":
@@ -238,8 +257,15 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return "strings.Join(" + args[0] + ", " + args[1] + ")"
 	case "slice":
 		// Rune-aware half-open slice [a, b) over codepoint indices.
-		return "func() string { _r := []rune(" + args[0] + "); _i := int(" + args[1] + "); _j := int(" + args[2] +
-			"); if _i < 0 { _i = 0 }; if _j > len(_r) { _j = len(_r) }; if _i > _j { _i = _j }; return string(_r[_i:_j]) }()"
+		return iife("string",
+			"_r := []rune("+args[0]+")",
+			"_i := int("+args[1]+")",
+			"_j := int("+args[2]+")",
+			"if _i < 0 { _i = 0 }",
+			"if _j > len(_r) { _j = len(_r) }",
+			"if _i > _j { _i = _j }",
+			"return string(_r[_i:_j])",
+		)
 	case "trimStart":
 		g.addImport("strings")
 		return "strings.TrimLeft(" + args[0] + ", \" \\t\\r\\n\")"
@@ -254,18 +280,43 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return "int64(strings.Index(" + args[0] + ", " + args[1] + "))"
 	case "parseInt":
 		g.addImport("strconv")
-		return "func() *int64 { _v, _err := strconv.ParseInt(" + args[0] + ", 10, 64); if _err != nil { return nil }; return &_v }()"
+		return iife("*int64",
+			"_v, _err := strconv.ParseInt("+args[0]+", 10, 64)",
+			"if _err != nil { return nil }",
+			"return &_v",
+		)
 	case "abs":
-		return "func() int64 { _v := " + args[0] + "; if _v < 0 { return -_v }; return _v }()"
+		return iife("int64",
+			"_v := "+args[0],
+			"if _v < 0 { return -_v }",
+			"return _v",
+		)
 	case "max":
-		return "func() int64 { _a, _b := " + args[0] + ", " + args[1] + "; if _a > _b { return _a }; return _b }()"
+		return iife("int64",
+			"_a, _b := "+args[0]+", "+args[1],
+			"if _a > _b { return _a }",
+			"return _b",
+		)
 	case "min":
-		return "func() int64 { _a, _b := " + args[0] + ", " + args[1] + "; if _a < _b { return _a }; return _b }()"
+		return iife("int64",
+			"_a, _b := "+args[0]+", "+args[1],
+			"if _a < _b { return _a }",
+			"return _b",
+		)
 	case "sorted":
 		g.addImport("sort")
-		return "func() []string { _cp := append([]string(nil), " + args[0] + "...); sort.Strings(_cp); return _cp }()"
+		return iife("[]string",
+			"_cp := append([]string(nil), "+args[0]+"...)",
+			"sort.Strings(_cp)",
+			"return _cp",
+		)
 	case "reversed":
-		return "func() []string { _s := " + args[0] + "; _cp := make([]string, len(_s)); for _i, _v := range _s { _cp[len(_s)-1-_i] = _v }; return _cp }()"
+		return iife("[]string",
+			"_s := "+args[0],
+			"_cp := make([]string, len(_s))",
+			"for _i, _v := range _s { _cp[len(_s)-1-_i] = _v }",
+			"return _cp",
+		)
 
 	// --- subprocess ---
 	case "exec":
@@ -297,20 +348,20 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("io")
 		g.addImport("os")
 		g.addImport("strings")
-		return "func() { _tt_writeFile(" + args[0] + ", " + args[1] + ") }()"
+		return iife("", "_tt_writeFile("+args[0]+", "+args[1]+")")
 	case "appendFile":
 		g.usesRuntimeFile = true
 		g.addImport("fmt")
 		g.addImport("io")
 		g.addImport("os")
 		g.addImport("strings")
-		return "func() { _tt_appendFile(" + args[0] + ", " + args[1] + ") }()"
+		return iife("", "_tt_appendFile("+args[0]+", "+args[1]+")")
 	case "removeFile":
 		g.addImport("os")
-		return "func() { os.Remove(" + args[0] + ") }()"
+		return iife("", "os.Remove("+args[0]+")")
 	case "mkdir":
 		g.addImport("os")
-		return "func() { os.MkdirAll(" + args[0] + ", 0o755) }()"
+		return iife("", "os.MkdirAll("+args[0]+", 0o755)")
 	case "listDir":
 		g.usesRuntimeFile = true
 		g.addImport("fmt")
@@ -320,13 +371,22 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return "_tt_listDir(" + args[0] + ")"
 	case "exists":
 		g.addImport("os")
-		return "func() bool { _, err := os.Stat(" + args[0] + "); return err == nil }()"
+		return iife("bool",
+			"_, err := os.Stat("+args[0]+")",
+			"return err == nil",
+		)
 	case "isFile":
 		g.addImport("os")
-		return "func() bool { i, err := os.Stat(" + args[0] + "); return err == nil && i.Mode().IsRegular() }()"
+		return iife("bool",
+			"i, err := os.Stat("+args[0]+")",
+			"return err == nil && i.Mode().IsRegular()",
+		)
 	case "isDir":
 		g.addImport("os")
-		return "func() bool { i, err := os.Stat(" + args[0] + "); return err == nil && i.IsDir() }()"
+		return iife("bool",
+			"i, err := os.Stat("+args[0]+")",
+			"return err == nil && i.IsDir()",
+		)
 	case "stat":
 		g.usesRuntimeStat = true
 		g.addImport("os")
@@ -464,21 +524,37 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		// `_s` binds the input once so the error message echoes the exact
 		// value the user passed, not whatever side effect a duplicated
 		// expression might have.
-		return "func() int64 { _s := " + args[0] + "; _v, _err := strconv.ParseInt(_s, 10, 64); if _err != nil { _tt_typeError(" + g.callLoc(e) + ", \"int\", _s) }; return _v }()"
+		return iife("int64",
+			"_s := "+args[0],
+			"_v, _err := strconv.ParseInt(_s, 10, 64)",
+			"if _err != nil { _tt_typeError("+g.callLoc(e)+`, "int", _s) }`,
+			"return _v",
+		)
 	case "asFloat":
 		g.usesRuntimeTypeError = true
 		g.addImport("fmt")
 		g.addImport("os")
 		g.addImport("strconv")
 		g.addImport("strings")
-		return "func() float64 { _s := " + args[0] + "; _v, _err := strconv.ParseFloat(strings.TrimSpace(_s), 64); if _err != nil { _tt_typeError(" + g.callLoc(e) + ", \"float\", _s) }; return _v }()"
+		return iife("float64",
+			"_s := "+args[0],
+			"_v, _err := strconv.ParseFloat(strings.TrimSpace(_s), 64)",
+			"if _err != nil { _tt_typeError("+g.callLoc(e)+`, "float", _s) }`,
+			"return _v",
+		)
 	case "asBool":
 		g.usesRuntimeTypeError = true
 		g.addImport("fmt")
 		g.addImport("os")
 		// _tt_typeError exits, but Go can't see through os.Exit so the
 		// trailing `return false` is required to satisfy the type checker.
-		return "func() bool { _s := " + args[0] + "; if _s == \"true\" { return true }; if _s == \"false\" { return false }; _tt_typeError(" + g.callLoc(e) + ", \"bool\", _s); return false }()"
+		return iife("bool",
+			"_s := "+args[0],
+			`if _s == "true" { return true }`,
+			`if _s == "false" { return false }`,
+			"_tt_typeError("+g.callLoc(e)+`, "bool", _s)`,
+			"return false",
+		)
 	case "asString":
 		// asString is a runtime no-op: the static signature already proves
 		// the input is a string. Kept for symmetry with the other asXxx.
@@ -492,11 +568,20 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 
 	// --- pandas-lite (HOFs over T[]) ---
 	case "count":
-		return "func() int64 { _n := int64(0); for _, _x := range " + args[0] + " { if " + args[1] + "(_x) { _n++ } }; return _n }()"
+		return iife("int64",
+			"_n := int64(0)",
+			"for _, _x := range "+args[0]+" { if "+args[1]+"(_x) { _n++ } }",
+			"return _n",
+		)
 	case "unique":
 		arr, _ := argTypes[0].(*types.Array)
 		elemTy := g.goType(arr.Elem)
-		return "func() []" + elemTy + " { _seen := map[" + elemTy + "]bool{}; _out := make([]" + elemTy + ", 0, len(" + args[0] + ")); for _, _x := range " + args[0] + " { if !_seen[_x] { _seen[_x] = true; _out = append(_out, _x) } }; return _out }()"
+		return iife("[]"+elemTy,
+			"_seen := map["+elemTy+"]bool{}",
+			"_out := make([]"+elemTy+", 0, len("+args[0]+"))",
+			"for _, _x := range "+args[0]+" { if !_seen[_x] { _seen[_x] = true; _out = append(_out, _x) } }",
+			"return _out",
+		)
 	case "readCsv":
 		return g.compileReadCsvNative(e)
 	case "writeCsv":
@@ -510,7 +595,10 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 	case "mapSet":
 		return g.compileMapSetNative(args, argTypes)
 	case "mapHas":
-		return "func() bool { _, _ok := " + args[0] + "[" + args[1] + "]; return _ok }()"
+		return iife("bool",
+			"_, _ok := "+args[0]+"["+args[1]+"]",
+			"return _ok",
+		)
 	case "mapDelete":
 		return g.compileMapDeleteNative(args, argTypes)
 	case "mapKeys":
@@ -814,11 +902,12 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		// into a Go expression position, no statement-level rewrite needed.
 		if g.currentAgent != nil && g.currentAgent.Budget > 0 {
 			agentName := g.currentAgent.Name
-			return "func() string { " +
-				"if _tt_budget <= 0 { " +
-				"fmt.Fprintf(os.Stderr, \"tartalo: agent " + agentName + " exceeded llm budget of " + strconv.FormatInt(g.currentAgent.Budget, 10) + "\\n\"); os.Exit(1) }; " +
-				"_tt_budget--; " +
-				"return _tt_llm(" + args[0] + ") }()"
+			budget := strconv.FormatInt(g.currentAgent.Budget, 10)
+			return iife("string",
+				`if _tt_budget <= 0 { fmt.Fprintf(os.Stderr, "tartalo: agent `+agentName+` exceeded llm budget of `+budget+`\n"); os.Exit(1) }`,
+				"_tt_budget--",
+				"return _tt_llm("+args[0]+")",
+			)
 		}
 		return "_tt_llm(" + args[0] + ")"
 	case "approval":
@@ -864,7 +953,7 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return "_tt_mockLlmCalls()"
 	}
 
-	return `func() interface{} { panic("tartalo native: builtin not yet supported: ` + sym.Name + `") }()`
+	return iife("interface{}", `panic("tartalo native: builtin not yet supported: `+sym.Name+`")`)
 }
 
 // callLoc renders a `file:line:col` literal for the call site, used by the
@@ -906,7 +995,11 @@ func (g *Generator) compileMapGetNative(args []string, argTypes []types.Type) st
 		return `nil /* mapGet: not a map */`
 	}
 	valTy := g.goType(mt.Value)
-	return "func() *" + valTy + " { _v, _ok := " + args[0] + "[" + args[1] + "]; if !_ok { return nil }; return &_v }()"
+	return iife("*"+valTy,
+		"_v, _ok := "+args[0]+"["+args[1]+"]",
+		"if !_ok { return nil }",
+		"return &_v",
+	)
 }
 
 // compileMapSetNative emits a copy-on-write set: a fresh map of length+1,
@@ -920,7 +1013,12 @@ func (g *Generator) compileMapSetNative(args []string, argTypes []types.Type) st
 	keyTy := g.goType(mt.Key)
 	valTy := g.goType(mt.Value)
 	mapTy := "map[" + keyTy + "]" + valTy
-	return "func() " + mapTy + " { _o := make(" + mapTy + ", len(" + args[0] + ")+1); for _k, _v := range " + args[0] + " { _o[_k] = _v }; _o[" + args[1] + "] = " + args[2] + "; return _o }()"
+	return iife(mapTy,
+		"_o := make("+mapTy+", len("+args[0]+")+1)",
+		"for _k, _v := range "+args[0]+" { _o[_k] = _v }",
+		"_o["+args[1]+"] = "+args[2],
+		"return _o",
+	)
 }
 
 // compileMapDeleteNative emits the functional counterpart of compileMapSet.
@@ -932,7 +1030,11 @@ func (g *Generator) compileMapDeleteNative(args []string, argTypes []types.Type)
 	keyTy := g.goType(mt.Key)
 	valTy := g.goType(mt.Value)
 	mapTy := "map[" + keyTy + "]" + valTy
-	return "func() " + mapTy + " { _o := make(" + mapTy + ", len(" + args[0] + ")); for _k, _v := range " + args[0] + " { if _k != " + args[1] + " { _o[_k] = _v } }; return _o }()"
+	return iife(mapTy,
+		"_o := make("+mapTy+", len("+args[0]+"))",
+		"for _k, _v := range "+args[0]+" { if _k != "+args[1]+" { _o[_k] = _v } }",
+		"return _o",
+	)
 }
 
 // compileMapKeysNative returns the map's keys in sorted order. The sort
@@ -945,17 +1047,31 @@ func (g *Generator) compileMapKeysNative(args []string, argTypes []types.Type) s
 	}
 	keyTy := g.goType(mt.Key)
 	g.addImport("sort")
-	body := "func() []" + keyTy + " { _ks := make([]" + keyTy + ", 0, len(" + args[0] + ")); for _k := range " + args[0] + " { _ks = append(_ks, _k) }; "
-	switch mt.Key {
-	case types.String:
-		body += "sort.Strings(_ks); "
-	case types.Number:
-		body += "sort.Slice(_ks, func(i, j int) bool { return _ks[i] < _ks[j] }); "
-	case types.Bool:
-		body += "sort.Slice(_ks, func(i, j int) bool { return !_ks[i] && _ks[j] }); "
+	stmts := []string{
+		"_ks := make([]" + keyTy + ", 0, len(" + args[0] + "))",
+		"for _k := range " + args[0] + " { _ks = append(_ks, _k) }",
 	}
-	body += "return _ks }()"
-	return body
+	if sortStmt := mapKeySortStmt(mt.Key); sortStmt != "" {
+		stmts = append(stmts, sortStmt)
+	}
+	stmts = append(stmts, "return _ks")
+	return iife("[]"+keyTy, stmts...)
+}
+
+// mapKeySortStmt returns the one-liner that sorts _ks in canonical order
+// for the given key type, or "" if the key type isn't sortable here. Both
+// mapKeys and mapValues need the exact same sort so iterating them in
+// parallel yields matching pairs.
+func mapKeySortStmt(key types.Type) string {
+	switch key {
+	case types.String:
+		return "sort.Strings(_ks)"
+	case types.Number:
+		return "sort.Slice(_ks, func(i, j int) bool { return _ks[i] < _ks[j] })"
+	case types.Bool:
+		return "sort.Slice(_ks, func(i, j int) bool { return !_ks[i] && _ks[j] })"
+	}
+	return ""
 }
 
 // compileMapValuesNative emits values ordered by their key (same canonical
@@ -968,17 +1084,19 @@ func (g *Generator) compileMapValuesNative(args []string, argTypes []types.Type)
 	keyTy := g.goType(mt.Key)
 	valTy := g.goType(mt.Value)
 	g.addImport("sort")
-	body := "func() []" + valTy + " { _ks := make([]" + keyTy + ", 0, len(" + args[0] + ")); for _k := range " + args[0] + " { _ks = append(_ks, _k) }; "
-	switch mt.Key {
-	case types.String:
-		body += "sort.Strings(_ks); "
-	case types.Number:
-		body += "sort.Slice(_ks, func(i, j int) bool { return _ks[i] < _ks[j] }); "
-	case types.Bool:
-		body += "sort.Slice(_ks, func(i, j int) bool { return !_ks[i] && _ks[j] }); "
+	stmts := []string{
+		"_ks := make([]" + keyTy + ", 0, len(" + args[0] + "))",
+		"for _k := range " + args[0] + " { _ks = append(_ks, _k) }",
 	}
-	body += "_vs := make([]" + valTy + ", 0, len(_ks)); for _, _k := range _ks { _vs = append(_vs, " + args[0] + "[_k]) }; return _vs }()"
-	return body
+	if sortStmt := mapKeySortStmt(mt.Key); sortStmt != "" {
+		stmts = append(stmts, sortStmt)
+	}
+	stmts = append(stmts,
+		"_vs := make([]"+valTy+", 0, len(_ks))",
+		"for _, _k := range _ks { _vs = append(_vs, "+args[0]+"[_k]) }",
+		"return _vs",
+	)
+	return iife("[]"+valTy, stmts...)
 }
 
 // assertArg widens a numeric assertion argument to float64 when its peer is

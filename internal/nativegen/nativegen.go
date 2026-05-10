@@ -18,11 +18,11 @@
 package nativegen
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/enekos/tartalo/internal/ast"
 	"github.com/enekos/tartalo/internal/checker"
+	"github.com/enekos/tartalo/internal/goprint"
 	"github.com/enekos/tartalo/internal/loader"
 	"github.com/enekos/tartalo/internal/types"
 )
@@ -454,22 +454,27 @@ func (g *Generator) writeIndent() {
 }
 
 func (g *Generator) writeLine(s string) {
-	if g.indent == 1 {
-		g.out.WriteByte('\t')
-	} else if g.indent == 2 {
-		g.out.WriteByte('\t')
-		g.out.WriteByte('\t')
-	} else if g.indent == 3 {
-		g.out.WriteByte('\t')
-		g.out.WriteByte('\t')
-		g.out.WriteByte('\t')
-	} else if g.indent > 3 {
-		for i := 0; i < g.indent; i++ {
-			g.out.WriteByte('\t')
-		}
-	}
-	g.out.WriteString(s)
+	g.writeIndent()
+	g.writeReflowed(s)
 	g.out.WriteByte('\n')
+}
+
+// writeReflowed writes s into g.out, re-indenting every line after the first
+// at the current depth plus one extra tab so a multi-line expression body
+// (typically a goprint.IIFE) sits one level inside the surrounding statement.
+// Single-line strings — the common case — take a fast path with no scan.
+func (g *Generator) writeReflowed(s string) {
+	if !strings.ContainsRune(s, '\n') {
+		g.out.WriteString(s)
+		return
+	}
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
+			g.out.WriteByte('\n')
+			g.writeIndent()
+		}
+		g.out.WriteString(line)
+	}
 }
 
 func (g *Generator) tmp(prefix string) string {
@@ -518,28 +523,5 @@ func (g *Generator) addImport(pkg string) {
 }
 
 func (g *Generator) writeImportsTo(out *strings.Builder) {
-	n := len(g.imports)
-	if n == 0 {
-		return
-	}
-	if n <= 2 {
-		for _, p := range g.imports {
-			out.WriteString("import \"")
-			out.WriteString(p)
-			out.WriteString("\"\n\n")
-		}
-		return
-	}
-	if n == 2 && g.imports[0] > g.imports[1] {
-		g.imports[0], g.imports[1] = g.imports[1], g.imports[0]
-	} else {
-		sort.Strings(g.imports)
-	}
-	out.WriteString("import (\n")
-	for _, p := range g.imports {
-		out.WriteString("\t\"")
-		out.WriteString(p)
-		out.WriteString("\"\n")
-	}
-	out.WriteString(")\n\n")
+	goprint.Imports(out, g.imports)
 }

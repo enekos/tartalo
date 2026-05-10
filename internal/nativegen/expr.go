@@ -6,6 +6,7 @@ import (
 
 	"github.com/enekos/tartalo/internal/ast"
 	"github.com/enekos/tartalo/internal/checker"
+	"github.com/enekos/tartalo/internal/goprint"
 	"github.com/enekos/tartalo/internal/token"
 	"github.com/enekos/tartalo/internal/types"
 )
@@ -468,75 +469,133 @@ func (g *Generator) compileUnary(e *ast.UnaryExpr) string {
 	case token.Bang:
 		op = "!"
 	}
-	return "(" + op + g.compileExpr(e.Operand) + ")"
+	return goprint.RenderString(goprint.Un{
+		Op:      op,
+		Operand: g.exprNode(e.Operand),
+	})
 }
 
-func binExpr(lhs, op, rhs string) string {
-	if len(lhs)+len(op)+len(rhs)+4 > 64 {
-		return "(" + lhs + " " + op + " " + rhs + ")"
+// exprNode is a thin adapter from an AST expression to a goprint.Expr that
+// reports its rendered precedence. The text is whatever compileExpr produced;
+// we just attach the precedence so parents (Bin / Un) can decide on parens.
+func (g *Generator) exprNode(e ast.Expr) goprint.Expr {
+	text := g.compileExpr(e)
+	if p := astExprPrec(e); p < goprint.PrecAtom {
+		return goprint.Raw{Text: text, P: p}
 	}
-	var buf [64]byte
-	buf[0] = '('
-	n := 1 + copy(buf[1:], lhs)
-	buf[n] = ' '
-	n++
-	n += copy(buf[n:], op)
-	buf[n] = ' '
-	n++
-	n += copy(buf[n:], rhs)
-	buf[n] = ')'
-	return string(buf[:n+1])
+	return goprint.Atom{Text: text}
+}
+
+// astExprPrec returns the precedence of e's emitted Go form. Most lowerings
+// produce calls / literals / field/index accesses, which are atoms. Binary
+// and unary expressions inherit the operator's precedence so a parent
+// expression can avoid spurious parens. nil is treated as an atom — used
+// when the caller passes a synthetic literal (e.g. comparing against `nil`).
+func astExprPrec(e ast.Expr) int {
+	switch e := e.(type) {
+	case nil:
+		return goprint.PrecAtom
+	case *ast.BinaryExpr:
+		return goprint.PrecOf(binOpString(e.Op))
+	case *ast.UnaryExpr:
+		return goprint.PrecUnary
+	case *ast.StringLit:
+		// Multi-part interpolations lower to `a + b + c` chains (PrecAdd);
+		// single-chunk literals are bare quoted strings (atoms).
+		if len(e.Parts) > 1 {
+			return goprint.PrecAdd
+		}
+		return goprint.PrecAtom
+	}
+	return goprint.PrecAtom
+}
+
+// binOpString maps a Tartalo binary operator token to the Go operator text
+// used both for emission and for precedence lookup. Unknown ops fall through
+// to "" so PrecOf treats them as default-tight (we never emit them).
+func binOpString(op token.Kind) string {
+	switch op {
+	case token.Plus:
+		return "+"
+	case token.Minus:
+		return "-"
+	case token.Star:
+		return "*"
+	case token.Slash:
+		return "/"
+	case token.Percent:
+		return "%"
+	case token.Eq:
+		return "=="
+	case token.Neq:
+		return "!="
+	case token.Lt:
+		return "<"
+	case token.Lte:
+		return "<="
+	case token.Gt:
+		return ">"
+	case token.Gte:
+		return ">="
+	case token.AndAnd:
+		return "&&"
+	case token.OrOr:
+		return "||"
+	}
+	return ""
+}
+
+// renderBin builds a goprint.Bin from already-rendered operand text plus the
+// AST nodes for precedence. Used by compileBinary and compileEq so both
+// share the same parens-aware printing logic.
+func renderBin(op, lhsText, rhsText string, lhs, rhs ast.Expr) string {
+	return goprint.RenderString(goprint.Bin{
+		Op:  op,
+		Lhs: rawOrAtom(lhsText, astExprPrec(lhs)),
+		Rhs: rawOrAtom(rhsText, astExprPrec(rhs)),
+	})
+}
+
+func rawOrAtom(text string, p int) goprint.Expr {
+	if p < goprint.PrecAtom {
+		return goprint.Raw{Text: text, P: p}
+	}
+	return goprint.Atom{Text: text}
 }
 
 func (g *Generator) compileBinary(e *ast.BinaryExpr) string {
 	lhs := g.compileExpr(e.Lhs)
 	rhs := g.compileExpr(e.Rhs)
+	op := binOpString(e.Op)
 	switch e.Op {
-	case token.Plus:
-		// String concat in Tartalo only; numeric add otherwise.
-		return binExpr(lhs, "+", rhs)
-	case token.Minus:
-		return binExpr(lhs, "-", rhs)
-	case token.Star:
-		return binExpr(lhs, "*", rhs)
-	case token.Slash:
-		return binExpr(lhs, "/", rhs)
-	case token.Percent:
-		return binExpr(lhs, "%", rhs)
 	case token.Eq:
-		return g.compileEq(lhs, rhs, g.typeOf(e.Lhs), g.typeOf(e.Rhs), false)
+		return g.compileEq(lhs, rhs, e.Lhs, e.Rhs, false)
 	case token.Neq:
-		return g.compileEq(lhs, rhs, g.typeOf(e.Lhs), g.typeOf(e.Rhs), true)
-	case token.Lt:
-		return binExpr(lhs, "<", rhs)
-	case token.Lte:
-		return binExpr(lhs, "<=", rhs)
-	case token.Gt:
-		return binExpr(lhs, ">", rhs)
-	case token.Gte:
-		return binExpr(lhs, ">=", rhs)
-	case token.AndAnd:
-		return binExpr(lhs, "&&", rhs)
-	case token.OrOr:
-		return binExpr(lhs, "||", rhs)
+		return g.compileEq(lhs, rhs, e.Lhs, e.Rhs, true)
+	case token.Plus, token.Minus, token.Star, token.Slash, token.Percent,
+		token.Lt, token.Lte, token.Gt, token.Gte, token.AndAnd, token.OrOr:
+		return renderBin(op, lhs, rhs, e.Lhs, e.Rhs)
 	}
 	return "/* unsupported binary op */ false"
 }
 
 // compileEq handles `==` and `!=`. Most cases are direct, but optional vs.
 // null needs to compare against nil rather than dereference, and number-vs-
-// float widens with float64(...).
-func (g *Generator) compileEq(lhs, rhs string, lt, rt types.Type, neg bool) string {
+// float widens with float64(...). Output is precedence-aware via goprint
+// so `!ok == false` doesn't grow extra parens.
+func (g *Generator) compileEq(lhs, rhs string, lhsNode, rhsNode ast.Expr, neg bool) string {
 	op := "=="
 	if neg {
 		op = "!="
 	}
+	lt := g.typeOf(lhsNode)
+	rt := g.typeOf(rhsNode)
 	// One side is the null literal: comparison is against nil.
 	if lt == types.Null {
-		return "(" + rhs + " " + op + " nil)"
+		return renderBin(op, rhs, "nil", rhsNode, nil)
 	}
 	if rt == types.Null {
-		return "(" + lhs + " " + op + " nil)"
+		return renderBin(op, lhs, "nil", lhsNode, nil)
 	}
 	// Optional vs T (auto-wrap): unwrap with `*x` and equate to the bare value.
 	// The checker only allows this when both sides have compatible underlying
@@ -553,12 +612,12 @@ func (g *Generator) compileEq(lhs, rhs string, lt, rt types.Type, neg bool) stri
 	}
 	// Number / float widening.
 	if lt == types.Number && rt == types.Float {
-		return "(float64(" + lhs + ") " + op + " " + rhs + ")"
+		return renderBin(op, "float64("+lhs+")", rhs, nil, rhsNode)
 	}
 	if lt == types.Float && rt == types.Number {
-		return "(" + lhs + " " + op + " float64(" + rhs + "))"
+		return renderBin(op, lhs, "float64("+rhs+")", lhsNode, nil)
 	}
-	return "(" + lhs + " " + op + " " + rhs + ")"
+	return renderBin(op, lhs, rhs, lhsNode, rhsNode)
 }
 
 func (g *Generator) compileArrayLit(e *ast.ArrayLit) string {

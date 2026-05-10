@@ -1,7 +1,10 @@
 package nativegen
 
 import (
+	"strings"
+
 	"github.com/enekos/tartalo/internal/ast"
+	"github.com/enekos/tartalo/internal/goprint"
 	"github.com/enekos/tartalo/internal/types"
 )
 
@@ -138,72 +141,68 @@ func (g *Generator) typeFromAnn(ann ast.TypeExpr) types.Type {
 	return nil
 }
 
-// emitPredeclaredTypes writes the four record types every Tartalo program
-// can refer to via builtins (Response/Process/FileInfo/PathParts). Their
-// field shapes are defined in the checker's builtinTypes() and must stay
-// in lockstep.
-const predeclaredTypes = `type Tt_Response struct {
-	F_status int64
-	F_ok bool
-	F_body string
-	F_headers string
-}
-
-type Tt_Request struct {
-	F_url string
-	F_method string
-	F_headers []string
-	F_body string
-	F_timeout int64
-	F_followRedirects bool
-	F_insecure bool
-	F_user string
-	F_password string
-}
-
-type Tt_Process struct {
-	F_code int64
-	F_ok bool
-	F_stdout string
-	F_stderr string
-}
-
-type Tt_FileInfo struct {
-	F_exists bool
-	F_isFile bool
-	F_isDir bool
-	F_size int64
-	F_mtime int64
-	F_mode string
-}
-
-type Tt_PathParts struct {
-	F_dir string
-	F_base string
-	F_name string
-	F_ext string
-}
-
-`
-
+// emitPredeclaredTypes writes the record types every Tartalo program can
+// refer to via builtins (Response/Request/Process/FileInfo/PathParts).
+// Their field shapes are defined in the checker's builtinTypes() and must
+// stay in lockstep. Output is column-aligned via goprint.Struct so it
+// reads cleanly when the user inspects the generated source.
 func (g *Generator) emitPredeclaredTypes() {
-	g.out.WriteString(predeclaredTypes)
+	buf := goprint.NewBuf(1024)
+	goprint.Struct(buf, "Tt_Response", []goprint.StructField{
+		{Name: "F_status", Type: "int64"},
+		{Name: "F_ok", Type: "bool"},
+		{Name: "F_body", Type: "string"},
+		{Name: "F_headers", Type: "string"},
+	})
+	goprint.Struct(buf, "Tt_Request", []goprint.StructField{
+		{Name: "F_url", Type: "string"},
+		{Name: "F_method", Type: "string"},
+		{Name: "F_headers", Type: "[]string"},
+		{Name: "F_body", Type: "string"},
+		{Name: "F_timeout", Type: "int64"},
+		{Name: "F_followRedirects", Type: "bool"},
+		{Name: "F_insecure", Type: "bool"},
+		{Name: "F_user", Type: "string"},
+		{Name: "F_password", Type: "string"},
+	})
+	goprint.Struct(buf, "Tt_Process", []goprint.StructField{
+		{Name: "F_code", Type: "int64"},
+		{Name: "F_ok", Type: "bool"},
+		{Name: "F_stdout", Type: "string"},
+		{Name: "F_stderr", Type: "string"},
+	})
+	goprint.Struct(buf, "Tt_FileInfo", []goprint.StructField{
+		{Name: "F_exists", Type: "bool"},
+		{Name: "F_isFile", Type: "bool"},
+		{Name: "F_isDir", Type: "bool"},
+		{Name: "F_size", Type: "int64"},
+		{Name: "F_mtime", Type: "int64"},
+		{Name: "F_mode", Type: "string"},
+	})
+	goprint.Struct(buf, "Tt_PathParts", []goprint.StructField{
+		{Name: "F_dir", Type: "string"},
+		{Name: "F_base", Type: "string"},
+		{Name: "F_name", Type: "string"},
+		{Name: "F_ext", Type: "string"},
+	})
+	g.out.WriteString(buf.String())
 }
 
 // emitTypeDecl writes the Go declaration for a Tartalo type. Records become
 // plain structs; sums become a struct with a tag field plus per-variant
-// payload slots, mirroring the sh backend's encoding.
+// payload slots, mirroring the sh backend's encoding. Both forms route
+// through goprint.Struct so field names and types line up in columns.
 func (g *Generator) emitTypeDecl(td *ast.TypeDecl) {
 	switch spec := td.Spec.(type) {
 	case *ast.RecordType:
-		g.writeLine("type Tt_" + td.Name + " struct {")
-		g.indent++
+		fields := make([]goprint.StructField, 0, len(spec.Fields))
 		for _, f := range spec.Fields {
-			g.writeLine("F_" + f.Name + " " + g.goType(g.typeFromAnn(f.TypeAnn)))
+			fields = append(fields, goprint.StructField{
+				Name: "F_" + f.Name,
+				Type: g.goType(g.typeFromAnn(f.TypeAnn)),
+			})
 		}
-		g.indent--
-		g.writeLine("}")
-		g.writeLine("")
+		g.writeStructDecl("Tt_"+td.Name, fields)
 	case *ast.SumType:
 		g.emitSumTypeDecl(td.Name, spec)
 	}
@@ -214,15 +213,31 @@ func (g *Generator) emitTypeDecl(td *ast.TypeDecl) {
 // to avoid cross-variant collisions; only the tag's matching slots carry
 // meaningful values at runtime.
 func (g *Generator) emitSumTypeDecl(name string, spec *ast.SumType) {
-	g.writeLine("type Tt_" + name + " struct {")
-	g.indent++
-	g.writeLine("Tag string")
+	fields := []goprint.StructField{{Name: "Tag", Type: "string"}}
 	for _, v := range spec.Variants {
 		for _, f := range v.Fields {
-			g.writeLine("F_" + v.Name + "_" + f.Name + " " + g.goType(g.typeFromAnn(f.TypeAnn)))
+			fields = append(fields, goprint.StructField{
+				Name: "F_" + v.Name + "_" + f.Name,
+				Type: g.goType(g.typeFromAnn(f.TypeAnn)),
+			})
 		}
 	}
-	g.indent--
-	g.writeLine("}")
-	g.writeLine("")
+	g.writeStructDecl("Tt_"+name, fields)
+}
+
+// writeStructDecl pipes the struct text built by goprint.Struct into g.out,
+// re-indenting each emitted line at the generator's current depth so the
+// declaration lands inside any surrounding block context (currently always
+// top-level, but preserved for forward-compat with nested decls).
+func (g *Generator) writeStructDecl(name string, fields []goprint.StructField) {
+	buf := goprint.NewBuf(64 + 32*len(fields))
+	goprint.Struct(buf, name, fields)
+	if g.indent == 0 {
+		g.out.WriteString(buf.String())
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		g.writeLine(line)
+	}
+	g.out.WriteByte('\n')
 }
