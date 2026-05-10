@@ -19,13 +19,13 @@ const iterations = 5
 
 // benchWorkload defines a script and its expected output (for verification).
 type benchWorkload struct {
-	name       string
-	path       string
-	isInline   bool
-	src        string
-	expectOut  string // substring expected in stdout
-	shSkip     bool   // skip sh runtime for this workload
-	env        map[string]string // extra env vars for run
+	name      string
+	path      string
+	isInline  bool
+	src       string
+	expectOut string            // substring expected in stdout
+	shSkip    bool              // skip sh runtime for this workload
+	env       map[string]string // extra env vars for run
 }
 
 var workloads = []benchWorkload{
@@ -61,8 +61,8 @@ var workloads = []benchWorkload{
 		env:       map[string]string{"ACTION": "build"},
 	},
 	{
-		name: "heavy",
-		path: "scripts/bench_heavy.tt",
+		name:     "heavy",
+		path:     "scripts/bench_heavy.tt",
 		isInline: true,
 		src: `func fib(n: number): number {
   if n <= 1 { return n }
@@ -196,11 +196,11 @@ func main() {
 }
 
 type result struct {
-	name            string
-	codegenCompile  time.Duration
+	name             string
+	codegenCompile   time.Duration
 	nativegenCompile time.Duration
-	shRuntime       time.Duration
-	nativeRuntime   time.Duration
+	shRuntime        time.Duration
+	nativeRuntime    time.Duration
 	nativeBinarySize int64
 }
 
