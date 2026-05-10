@@ -3981,6 +3981,20 @@ func (g *Generator) floatArith(b *ast.BinaryExpr, op string) exprValue {
 func (g *Generator) arithOp(b *ast.BinaryExpr) exprValue {
 	lv := g.compileExpr(b.Lhs)
 	rv := g.compileExpr(b.Rhs)
+
+	// Optimization: if the right operand is a function-call result whose
+	// prologue ends with a scalar __ret snapshot (e.g. __ret2="$__ret"),
+	// and the value is used directly in this arithmetic expression, strip
+	// the snapshot and use __ret directly. This saves one variable
+	// assignment per binary-op with a function call on the right side.
+	if len(rv.prologue) > 0 && (rv.form == formArith || rv.form == formBool) {
+		last := rv.prologue[len(rv.prologue)-1]
+		if last == rv.value+`="$__ret"` {
+			rv.prologue = rv.prologue[:len(rv.prologue)-1]
+			rv.value = "__ret"
+		}
+	}
+
 	op := arithSym(b.Op)
 	return exprValue{
 		prologue: concatPrologues(lv.prologue, rv.prologue),
