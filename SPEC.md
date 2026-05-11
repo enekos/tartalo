@@ -81,6 +81,7 @@ Constraints in v0:
 | `void`   | functions with no return value                                                             |
 | `T[]`    | a shell variable holding the elements joined by newlines                                   |
 | `func(T...): R` | a shell variable holding the mangled function name (callable via `"$f" args`)       |
+| `chan[T]` | a shell variable holding the path of a temp directory that backs the message queue (T must be a scalar primitive) |
 
 There is no implicit conversion. `"foo" + 1` is a type error. Use `str(n)` to convert a number to a string.
 
@@ -588,6 +589,114 @@ to shared locals would race — so the language forbids both.
   fresh `sync.WaitGroup`; each task becomes `go func() { defer wg.Done(); body }()`,
   and the block ends with `wg.Wait()`.
 
+## Spawn and channels
+
+`parallel { task { ... } }` is the structured-concurrency primitive — every
+task joins before the block returns. For long-lived agents that outlive a
+single block and communicate with each other or with the spawning function,
+v1 adds `spawn` and typed channels.
+
+```tartalo
+func producer(ch: chan[string]): void {
+  send(ch, "hello")
+  send(ch, "world")
+  closeChan(ch)
+}
+
+func main(): void {
+  let ch: chan[string] = chan()
+  spawn producer(ch)
+  while true {
+    let m: string? = recv(ch)
+    if m == null { break }
+    echo(m!)
+  }
+  waitAll()
+}
+```
+
+### `spawn`
+
+`spawn fn(args)` starts a new agent — a function call that runs
+concurrently with its caller. The arguments are evaluated in the spawning
+scope before the agent starts, then captured into the new context. Spawn
+is a statement; it has no value.
+
+Rules (enforced by the checker):
+
+- The target must be a user-declared function (not a builtin).
+- The target must return `void`. To return a value, send it on a channel.
+- Generic functions cannot be spawned in v1.
+- `spawn` is only valid inside a function body.
+
+`waitAll()` blocks until every agent spawned by the program has returned.
+v1 has no per-agent handle, so you can only join them all at once. Pair
+`spawn` with `waitAll()` (or with channel-driven coordination) so the
+program doesn't exit while agents are still running.
+
+### `chan[T]`
+
+A channel is a typed mailbox carrying values of type `T`. T is restricted
+to scalar primitives — `string`, `number`, `float`, `bool` — so the sh
+backend can serialise each message as a single text line. Arrays, records,
+optionals, and maps are not allowed as channel element types in v1.
+
+| Tartalo | Meaning |
+|---|---|
+| `let ch: chan[string] = chan()` | create a channel |
+| `send(ch, v)` | send a value (blocks if the buffer is full on native) |
+| `let m: string? = recv(ch)` | receive; `null` after close-and-drained |
+| `closeChan(ch)` | signal "no more sends" |
+| `waitAll()` | join every spawned agent |
+
+`chan()` requires a typed context — the LHS annotation supplies `T`, just
+like `mapNew()` for maps. The element type cannot be inferred from
+arguments because `chan()` takes none.
+
+Channel rules:
+
+- A `recv` on a closed-and-drained channel returns `null`. Once you've
+  seen the first `null`, the channel will only ever return `null`.
+- A `send` on a closed channel aborts the script with a runtime error.
+- Strings sent on a channel may not contain newlines on the sh backend
+  (the queue file uses newline as the message separator). The native
+  backend has no such restriction.
+- `closeChan` is intended to be called once, by the producer (or by the
+  consumer once all producers have completed). Closing twice is harmless
+  on both backends; sending after close aborts.
+
+### Codegen sketch
+
+- **sh**: a channel is a freshly-`mktemp`d directory holding a queue file
+  (one message per line), a `closed` marker file, and a `lock` directory
+  used as a POSIX-portable mutex (`mkdir` is atomic, `rmdir` releases).
+  `recv` polls the queue at 50ms (with a 1s fallback for very old shells)
+  when empty until either a value lands or `closed` exists. `spawn`
+  evaluates args in the parent and emits `( fn args ) &`. `waitAll()` is
+  the POSIX `wait` builtin with no arguments. An EXIT trap removes every
+  channel directory the script created so /tmp doesn't leak on abnormal
+  exit.
+- **native**: a channel is `make(chan T, 1<<14)` — buffered to mirror
+  the sh backend's unbounded file-queue (programs that exceed the buffer
+  block on send instead of erroring; pick a different design if you need
+  unbounded). `spawn` becomes `_tt_spawn(func() { fn(args) })`, where
+  `_tt_spawn` does `Add(1)+go+Done()` against a global `sync.WaitGroup`.
+  `waitAll()` calls `Wait()` on that WaitGroup. `recv` uses a comma-ok
+  receive (`v, ok := <-ch`) so the close signal becomes the `null`
+  optional.
+
+### Why no `select` in v1
+
+Go-style `select { case ... }` is the obvious next primitive, but the sh
+backend has no portable timed-read: `read -t` is non-POSIX and `mkfifo`
+plus `kill -0` games are too fragile to be worth shipping. Until we have
+a viable sh lowering, v1 sticks to one-channel-at-a-time `recv`. Workarounds:
+
+- For "either of two channels", merge them at the producer side onto a
+  single channel and tag each message.
+- For timeouts, `spawn` an agent that sends a sentinel after `sleep(n)`,
+  then `recv` from the merged channel.
+
 ## Result and the `?` operator
 
 A "Result-shaped sum" is any sum with exactly two variants named `Ok` and
@@ -842,6 +951,24 @@ the failure, drop down to `exec(...)` which gives you `code`, `stdout`, and
 - `regexFind(s, pat): string?` — first match, or null
 - `regexFindAll(s, pat): string[]` — all non-overlapping matches
 - `regexReplace(s, pat, repl: string): string` — `gsub(pat, repl, s)`. Backslashes and `&` in `repl` are escaped before substitution so the replacement is treated as literal text.
+
+### Concurrency (spawn / channels)
+
+These builtins back the `spawn` statement and `chan[T]` type. See the
+[Spawn and channels](#spawn-and-channels) section for the full model.
+
+- `chan(): chan[T]` — create a channel; `T` is supplied by the LHS
+  type annotation (e.g., `let ch: chan[string] = chan()`)
+- `send(ch: chan[T], v: T): void` — send a message; on the native
+  backend this can block when the buffer (16384 messages) is full
+- `recv(ch: chan[T]): T?` — receive; returns `null` once the channel is
+  closed and drained
+- `closeChan(ch: chan[T]): void` — signal "no more sends"; subsequent
+  sends abort the script
+- `waitAll(): void` — block until every spawned agent has returned
+
+`T` must be a scalar primitive (`string`, `number`, `float`, `bool`)
+in v1.
 
 ### Higher-order
 

@@ -1,0 +1,45 @@
+// concurrency.tt — message-passing between long-lived agents.
+//
+// `parallel { task { ... } }` is structured concurrency: every task
+// joins before the block returns. `spawn` is the unstructured cousin —
+// it launches a function as an agent that runs concurrently with its
+// caller, communicating through typed `chan[T]` mailboxes. Channels
+// carry one scalar primitive (`string` / `number` / `float` / `bool`)
+// per message; `closeChan` signals "no more sends" and the next
+// drained `recv` returns `null` so consumers can finish cleanly.
+//
+// Backends:
+//   sh      — each spawn becomes a backgrounded subshell; channels are
+//             file-backed queues guarded by mkdir locks.
+//   native  — each spawn becomes a goroutine; channels are buffered Go
+//             chans joined by a sync.WaitGroup.
+
+func producer(id: number, ch: chan[string]): void {
+  for i in 1..4 {
+    send(ch, "agent-${str(id)} message ${str(i)}")
+  }
+}
+
+func main(): void {
+  let ch: chan[string] = chan()
+
+  // Three long-lived agents share one mailbox.
+  spawn producer(1, ch)
+  spawn producer(2, ch)
+  spawn producer(3, ch)
+
+  // Drain exactly the messages we know each agent will send: 3 agents
+  // x 3 messages each = 9 receives. Once we've read them all we know
+  // the producers have finished; we then close the channel and join.
+  for i in 1..10 {
+    let msg: string? = recv(ch)
+    if msg == null {
+      continue
+    }
+    echo(msg!)
+  }
+
+  waitAll()
+  closeChan(ch)
+  echo("all agents joined")
+}

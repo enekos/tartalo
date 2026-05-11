@@ -48,6 +48,7 @@ const (
 	Agent
 	Parallel
 	Task
+	Spawn
 	TyString
 	TyNumber
 	TyFloat
@@ -106,7 +107,7 @@ var kindNames = map[Kind]string{
 	Import: "import", Export: "export", Test: "test", Eval: "eval", Defer: "defer",
 	Null: "null", True: "true", False: "false",
 	Tool: "tool", Agent: "agent",
-	Parallel: "parallel", Task: "task",
+	Parallel: "parallel", Task: "task", Spawn: "spawn",
 	TyString: "string", TyNumber: "number", TyFloat: "float", TyBool: "bool", TyVoid: "void",
 	Assign: "=", Plus: "+", Minus: "-", Star: "*", Slash: "/", Percent: "%",
 	Eq: "==", Neq: "!=", Lt: "<", Lte: "<=", Gt: ">", Gte: ">=",
@@ -183,6 +184,7 @@ var Keywords = map[string]Kind{
 	"agent":    Agent,
 	"parallel": Parallel,
 	"task":     Task,
+	"spawn":    Spawn,
 	"as":       As,
 	"string":   TyString,
 	"number":   TyNumber,

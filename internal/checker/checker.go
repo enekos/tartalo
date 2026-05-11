@@ -897,6 +897,18 @@ func (c *Checker) resolveTypeExpr(te ast.TypeExpr) types.Type {
 			return types.Invalid
 		}
 		return &types.Map{Key: key, Value: val}
+	case *ast.ChanType:
+		elem := c.resolveTypeExpr(t.Elem)
+		if elem == types.Invalid {
+			return types.Invalid
+		}
+		if !isChanElemType(elem) {
+			c.errorf(t.KwPos,
+				"chan element type must be a scalar primitive (string, number, float, bool); got %s",
+				types.Format(elem))
+			return types.Invalid
+		}
+		return &types.Chan{Elem: elem}
 	case *ast.RecordType:
 		c.errorf(te.Pos(), "anonymous record types are not supported; declare with `type Name = { ... }`")
 		return types.Invalid
@@ -981,6 +993,19 @@ func mangledName(m *loader.Module, name string) string {
 
 // MangledName is the public form, used by codegen.
 func MangledName(m *loader.Module, name string) string { return mangledName(m, name) }
+
+// BuiltinSymbols returns the canonical builtin function/value symbols
+// (echo, len, mapNew, …). Read-only; used by the LSP to surface builtins
+// as completion candidates and by future tooling that wants a programmatic
+// view of the predeclared scope.
+func BuiltinSymbols() []*Symbol {
+	syms := sharedBuiltinScope.syms
+	out := make([]*Symbol, 0, len(syms))
+	for _, s := range syms {
+		out = append(out, s)
+	}
+	return out
+}
 
 // moduleLabel returns a short human label for a module in error messages.
 func moduleLabel(m *loader.Module) string {
@@ -1283,6 +1308,8 @@ func (c *Checker) checkStmt(s ast.Stmt) {
 	case *ast.TaskStmt:
 		c.errorf(s.KwPos, "task can only appear inside a parallel block")
 		c.checkBlock(s.Body)
+	case *ast.SpawnStmt:
+		c.checkSpawn(s)
 	case *ast.FieldAssignStmt:
 		if c.taskOuter != nil {
 			if root := rootIdent(s.Target); root != nil {
@@ -1350,6 +1377,66 @@ func (c *Checker) checkParallel(s *ast.ParallelStmt) {
 		c.current = savedScope
 		c.taskOuter = savedOuter
 	}
+}
+
+// checkSpawn validates a `spawn fn(args)` statement. Unlike `task { ... }`
+// the spawned function body itself runs as a normal call (its scope is its
+// own function scope, not the caller's), so the only invariant we need to
+// enforce here is on the call expression: it must resolve to a user
+// function (not a builtin) returning void, with arguments matching the
+// signature. Recursive `spawn` is fine; what's not is `spawn 42` or
+// `spawn echo("x")` (echo is a builtin) — those would silently do nothing
+// useful on either backend.
+func (c *Checker) checkSpawn(s *ast.SpawnStmt) {
+	if c.currentRet == nil {
+		c.errorf(s.KwPos, "spawn is only valid inside a function body")
+	}
+	if s.Call == nil {
+		return
+	}
+	id, ok := s.Call.Callee.(*ast.Ident)
+	if !ok {
+		c.errorf(s.Call.LParenPos, "spawn target must be a direct function call")
+		c.checkExpr(s.Call)
+		return
+	}
+	sym := c.current.resolve(id.Name)
+	if sym == nil {
+		c.suggestUndefinedFunction(id.NamePos, id.Name)
+		for _, a := range s.Call.Args {
+			c.checkExpr(a)
+		}
+		return
+	}
+	if sym.IsBuiltin {
+		c.errorf(id.NamePos, "spawn target must be a user-declared function, not the builtin %q", id.Name)
+		// Still check args so cascading errors surface.
+		for _, a := range s.Call.Args {
+			c.checkExpr(a)
+		}
+		return
+	}
+	if !sym.IsFunc {
+		c.errorf(id.NamePos, "%q is not a function; spawn requires a callable", id.Name)
+		for _, a := range s.Call.Args {
+			c.checkExpr(a)
+		}
+		return
+	}
+	ft, ok := sym.Type.(*types.Func)
+	if !ok {
+		c.errorf(id.NamePos, "%q is not a function", id.Name)
+		return
+	}
+	if ft.Result != types.Void && ft.Result != types.Invalid {
+		c.errorf(id.NamePos, "spawn target %q must return void; got %s", id.Name, types.Format(ft.Result))
+	}
+	if len(ft.TypeParams) > 0 {
+		c.errorf(s.Call.LParenPos, "spawn does not yet support generic functions in v1")
+	}
+	// Reuse the regular call-checking path for argument-type validation; its
+	// return type is irrelevant here since spawn is a statement.
+	c.checkExpr(s.Call)
 }
 
 // isLocalToTask reports whether sym was declared inside the current task
@@ -2300,6 +2387,19 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 			return c.checkTestBuiltinCall(e, sym)
 		case "score", "expect":
 			return c.checkEvalBuiltinCall(e, sym)
+		case "chan":
+			return c.checkChanCall(e, expected)
+		case "send":
+			return c.checkSendCall(e)
+		case "recv":
+			return c.checkRecvCall(e)
+		case "closeChan":
+			return c.checkCloseChanCall(e)
+		case "waitAll":
+			if len(e.Args) != 0 {
+				c.errorf(e.LParenPos, "waitAll takes no arguments, got %d", len(e.Args))
+			}
+			return types.Void
 		case "mockExec", "mockFetch", "mockEnv", "mockReadFile", "mockLlm", "mockLlmCalls",
 			"mockNow", "mockArgs", "mockReadStdin",
 			"mockExecCalls", "mockFetchCalls", "mockReadFileCalls":
@@ -2671,6 +2771,115 @@ func isMapValueType(t types.Type) bool {
 		return true
 	}
 	return false
+}
+
+// isChanElemType reports whether t is a legal chan element type. Restricted
+// to scalar primitives because the sh backend serialises every message as a
+// single text line; arrays/records/optionals need richer framing that's not
+// part of the v1 channel runtime.
+func isChanElemType(t types.Type) bool {
+	switch t {
+	case types.String, types.Number, types.Float, types.Bool:
+		return true
+	}
+	return false
+}
+
+// checkChanCall validates `chan(): chan[T]`. Mirrors mapNew's approach:
+// the call site has nothing to infer T from, so the surrounding context
+// (a `let`/`const` annotation, or an argument-position channel type)
+// supplies it.
+func (c *Checker) checkChanCall(e *ast.CallExpr, want types.Type) types.Type {
+	if len(e.Args) != 0 {
+		c.errorf(e.LParenPos, "chan expects 0 arguments, got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+	}
+	if want == nil {
+		c.errorf(e.LParenPos,
+			"chan requires a typed context, e.g. `let ch: chan[string] = chan()`")
+		return types.Invalid
+	}
+	ct, ok := want.(*types.Chan)
+	if !ok {
+		c.errorf(e.LParenPos, "chan: expected chan type from context, got %s", types.Format(want))
+		return types.Invalid
+	}
+	return ct
+}
+
+// checkSendCall validates `send(ch: chan[T], v: T): void`. T is recovered
+// from the first argument's type; the second argument's type must be
+// assignable to it.
+func (c *Checker) checkSendCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "send expects 2 arguments (chan, value), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Void
+	}
+	chTy := c.checkExpr(e.Args[0])
+	ch, ok := chTy.(*types.Chan)
+	if !ok {
+		if chTy != types.Invalid {
+			c.errorf(e.Args[0].Pos(), "send: first argument must be a chan, got %s", types.Format(chTy))
+		}
+		c.checkExpr(e.Args[1])
+		return types.Void
+	}
+	saved := c.expectedType
+	c.expectedType = ch.Elem
+	vt := c.checkExpr(e.Args[1])
+	c.expectedType = saved
+	if vt != types.Invalid && !types.IsAssignable(vt, ch.Elem) {
+		c.errorf(e.Args[1].Pos(),
+			"send: value type %s is not assignable to channel element type %s",
+			types.Format(vt), types.Format(ch.Elem))
+	}
+	return types.Void
+}
+
+// checkRecvCall validates `recv(ch: chan[T]): T?`. The optional return
+// reflects the close-then-empty signal — null is the unambiguous "channel
+// is closed and you've drained the last value" message.
+func (c *Checker) checkRecvCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 1 {
+		c.errorf(e.LParenPos, "recv expects 1 argument, got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	chTy := c.checkExpr(e.Args[0])
+	ch, ok := chTy.(*types.Chan)
+	if !ok {
+		if chTy != types.Invalid {
+			c.errorf(e.Args[0].Pos(), "recv: argument must be a chan, got %s", types.Format(chTy))
+		}
+		return types.Invalid
+	}
+	return &types.Optional{Elem: ch.Elem}
+}
+
+// checkCloseChanCall validates `closeChan(ch: chan[T]): void`. It's a
+// distinct builtin from a hypothetical generic `close` so that future
+// versions can introduce file/handle close primitives without an ambiguous
+// overload.
+func (c *Checker) checkCloseChanCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 1 {
+		c.errorf(e.LParenPos, "closeChan expects 1 argument, got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Void
+	}
+	chTy := c.checkExpr(e.Args[0])
+	if _, ok := chTy.(*types.Chan); !ok && chTy != types.Invalid {
+		c.errorf(e.Args[0].Pos(), "closeChan: argument must be a chan, got %s", types.Format(chTy))
+	}
+	return types.Void
 }
 
 // checkMapNewCall validates `mapNew(): map<K, V>`. Like readCsv, mapNew has
@@ -3373,6 +3582,23 @@ func builtins() []*Symbol {
 		mk("toolSchemas", nil, str),
 		mk("mockLlm", []types.Type{str, str}, void),
 		mk("mockLlmCalls", nil, stringArr),
+
+		// Concurrency / channel builtins. Signatures here are placeholders;
+		// real type-checking happens in checkChanCall / checkSendCall /
+		// checkRecvCall / checkCloseChanCall, which inspect or infer the
+		// chan element type. `chan()` works like `mapNew()`: the LHS type
+		// annotation drives element-type inference.
+		//
+		//   chan() -> chan[T]                  create a channel
+		//   send(ch, v) -> void                blocking send
+		//   recv(ch) -> T?                     blocking receive; null on closed-and-drained
+		//   closeChan(ch) -> void              signal "no more sends"
+		//   waitAll() -> void                  block until every spawned agent has exited
+		mk("chan", nil, str),
+		mk("send", []types.Type{str, str}, void),
+		mk("recv", []types.Type{str}, &types.Optional{Elem: str}),
+		mk("closeChan", []types.Type{str}, void),
+		mk("waitAll", nil, void),
 	}
 }
 

@@ -587,6 +587,47 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 	case "writeCsv":
 		return g.compileWriteCsvNative(e, args, argTypes)
 
+	// --- channels / spawn ---
+	case "chan":
+		// Native channels are buffered to mirror the sh backend, whose
+		// file-queue accepts arbitrarily many sends without blocking. The
+		// fixed buffer is generous (1<<14 = 16384) — large enough that
+		// producer/consumer scripts don't deadlock when one runs ahead of
+		// the other, small enough to avoid pathological allocations on
+		// chan creation. Programs that want strict synchronous rendezvous
+		// can layer that on top with explicit acknowledgement messages.
+		ct, ok := g.typeOf(e).(*types.Chan)
+		if !ok {
+			return `nil /* chan: missing result type */`
+		}
+		return "make(chan " + g.goType(ct.Elem) + ", 1<<14)"
+	case "send":
+		// Wrap the send op in an IIFE so it lands inside any expression
+		// position the caller might have used (statement context just
+		// drops the void result).
+		return iife("", args[0]+" <- "+g.coerce(args[1], argTypes[1], elemOfChan(argTypes[0])))
+	case "recv":
+		// `recv` returns T?. We use a "comma-ok" receive so the close
+		// signal becomes the optional null.
+		ct, _ := argTypes[0].(*types.Chan)
+		var elemTy string
+		if ct != nil {
+			elemTy = g.goType(ct.Elem)
+		} else {
+			elemTy = "interface{}"
+		}
+		return iife("*"+elemTy,
+			"_v, _ok := <-"+args[0],
+			"if !_ok { return nil }",
+			"return &_v",
+		)
+	case "closeChan":
+		return iife("", "close("+args[0]+")")
+	case "waitAll":
+		g.usesRuntimeSpawn = true
+		g.addImport("sync")
+		return iife("", "_tt_spawn_wg.Wait()")
+
 	// --- map<K, V> ---
 	case "mapNew":
 		return g.compileMapNewNative(e)
@@ -1107,4 +1148,15 @@ func assertArg(expr string, self, peer types.Type) string {
 		return "float64(" + expr + ")"
 	}
 	return expr
+}
+
+// elemOfChan extracts the element type of a chan, falling back to the
+// type itself when the argument isn't a chan (the checker would already
+// have flagged that, but we stay safe so misuse compiles instead of
+// panicking the codegen).
+func elemOfChan(t types.Type) types.Type {
+	if c, ok := t.(*types.Chan); ok {
+		return c.Elem
+	}
+	return t
 }

@@ -91,7 +91,7 @@
             <li>Numbers: integer literals only in v0 (<code>42</code>, <code>-3</code>).</li>
             <li>Strings: double-quoted, with <code>\n \t \\ \" \$</code> escapes and <code>${'${expr}'}</code> interpolation.</li>
             <li>Command literals: backticks, e.g. <code>`ls -1`</code>. Substitutes to a <code>string</code> (stdout, trailing newline trimmed).</li>
-            <li>Keywords: <code>let</code>, <code>const</code>, <code>func</code>, <code>return</code>, <code>if</code>, <code>else</code>, <code>for</code>, <code>in</code>, <code>match</code>, <code>type</code>, <code>import</code>, <code>export</code>, <code>test</code>, <code>defer</code>, <code>parallel</code>, <code>task</code>, <code>tool</code>, <code>agent</code>, <code>as</code>, <code>null</code>, <code>true</code>, <code>false</code>, <code>string</code>, <code>number</code>, <code>float</code>, <code>bool</code>, <code>void</code>.</li>
+            <li>Keywords: <code>let</code>, <code>const</code>, <code>func</code>, <code>return</code>, <code>if</code>, <code>else</code>, <code>for</code>, <code>in</code>, <code>match</code>, <code>type</code>, <code>import</code>, <code>export</code>, <code>test</code>, <code>defer</code>, <code>parallel</code>, <code>task</code>, <code>spawn</code>, <code>tool</code>, <code>agent</code>, <code>as</code>, <code>null</code>, <code>true</code>, <code>false</code>, <code>string</code>, <code>number</code>, <code>float</code>, <code>bool</code>, <code>void</code>.</li>
           </ul>
         </section>
 
@@ -115,6 +115,7 @@
               <tr><td>void</td><td>functions with no return value</td></tr>
               <tr><td>T[]</td><td>a shell variable holding the elements joined by newlines</td></tr>
               <tr><td>func(T...): R</td><td>a shell variable holding the mangled function name (callable via <code>"$f" args</code>)</td></tr>
+              <tr><td>chan[T]</td><td>a shell variable holding the path to a temp directory backing the message queue (<code>T</code> must be a scalar primitive)</td></tr>
             </tbody>
           </table>
 
@@ -372,6 +373,38 @@
             scope variables, may not <code>return</code> or <code>defer</code>,
             and may not nest another <code>parallel</code>. These restrictions
             keep both backends observably equivalent.
+          </p>
+        </section>
+
+        <!-- Spawn and channels -->
+        <section :id="ids.spawn" ref="secRefs">
+          <h2>Spawn and channels</h2>
+          <p>
+            <code>parallel</code> is the structured-concurrency primitive — it
+            joins every task before the block returns. For long-lived agents
+            that outlive a single block and communicate by message passing,
+            v1 adds <code>spawn fn(args)</code> and typed
+            <code>chan[T]</code> mailboxes. The element type
+            <code>T</code> must be a scalar primitive
+            (<code>string</code> / <code>number</code> / <code>float</code> /
+            <code>bool</code>) so the sh backend can serialise each message
+            as a single line.
+          </p>
+          <CodeBlock :code="codeSpawn" />
+          <p>
+            <code>spawn</code> targets must be user-declared functions that
+            return <code>void</code>; pass results back over a channel. A
+            <code>recv</code> on a closed-and-drained channel returns
+            <code>null</code>, so consumers loop until the optional becomes
+            <code>null</code> and then break. <code>waitAll()</code> blocks
+            until every spawned agent has returned.
+          </p>
+          <p>
+            Codegen: sh stores each channel as a temp directory holding a
+            queue file plus a <code>closed</code> marker, with mkdir-based
+            mutual exclusion; native uses a buffered Go channel
+            (<code>make(chan T, 1&lt;&lt;14)</code>) and a global
+            <code>sync.WaitGroup</code> shared by every <code>spawn</code>.
           </p>
         </section>
 
@@ -702,6 +735,7 @@ const ids = {
   maps: "maps",
   defer: "defer",
   parallel: "parallel",
+  spawn: "spawn",
   result: "result",
   pipelines: "pipelines",
   functions: "functions",
@@ -726,6 +760,7 @@ const toc = [
   { id: ids.maps, label: "Maps" },
   { id: ids.defer, label: "Defer" },
   { id: ids.parallel, label: "Parallel tasks" },
+  { id: ids.spawn, label: "Spawn & channels" },
   { id: ids.result, label: "Result & ?" },
   { id: ids.pipelines, label: "Pipelines" },
   { id: ids.functions, label: "Functions" },
@@ -741,6 +776,7 @@ const toc = [
   { id: "subprocess", label: "subprocess & HTTP", sub: true },
   { id: "regex", label: "regex", sub: true },
   { id: "higher-order", label: "higher-order", sub: true },
+  { id: "concurrency", label: "concurrency", sub: true },
   { id: "process", label: "process / time", sub: true },
   { id: "json", label: "json", sub: true },
   { id: "test", label: "test framework", sub: true },
@@ -873,6 +909,19 @@ const builtins = [
       { sig: "map(arr: T[], f: func(T): U): U[]" },
       { sig: "filter(arr: T[], pred: func(T): bool): T[]" },
       { sig: "reduce(arr: T[], init: U, f: func(U, T): U): U" },
+    ],
+  },
+  {
+    id: "concurrency",
+    title: "Concurrency",
+    intro:
+      "Builtins paired with the <code>spawn</code> statement and the <code>chan[T]</code> type. <code>T</code> must be a scalar primitive (string, number, float, bool) — see the Spawn & channels section above.",
+    items: [
+      { sig: "chan(): chan[T]", desc: "create a channel; <code>T</code> is supplied by the LHS type annotation" },
+      { sig: "send(ch: chan[T], v: T): void", desc: "send a message; on native this can block if the per-channel buffer (16384) is full" },
+      { sig: "recv(ch: chan[T]): T?", desc: "receive a message; returns <code>null</code> once the channel is closed and drained" },
+      { sig: "closeChan(ch: chan[T]): void", desc: 'signal "no more sends"; subsequent sends abort the script' },
+      { sig: "waitAll(): void", desc: "block until every spawned agent has returned" },
     ],
   },
   {
@@ -1127,6 +1176,23 @@ const codeParallel = `func main(): void {
     task { echo("c") }
   }
   echo("done")     // runs only after every task completes
+}`;
+
+const codeSpawn = `func producer(ch: chan[string]): void {
+  send(ch, "hello")
+  send(ch, "world")
+  closeChan(ch)
+}
+
+func main(): void {
+  let ch: chan[string] = chan()
+  spawn producer(ch)
+  while true {
+    let m: string? = recv(ch)
+    if m == null { break }       // null = closed and drained
+    echo(m!)
+  }
+  waitAll()                       // join every spawned agent
 }`;
 
 const codeResult = `type IntResult = Ok{value: number} | Err{error: string}

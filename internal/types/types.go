@@ -54,6 +54,17 @@ type Map struct {
 func (m *Map) String() string { return "map<" + m.Key.String() + ", " + m.Value.String() + ">" }
 func (m *Map) typeNode()      {}
 
+// Chan is the type of a typed message channel `chan[T]`. The element type
+// T is restricted to scalar primitives (string, number, float, bool) in
+// v1 because the sh backend serialises every message as a single text
+// line; the checker enforces this where a channel type is introduced.
+type Chan struct {
+	Elem Type
+}
+
+func (c *Chan) String() string { return "chan[" + c.Elem.String() + "]" }
+func (c *Chan) typeNode()      {}
+
 // Unwrap returns t's element type if t is Optional, otherwise t itself.
 func Unwrap(t Type) Type {
 	if o, ok := t.(*Optional); ok {
@@ -175,6 +186,8 @@ func ContainsTypeVar(t Type) bool {
 		return ContainsTypeVar(tt.Elem)
 	case *Map:
 		return ContainsTypeVar(tt.Key) || ContainsTypeVar(tt.Value)
+	case *Chan:
+		return ContainsTypeVar(tt.Elem)
 	case *Func:
 		for _, p := range tt.Params {
 			if ContainsTypeVar(p) {
@@ -204,6 +217,8 @@ func Substitute(t Type, subst map[*TypeVar]Type) Type {
 		return &Optional{Elem: Substitute(tt.Elem, subst)}
 	case *Map:
 		return &Map{Key: Substitute(tt.Key, subst), Value: Substitute(tt.Value, subst)}
+	case *Chan:
+		return &Chan{Elem: Substitute(tt.Elem, subst)}
 	case *Func:
 		ps := make([]Type, len(tt.Params))
 		for i, p := range tt.Params {
@@ -283,6 +298,12 @@ func Equal(a, b Type) bool {
 	if ma, ok := a.(*Map); ok {
 		if mb, ok := b.(*Map); ok {
 			return Equal(ma.Key, mb.Key) && Equal(ma.Value, mb.Value)
+		}
+		return false
+	}
+	if ca, ok := a.(*Chan); ok {
+		if cb, ok := b.(*Chan); ok {
+			return Equal(ca.Elem, cb.Elem)
 		}
 		return false
 	}

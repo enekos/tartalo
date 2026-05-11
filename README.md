@@ -50,6 +50,14 @@ where keys are primitive (`string` / `number` / `bool`) and values are
 non-optional primitives. See [`SPEC.md`](SPEC.md#maps) for the rules and
 v0 limits.
 
+Concurrency comes in two flavours: `parallel { task { ... } }` for
+structured fork-join, and `spawn fn(args)` + typed `chan[T]` mailboxes
+for long-lived agents that communicate by message passing. Both lower
+to backgrounded subshells + `wait` on the sh backend and to goroutines
++ `sync.WaitGroup` on the native backend. See
+[`SPEC.md`](SPEC.md#spawn-and-channels) for the full model and
+restrictions.
+
 ## Install
 
 Prebuilt binaries for darwin / linux / windows × amd64 / arm64 are attached
@@ -92,7 +100,7 @@ tartalo test  [--target=sh|native] [--no-verify] <file-or-dir>   # run every `te
 tartalo eval  <file-or-dir>                                      # run every `eval "..."` block (native target)
 tartalo fmt   [-l|-d|-w] <file.tt>...                            # format source (default: rewrite in place)
 tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]          # time compile phases (and runtime) over N iterations
-tartalo lsp                                                      # speak Language Server Protocol over stdio
+tartalo lsp                                                      # Language Server: diagnostics, hover, goto-def, symbols, refs, rename, completion
 ```
 
 The compiler resolves `import` statements transitively from the entry file,

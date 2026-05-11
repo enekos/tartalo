@@ -292,6 +292,8 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.emitDefer(s)
 	case *ast.ParallelStmt:
 		g.emitParallel(s)
+	case *ast.SpawnStmt:
+		g.emitSpawn(s)
 	case *ast.Block:
 		for _, st := range s.Stmts {
 			g.emitStmt(st)
@@ -334,6 +336,25 @@ func (g *Generator) emitParallel(s *ast.ParallelStmt) {
 	g.writeLine(wg + ".Wait()")
 	g.indent--
 	g.writeLine("}")
+}
+
+// emitSpawn lowers `spawn fn(args)` to a goroutine launched through
+// _tt_spawn so the global WaitGroup is updated atomically. Argument
+// expressions are evaluated in the parent (matching Go's `go f(x())`
+// semantics: x() runs *before* the goroutine starts), then captured by
+// value into the closure so the goroutine sees a stable snapshot even
+// if the caller mutates a local of the same name later.
+func (g *Generator) emitSpawn(s *ast.SpawnStmt) {
+	if s.Call == nil {
+		return
+	}
+	g.usesRuntimeSpawn = true
+	g.addImport("sync")
+	// Reuse compileCall — for user functions it returns a `tt_<name>(args)`
+	// expression with all argument coercions in place. Wrap that string in
+	// _tt_spawn(func(){ ... }).
+	expr := g.compileCall(s.Call)
+	g.writeLine("_tt_spawn(func() { " + expr + " })")
 }
 
 // emitDefer maps a Tartalo defer block to a Go `defer func() { ... }()`.

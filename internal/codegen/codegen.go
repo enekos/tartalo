@@ -155,6 +155,14 @@ type Generator struct {
 	// fragment, so the flag also gates emission of __tt_map_rs / __tt_map_us.
 	usesMap bool
 
+	// usesChan tracks whether the script uses channel/spawn/waitAll
+	// builtins. Set on first emission of any chan/send/recv/closeChan call,
+	// or any `spawn` statement. Gates the channel runtime helpers
+	// (__tt_chan_new / __tt_chan_send / __tt_chan_recv / __tt_chan_close)
+	// and a global EXIT trap that cleans up the temp directories holding
+	// per-channel queues.
+	usesChan bool
+
 	// usesTypeError is set when any emitted asInt/asFloat/asBool call site
 	// needs the shared __tartalo_typeerror runtime helper.
 	usesTypeError bool
@@ -610,7 +618,7 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 	}
 	result := g.out.String()
 	if g.needsArgv || g.usesRecordArrays || g.usesUtf8 || g.usesMap || g.usesTypeError ||
-		g.usesRequest || g.usesUrlEncode || g.usesHeaderLookup {
+		g.usesRequest || g.usesUrlEncode || g.usesHeaderLookup || g.usesChan {
 		var cond strings.Builder
 		if g.usesRecordArrays {
 			cond.WriteString(`__tt_us=$(printf '\037')` + "\n")
@@ -635,6 +643,9 @@ func (g *Generator) emitModules(modules []*loader.Module, mode EmitMode) string 
 		}
 		if g.usesHeaderLookup {
 			cond.WriteString(headerLookupRuntimeHelper)
+		}
+		if g.usesChan {
+			cond.WriteString(chanRuntimeHelpers)
 		}
 		result = result[:insertPos] + cond.String() + result[insertPos:]
 	}
@@ -868,6 +879,96 @@ const headerLookupRuntimeHelper = `__tt_header_lookup() {
       printf "%s", val; found = 1; exit
     }
     END { if (!found) exit 1 }'
+}
+`
+
+// chanRuntimeHelpers backs the chan/send/recv/closeChan/waitAll builtins.
+//
+// A channel is encoded as the path to a freshly-mktemp'd directory holding:
+//
+//	$dir/q       — the queue file: one message per line, newline-terminated
+//	$dir/closed  — exists iff closeChan has been called
+//	$dir/lock    — created with mkdir for mutual exclusion (POSIX-portable
+//	               compare-and-swap; rmdir releases)
+//
+// The encoding picks file-backed buffered queues over named pipes because
+// FIFOs make the close-with-multiple-consumers pattern hard to express
+// portably (a single `E\n` sentinel only unblocks one reader). A queue
+// file plus a sticky `closed` flag lets every recv after close return
+// null without coordination.
+//
+// Send/recv synchronise via mkdir-based locking; recv polls when the queue
+// is empty (the cadence is 50ms with a 1s fallback for very old shells).
+// Messages may not contain newlines — that's a v1 limitation users hit
+// only by sending strings with embedded `\n`, in which case the receiver
+// will see truncated values.
+//
+// __tt_chan_dirs accumulates every channel directory the script has
+// created; the EXIT trap cleans them up so /tmp doesn't accumulate
+// abandoned channels even when scripts exit abnormally.
+const chanRuntimeHelpers = `__tt_chan_dirs=
+__tt_chan_cleanup() {
+  __tt_cc_old=$IFS
+  IFS='
+'
+  for __tt_cc_d in $__tt_chan_dirs; do
+    [ -n "$__tt_cc_d" ] && rm -rf "$__tt_cc_d" 2>/dev/null
+  done
+  IFS=$__tt_cc_old
+}
+trap '__tt_chan_cleanup' EXIT
+__tt_chan_new() {
+  __tt_cn_d=$(mktemp -d "${TMPDIR:-/tmp}/tt_chan_XXXXXX") || {
+    printf 'tartalo: chan(): mktemp -d failed\n' >&2; exit 1
+  }
+  : > "$__tt_cn_d/q"
+  __tt_chan_dirs="$__tt_chan_dirs
+$__tt_cn_d"
+  printf '%s' "$__tt_cn_d"
+}
+__tt_chan_lock() {
+  while ! mkdir "$1/lock" 2>/dev/null; do
+    sleep 0.01 2>/dev/null || sleep 1
+  done
+}
+__tt_chan_unlock() { rmdir "$1/lock" 2>/dev/null; }
+__tt_chan_send() {
+  __tt_cs_d=$1; __tt_cs_v=$2
+  __tt_chan_lock "$__tt_cs_d"
+  if [ -e "$__tt_cs_d/closed" ]; then
+    __tt_chan_unlock "$__tt_cs_d"
+    printf 'tartalo: send on closed channel\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$__tt_cs_v" >> "$__tt_cs_d/q"
+  __tt_chan_unlock "$__tt_cs_d"
+}
+__tt_chan_recv() {
+  __tt_cr_d=$1
+  while :; do
+    __tt_chan_lock "$__tt_cr_d"
+    if [ -s "$__tt_cr_d/q" ]; then
+      __ret=$(IFS= read -r __tt_cr_l < "$__tt_cr_d/q" && printf '%s' "$__tt_cr_l")
+      tail -n +2 "$__tt_cr_d/q" > "$__tt_cr_d/q.t" 2>/dev/null
+      mv "$__tt_cr_d/q.t" "$__tt_cr_d/q"
+      __ret__null=0
+      __tt_chan_unlock "$__tt_cr_d"
+      return 0
+    fi
+    if [ -e "$__tt_cr_d/closed" ]; then
+      __ret=
+      __ret__null=1
+      __tt_chan_unlock "$__tt_cr_d"
+      return 0
+    fi
+    __tt_chan_unlock "$__tt_cr_d"
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+}
+__tt_chan_close() {
+  __tt_chan_lock "$1"
+  : > "$1/closed"
+  __tt_chan_unlock "$1"
 }
 `
 
@@ -1722,6 +1823,8 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.emitDeferPush(s)
 	case *ast.ParallelStmt:
 		g.emitParallel(s)
+	case *ast.SpawnStmt:
+		g.emitSpawn(s)
 	default:
 		g.writeLine(fmt.Sprintf("# unsupported stmt: %T", s))
 	}
@@ -1752,6 +1855,101 @@ func (g *Generator) emitParallel(s *ast.ParallelStmt) {
 		g.writeLine(") &")
 	}
 	g.writeLine("wait")
+}
+
+// emitSpawn lowers `spawn fn(args)` to a backgrounded subshell that
+// invokes the user function. Argument prologues run in the parent so
+// side-effecting arg expressions (like another function call) can't be
+// reordered or duplicated by the subshell. Pair with `waitAll()` to join.
+//
+// Implementation note: we deliberately don't track the spawned PID. The
+// POSIX `wait` builtin with no args waits on every backgrounded child of
+// the current shell, which is exactly the semantics `waitAll()` needs.
+// Tracking PIDs would only matter for selective waits, which is a v2
+// feature.
+func (g *Generator) emitSpawn(s *ast.SpawnStmt) {
+	if s.Call == nil {
+		return
+	}
+	g.usesChan = true // share the cleanup trap with channels
+	id, ok := s.Call.Callee.(*ast.Ident)
+	if !ok {
+		return
+	}
+	sym := g.info.Uses[id]
+	if sym == nil {
+		return
+	}
+	// Compile each arg in the parent so prologue side-effects happen up here.
+	var prologue []string
+	argVals := make([]exprValue, 0, len(s.Call.Args))
+	for _, a := range s.Call.Args {
+		av := g.compileExpr(a)
+		prologue = append(prologue, av.prologue...)
+		argVals = append(argVals, av)
+	}
+	// Resolve the callee's mangled shell name. Mirrors compileCall — we
+	// only need the user-function path because the checker rejects builtins.
+	calleeName := shName(id.Name)
+	if sym.Module != nil {
+		calleeName = shName(checker.MangledName(sym.Module, sym.Name))
+	}
+	// Build the actual call line. Spawn targets must return void and cannot
+	// be generic (checker enforces both), so we don't have to handle
+	// monomorphization or result snapshots here.
+	ft := sym.Type.(*types.Func)
+	var callLine strings.Builder
+	callLine.Grow(64)
+	callLine.WriteString(calleeName)
+	for i, av := range argVals {
+		var paramTy types.Type
+		if i < len(ft.Params) {
+			paramTy = ft.Params[i]
+		}
+		if rec, ok := paramTy.(*types.Record); ok {
+			for _, lf := range recordLeaves(rec) {
+				callLine.WriteByte(' ')
+				callLine.WriteString(fmt.Sprintf(`"${%s__%s}"`, av.value, lf.Path))
+				if _, isOpt := lf.Type.(*types.Optional); isOpt {
+					callLine.WriteByte(' ')
+					callLine.WriteString(fmt.Sprintf(`"${%s__%s__null}"`, av.value, lf.Path))
+				}
+			}
+			continue
+		}
+		if sum, ok := paramTy.(*types.Sum); ok {
+			for _, lf := range sumLeaves(sum) {
+				callLine.WriteByte(' ')
+				callLine.WriteString(fmt.Sprintf(`"${%s__%s}"`, av.value, lf.Path))
+				if _, isOpt := lf.Type.(*types.Optional); isOpt {
+					callLine.WriteByte(' ')
+					callLine.WriteString(fmt.Sprintf(`"${%s__%s__null}"`, av.value, lf.Path))
+				}
+			}
+			continue
+		}
+		if _, isOpt := paramTy.(*types.Optional); isOpt {
+			callLine.WriteString(` "`)
+			callLine.WriteString(av.shString())
+			callLine.WriteByte('"')
+			nullArg := av.nullCheck
+			if nullArg == "" {
+				nullArg = "0"
+			}
+			callLine.WriteByte(' ')
+			callLine.WriteString(fmt.Sprintf(`"$((%s))"`, nullArg))
+			continue
+		}
+		callLine.WriteString(` "`)
+		callLine.WriteString(av.shString())
+		callLine.WriteByte('"')
+	}
+	g.writeLines(prologue)
+	g.writeLine("(")
+	g.indent++
+	g.writeLine(callLine.String())
+	g.indent--
+	g.writeLine(") &")
 }
 
 // emitDeferPush appends the helper-function name for `s` to the current
@@ -3703,6 +3901,72 @@ func shMapValueOK(name string, argTypes []types.Type) bool {
 	return false
 }
 
+// compileChanNew lowers `chan(): chan[T]`. The runtime helper allocates a
+// fresh temp directory and prints its path. The element type is irrelevant
+// at sh runtime — every message is stored as text — so this lowering is
+// type-agnostic.
+func (g *Generator) compileChanNew(prologue []string) exprValue {
+	g.usesChan = true
+	t := g.tmp("ch")
+	prologue = append(prologue, fmt.Sprintf(`%s=$(__tt_chan_new)`, t))
+	return exprValue{prologue: prologue, value: "${" + t + "}", form: formStr}
+}
+
+// compileChanSend lowers `send(ch, v): void`. Bools and numbers come in
+// as arithmetic forms, so we let `assignmentRHS` produce the correct
+// `$((expr))` wrapping; the helper then writes the text form to the
+// queue file under the channel's lock.
+func (g *Generator) compileChanSend(args []exprValue, prologue []string) exprValue {
+	g.usesChan = true
+	prologue = append(prologue, args[0].prologue...)
+	prologue = append(prologue, args[1].prologue...)
+	chTmp := g.tmp("cs_c")
+	vTmp := g.tmp("cs_v")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", chTmp, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", vTmp, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`__tt_chan_send "$%s" "$%s"`, chTmp, vTmp))
+	return exprValue{prologue: prologue, value: "", form: formStr}
+}
+
+// compileChanRecv lowers `recv(ch): T?`. The helper writes the result into
+// the conventional `__ret`/`__ret__null` pair; we snapshot those into
+// fresh temporaries before the next call has a chance to clobber them. The
+// element type from argTypes drives whether the result presents as
+// arithmetic (number/bool) or string form.
+func (g *Generator) compileChanRecv(args []exprValue, argTypes []types.Type, prologue []string) exprValue {
+	g.usesChan = true
+	prologue = append(prologue, args[0].prologue...)
+	chTmp := g.tmp("cr_c")
+	valTmp := g.tmp("cr_v")
+	nullTmp := g.tmp("cr_n")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", chTmp, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`__tt_chan_recv "$%s"`, chTmp))
+	prologue = append(prologue, valTmp+`="$__ret"`)
+	prologue = append(prologue, nullTmp+`="$__ret__null"`)
+	var elem types.Type = types.String
+	if ch, ok := argTypes[0].(*types.Chan); ok {
+		elem = ch.Elem
+	}
+	switch elem {
+	case types.Number, types.Bool:
+		return exprValue{prologue: prologue, value: valTmp, form: formArith, nullCheck: nullTmp}
+	default:
+		return exprValue{prologue: prologue, value: "${" + valTmp + "}", form: formStr, nullCheck: nullTmp}
+	}
+}
+
+// compileChanClose lowers `closeChan(ch): void`. After this point any
+// `recv` against a drained channel returns null, and any `send` aborts
+// the script with a runtime error.
+func (g *Generator) compileChanClose(args []exprValue, prologue []string) exprValue {
+	g.usesChan = true
+	prologue = append(prologue, args[0].prologue...)
+	chTmp := g.tmp("cl_c")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", chTmp, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`__tt_chan_close "$%s"`, chTmp))
+	return exprValue{prologue: prologue, value: "", form: formStr}
+}
+
 // compileMapGet lowers `mapGet(m, k): V?`. The runtime helper exits 1 on a
 // missing key; the surrounding `if` rescues that exit so set -e doesn't fire,
 // and we drive the optional's null sidecar from the success/failure branch.
@@ -4657,6 +4921,20 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		prologue = append(prologue, fmt.Sprintf(
 			`printf 'tartalo: %s requires --target=native\n' >&2; exit 1`,
 			sym.Name))
+		return exprValue{prologue: prologue, value: "", form: formStr}
+
+	// --- channels / spawn ---
+	case "chan":
+		return g.compileChanNew(prologue)
+	case "send":
+		return g.compileChanSend(args, prologue)
+	case "recv":
+		return g.compileChanRecv(args, argTypes, prologue)
+	case "closeChan":
+		return g.compileChanClose(args, prologue)
+	case "waitAll":
+		g.usesChan = true
+		prologue = append(prologue, "wait")
 		return exprValue{prologue: prologue, value: "", form: formStr}
 
 	// --- map<K, V> ---

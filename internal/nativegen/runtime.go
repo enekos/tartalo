@@ -77,6 +77,9 @@ func (g *Generator) writeRuntimeTo(out *strings.Builder) {
 	if g.usesRuntimeTypeError {
 		out.WriteString(runtimeTypeError)
 	}
+	if g.usesRuntimeSpawn {
+		out.WriteString(runtimeSpawn)
+	}
 	if g.usesRuntimeVec {
 		out.WriteString(runtimeVec)
 	}
@@ -217,7 +220,8 @@ func (g *Generator) anyRuntimeUsed() bool {
 		g.usesRuntimeEnv || g.usesRuntimeNow || g.usesRuntimeTry ||
 		g.usesRuntimeTypeError ||
 		g.usesAgentLLM || g.usesAgentApproval || g.usesAgentTrace ||
-		g.usesAgentSpawn
+		g.usesAgentSpawn ||
+		g.usesRuntimeSpawn
 }
 
 const runtimeShellOut = `func _tt_shellOut(cmd string) string {
@@ -1179,6 +1183,22 @@ func _tt_runTests(suite string, tests []_tt_testCase) {
 const runtimeTypeError = `func _tt_typeError(loc, expected, got string) {
 	fmt.Fprintf(os.Stderr, "tartalo: type error at %s: expected %s, got %s\n", loc, expected, got)
 	os.Exit(1)
+}
+
+`
+
+// runtimeSpawn defines the global WaitGroup that spawn statements add to
+// and waitAll() blocks on, plus a tiny helper to package "Add(1)+go+Done"
+// in one call. Channels themselves don't need a runtime helper — they're
+// just Go's `chan T`.
+const runtimeSpawn = `var _tt_spawn_wg sync.WaitGroup
+
+func _tt_spawn(fn func()) {
+	_tt_spawn_wg.Add(1)
+	go func() {
+		defer _tt_spawn_wg.Done()
+		fn()
+	}()
 }
 
 `

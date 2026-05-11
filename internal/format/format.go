@@ -410,6 +410,10 @@ func (p *printer) printType(t ast.TypeExpr) {
 		p.write(", ")
 		p.printType(x.Value)
 		p.write(">")
+	case *ast.ChanType:
+		p.write("chan[")
+		p.printType(x.Elem)
+		p.write("]")
 	case *ast.FuncType:
 		p.write("func(")
 		for i, pt := range x.Params {
@@ -569,6 +573,8 @@ func (p *printer) printStmt(s ast.Stmt) {
 		p.printParallel(x)
 	case *ast.TaskStmt:
 		p.printTask(x)
+	case *ast.SpawnStmt:
+		p.printSpawn(x)
 	case *ast.Block:
 		p.printBlock(x)
 		p.nl()
@@ -636,6 +642,15 @@ func (p *printer) printParallel(s *ast.ParallelStmt) {
 func (p *printer) printTask(s *ast.TaskStmt) {
 	p.write("task ")
 	p.printBlock(s.Body)
+	p.trailingOn(p.lastSrcLine)
+	p.nl()
+}
+
+func (p *printer) printSpawn(s *ast.SpawnStmt) {
+	p.write("spawn ")
+	if s.Call != nil {
+		p.printExpr(s.Call, precLowest)
+	}
 	p.trailingOn(p.lastSrcLine)
 	p.nl()
 }

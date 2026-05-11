@@ -76,6 +76,8 @@ func (g *Generator) goType(t types.Type) string {
 		return "*" + g.goType(t.Elem)
 	case *types.Map:
 		return "map[" + g.goType(t.Key) + "]" + g.goType(t.Value)
+	case *types.Chan:
+		return "chan " + g.goType(t.Elem)
 	case *types.Record:
 		return goTypeName(t.Name)
 	case *types.Sum:
@@ -137,6 +139,8 @@ func (g *Generator) typeFromAnn(ann ast.TypeExpr) types.Type {
 		return &types.Optional{Elem: g.typeFromAnn(ann.Elem)}
 	case *ast.MapType:
 		return &types.Map{Key: g.typeFromAnn(ann.Key), Value: g.typeFromAnn(ann.Value)}
+	case *ast.ChanType:
+		return &types.Chan{Elem: g.typeFromAnn(ann.Elem)}
 	}
 	return nil
 }

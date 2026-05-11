@@ -115,7 +115,7 @@ func printUsage(w io.Writer) {
   tartalo check <file.tt>             # type-check without emitting sh
   tartalo fmt   [-l|-d|-w] <file.tt>...   # format source (default: rewrite in place)
   tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]   # time compile phases (and run) over N iterations
-  tartalo lsp                             # speak Language Server Protocol over stdio (syntax diagnostics)
+  tartalo lsp                             # Language Server: diagnostics, hover, definition, symbols, refs, rename, completion
   tartalo help
 
 build defaults to --target=sh which produces a portable POSIX shell script;

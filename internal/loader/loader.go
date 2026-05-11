@@ -62,7 +62,7 @@ type ResolvedImport struct {
 // always appear earlier in the slice). Errors from any file's lex/parse pass
 // are returned together; loading continues so multiple errors can be reported.
 func Load(entryPath string) ([]*Module, []error) {
-	mods, _, errs := load(entryPath)
+	mods, _, errs := load(entryPath, nil)
 	return mods, errs
 }
 
@@ -72,15 +72,24 @@ func Load(entryPath string) ([]*Module, []error) {
 // for the diagnostic renderer, which needs the original text to show code
 // frames regardless of whether the AST is valid.
 func LoadWithSources(entryPath string) ([]*Module, map[string]string, []error) {
-	return load(entryPath)
+	return load(entryPath, nil)
 }
 
-func load(entryPath string) ([]*Module, map[string]string, []error) {
+// LoadOverlay is LoadWithSources with an in-memory overlay: any module whose
+// absolute path appears in `overlay` is parsed from the supplied text instead
+// of being read from disk. The LSP uses this to feed unsaved editor buffers
+// into the same loader+checker pipeline the CLI uses. Keys must be canonical
+// absolute paths (matching what filepath.Abs returns).
+func LoadOverlay(entryPath string, overlay map[string]string) ([]*Module, map[string]string, []error) {
+	return load(entryPath, overlay)
+}
+
+func load(entryPath string, overlay map[string]string) ([]*Module, map[string]string, []error) {
 	abs, err := filepath.Abs(entryPath)
 	if err != nil {
 		return nil, nil, []error{err}
 	}
-	l := &loader{cache: map[string]*Module{}}
+	l := &loader{cache: map[string]*Module{}, overlay: overlay}
 	root := l.startLoad(abs, true)
 	l.wg.Wait()
 
@@ -130,6 +139,10 @@ type loader struct {
 	cache map[string]*Module
 	errs  []error
 	wg    sync.WaitGroup
+	// overlay is a snapshot of in-memory file contents keyed by canonical
+	// absolute path. When non-nil, parseModule consults it before reading
+	// from disk so the LSP can serve diagnostics against unsaved buffers.
+	overlay map[string]string
 }
 
 // startLoad guarantees there is exactly one *Module per absolute path. If we
@@ -166,6 +179,9 @@ func (l *loader) parseModule(m *Module) {
 		}
 		src = data
 		fileName = m.AbsPath
+	} else if text, ok := l.overlay[m.AbsPath]; ok {
+		src = []byte(text)
+		fileName = filepath.Base(m.AbsPath)
 	} else {
 		data, err := os.ReadFile(m.AbsPath)
 		if err != nil {

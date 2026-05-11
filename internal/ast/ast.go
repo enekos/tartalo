@@ -210,6 +210,20 @@ type MapType struct {
 func (t *MapType) Pos() token.Pos { return t.KwPos }
 func (t *MapType) typeExprNode()  {}
 
+// ChanType: `chan[T]`. The element type T must be a scalar primitive
+// (string, number, float, bool) in v1 — the checker enforces this so the
+// sh backend's textual queue encoding stays unambiguous. Channels are
+// values; you create one with `chan()` and pass the handle around like
+// any other variable.
+type ChanType struct {
+	KwPos    token.Pos // position of the `chan` keyword
+	LBracket token.Pos
+	Elem     TypeExpr
+}
+
+func (t *ChanType) Pos() token.Pos { return t.KwPos }
+func (t *ChanType) typeExprNode()  {}
+
 // FuncType: `func(T1, T2, ...): R`. Used as a type annotation when a value
 // of function type is being passed around.
 type FuncType struct {
@@ -402,6 +416,21 @@ type TaskStmt struct {
 
 func (s *TaskStmt) Pos() token.Pos { return s.KwPos }
 func (s *TaskStmt) stmtNode()      {}
+
+// SpawnStmt: `spawn fn(args)`. Runs the named function call concurrently
+// in a new agent. Differs from `task { ... }` in that the spawned work is
+// not lexically bounded — it runs until the function returns and may
+// outlive the spawning function as long as the program does. Pair with
+// `waitAll()` to join, or `chan[T]` + `recv` to coordinate. The Call
+// callee must be an Ident referring to a user-declared function with a
+// void result; the checker enforces both invariants.
+type SpawnStmt struct {
+	KwPos token.Pos
+	Call  *CallExpr
+}
+
+func (s *SpawnStmt) Pos() token.Pos { return s.KwPos }
+func (s *SpawnStmt) stmtNode()      {}
 
 // Block: `{ stmts... }`. RBrace is captured so source-position-based passes
 // (formatter, IDE tools) know where the block ends without re-scanning.

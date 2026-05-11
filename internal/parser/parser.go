@@ -180,7 +180,7 @@ func (p *Parser) recoverToStmt() {
 		switch p.peek().Kind {
 		case token.Let, token.Const, token.Func, token.Tool, token.Agent, token.If, token.For,
 			token.While, token.Break, token.Continue, token.Return,
-			token.Match, token.Type, token.Export, token.Test, token.Defer, token.Parallel,
+			token.Match, token.Type, token.Export, token.Test, token.Defer, token.Parallel, token.Spawn,
 			token.RBrace, token.Semicolon:
 			return
 		}
@@ -702,8 +702,10 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 		p.advance()
 		ty = &ast.TypeName{NamePos: t.Pos, Name: t.Value}
 	case token.Ident:
-		// `map<K, V>` is a built-in generic; everything else is a user-defined
-		// type reference whose resolution the checker handles.
+		// `map<K, V>` and `chan[T]` are built-in generics; everything else is
+		// a user-defined type reference whose resolution the checker handles.
+		// `chan` is a contextual keyword: it's only special in type position,
+		// so it can still be used as a regular identifier elsewhere.
 		if t.Value == "map" && p.peekAhead(1).Kind == token.Lt {
 			p.advance()
 			lt := p.advance() // <
@@ -712,6 +714,14 @@ func (p *Parser) parseTypeExpr() ast.TypeExpr {
 			val := p.parseTypeExpr()
 			p.expect(token.Gt, "map type")
 			ty = &ast.MapType{KwPos: lt.Pos, Key: key, Value: val}
+		} else if t.Value == "chan" && p.peekAhead(1).Kind == token.LBracket && p.peekAhead(2).Kind != token.RBracket {
+			// `chan[T]` — guard the second peek so the array postfix `chan[]`
+			// (a 0-length array of identifier `chan`) doesn't get hijacked.
+			kw := p.advance()
+			lb := p.advance() // [
+			elem := p.parseTypeExpr()
+			p.expect(token.RBracket, "chan type")
+			ty = &ast.ChanType{KwPos: kw.Pos, LBracket: lb.Pos, Elem: elem}
 		} else {
 			p.advance()
 			ty = &ast.TypeName{NamePos: t.Pos, Name: t.Value}
@@ -832,6 +842,8 @@ func (p *Parser) parseStmt() ast.Stmt {
 		return p.parseDefer()
 	case token.Parallel:
 		return p.parseParallel()
+	case token.Spawn:
+		return p.parseSpawn()
 	case token.Task:
 		// `task { }` is only legal directly inside a `parallel { }` body, where
 		// parseParallel consumes it. Hitting the keyword anywhere else means
@@ -933,6 +945,24 @@ func (p *Parser) parseTask() *ast.TaskStmt {
 	kw := p.advance() // task
 	body := p.parseBlock()
 	return &ast.TaskStmt{KwPos: kw.Pos, Body: body}
+}
+
+// parseSpawn parses `spawn fn(args)`. The body is just a regular call
+// expression; the checker validates that the callee is a void-returning
+// user function. We accept any expression after `spawn` so a clear error
+// can fire downstream if the user wrote something like `spawn 42`.
+func (p *Parser) parseSpawn() *ast.SpawnStmt {
+	kw := p.advance() // spawn
+	x := p.parseExpr()
+	_, _ = p.accept(token.Semicolon)
+	call, ok := x.(*ast.CallExpr)
+	if !ok {
+		if x != nil {
+			p.errorf(kw.Pos, "spawn expects a function call, got %T", x)
+		}
+		return &ast.SpawnStmt{KwPos: kw.Pos}
+	}
+	return &ast.SpawnStmt{KwPos: kw.Pos, Call: call}
 }
 
 func (p *Parser) parseWhile() *ast.WhileStmt {

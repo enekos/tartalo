@@ -99,6 +99,12 @@ type Generator struct {
 	usesRuntimeTry         bool
 	usesRuntimeTypeError   bool
 
+	// usesRuntimeSpawn gates the global sync.WaitGroup used to track
+	// spawned goroutines. Any `spawn` statement or `waitAll()` call sets
+	// it; the preamble then declares the WaitGroup and the runtime helper
+	// `_tt_spawn` that does Add(1)+go func()+Done() in one shot.
+	usesRuntimeSpawn bool
+
 	// usesMockedBuiltin records, per builtin, whether the program calls the
 	// matching mock setter / inspector. The runtime emits the dispatcher in
 	// test mode regardless of this; the flag controls whether we emit the
