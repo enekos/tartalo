@@ -1095,6 +1095,72 @@ func TestNativeKimiProvider(t *testing.T) {
 	}
 }
 
+// TestNativeGeminiProvider verifies that TARTALO_LLM_PROVIDER=gemini on the
+// native target POSTs to Google's generateContent endpoint and returns the
+// first candidate's first text part. We point the generated binary at a
+// local httptest server so no real network call is made.
+func TestNativeGeminiProvider(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	var gotKey, gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-goog-api-key")
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi from gemini"}]}}]}`))
+	}))
+	defer server.Close()
+
+	bin := build(t, `func main(): void { echo(llm("hello")) }`)
+	cmd := exec.Command(bin)
+	cmd.Env = append(os.Environ(),
+		"TARTALO_LLM_PROVIDER=gemini",
+		"GEMINI_API_KEY=test-key",
+		"TARTALO_GEMINI_BASE_URL="+server.URL,
+		"TARTALO_GEMINI_MODEL=gemini-2.5-flash",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary failed: %v\noutput:\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "hi from gemini" {
+		t.Errorf("got %q, want %q", got, "hi from gemini")
+	}
+	if gotKey != "test-key" {
+		t.Errorf("X-goog-api-key header = %q, want %q", gotKey, "test-key")
+	}
+	if gotPath != "/models/gemini-2.5-flash:generateContent" {
+		t.Errorf("path = %q, want /models/gemini-2.5-flash:generateContent", gotPath)
+	}
+	if !strings.Contains(gotBody, `"text":"hello"`) {
+		t.Errorf("body missing prompt text:\n%s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"role":"user"`) {
+		t.Errorf("body missing user role:\n%s", gotBody)
+	}
+}
+
+// TestNativeGeminiMissingKey verifies the native helper aborts with a
+// clear message when GEMINI_API_KEY is unset.
+func TestNativeGeminiMissingKey(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	bin := build(t, `func main(): void { echo(llm("hello")) }`)
+	cmd := exec.Command(bin)
+	cmd.Env = append(os.Environ(), "TARTALO_LLM_PROVIDER=gemini", "GEMINI_API_KEY=")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "GEMINI_API_KEY not set") {
+		t.Errorf("expected GEMINI_API_KEY guidance, got:\n%s", out)
+	}
+}
+
 // TestNativeKimiMissingKey verifies the native helper aborts with a
 // clear message when KIMI_API_KEY is unset.
 func TestNativeKimiMissingKey(t *testing.T) {

@@ -323,6 +323,7 @@ func (g *Generator) emitAgentRuntimeAppendix(out *strings.Builder) {
 	if g.usesAgentLLM {
 		out.WriteString(runtimeLLM)
 		out.WriteString(runtimeKimi)
+		out.WriteString(runtimeGemini)
 		if g.emitMode == EmitTest || g.emitMode == EmitEval {
 			out.WriteString(dispatcherLLMTest)
 			// The dispatcher references _tt_mockLlmRules / _tt_mockLlmCallsLog
@@ -352,6 +353,8 @@ const runtimeLLM = `func _tt_llm_real(prompt string) string {
 	switch os.Getenv("TARTALO_LLM_PROVIDER") {
 	case "kimi", "moonshot":
 		return _tt_llm_kimi(prompt)
+	case "gemini":
+		return _tt_llm_gemini(prompt)
 	}
 	return _tt_llm_legacy(prompt)
 }
@@ -451,6 +454,85 @@ const runtimeKimi = "func _tt_llm_kimi(prompt string) string {\n" +
 	"\t\tos.Exit(1)\n" +
 	"\t}\n" +
 	"\treturn parsed.Choices[0].Message.Content\n" +
+	"}\n\n"
+
+// runtimeGemini calls Google's generateContent endpoint. Defaults: base
+// https://generativelanguage.googleapis.com/v1beta, model gemini-2.5-flash.
+// Both can be overridden with TARTALO_GEMINI_BASE_URL / TARTALO_GEMINI_MODEL —
+// the URL override is also what makes the test suite point at a local httptest
+// server. GEMINI_API_KEY is mandatory; we fail fast with a clear message
+// rather than letting the upstream return 401. Auth uses the X-goog-api-key
+// header (rather than ?key=) so the key never lands in URL access logs.
+const runtimeGemini = "func _tt_llm_gemini(prompt string) string {\n" +
+	"\tkey := os.Getenv(\"GEMINI_API_KEY\")\n" +
+	"\tif key == \"\" {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: gemini: GEMINI_API_KEY not set\\n\")\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tbase := os.Getenv(\"TARTALO_GEMINI_BASE_URL\")\n" +
+	"\tif base == \"\" {\n" +
+	"\t\tbase = \"https://generativelanguage.googleapis.com/v1beta\"\n" +
+	"\t}\n" +
+	"\tfor len(base) > 0 && base[len(base)-1] == '/' {\n" +
+	"\t\tbase = base[:len(base)-1]\n" +
+	"\t}\n" +
+	"\tmodel := os.Getenv(\"TARTALO_GEMINI_MODEL\")\n" +
+	"\tif model == \"\" {\n" +
+	"\t\tmodel = \"gemini-2.5-flash\"\n" +
+	"\t}\n" +
+	"\treqBody, err := json.Marshal(map[string]any{\n" +
+	"\t\t\"contents\": []map[string]any{\n" +
+	"\t\t\t{\"role\": \"user\", \"parts\": []map[string]string{{\"text\": prompt}}},\n" +
+	"\t\t},\n" +
+	"\t})\n" +
+	"\tif err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: gemini: marshal: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\thttpReq, err := http.NewRequest(\"POST\", base+\"/models/\"+model+\":generateContent\", bytes.NewReader(reqBody))\n" +
+	"\tif err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: gemini: new request: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\thttpReq.Header.Set(\"X-goog-api-key\", key)\n" +
+	"\thttpReq.Header.Set(\"Content-Type\", \"application/json\")\n" +
+	"\tresp, err := http.DefaultClient.Do(httpReq)\n" +
+	"\tif err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: gemini: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tdefer resp.Body.Close()\n" +
+	"\trespBody, err := io.ReadAll(resp.Body)\n" +
+	"\tif err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: gemini: read: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tif resp.StatusCode < 200 || resp.StatusCode >= 300 {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: gemini: status %d: %s\\n\", resp.StatusCode, string(respBody))\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tvar parsed struct {\n" +
+	"\t\tCandidates []struct {\n" +
+	"\t\t\tContent struct {\n" +
+	"\t\t\t\tParts []struct {\n" +
+	"\t\t\t\t\tText string `json:\"text\"`\n" +
+	"\t\t\t\t} `json:\"parts\"`\n" +
+	"\t\t\t} `json:\"content\"`\n" +
+	"\t\t} `json:\"candidates\"`\n" +
+	"\t}\n" +
+	"\tif err := json.Unmarshal(respBody, &parsed); err != nil {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: gemini: unmarshal: %v\\n\", err)\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tif len(parsed.Candidates) == 0 || len(parsed.Candidates[0].Content.Parts) == 0 {\n" +
+	"\t\tfmt.Fprintf(os.Stderr, \"tartalo: gemini: no candidates in response: %s\\n\", string(respBody))\n" +
+	"\t\tos.Exit(1)\n" +
+	"\t}\n" +
+	"\tvar sb strings.Builder\n" +
+	"\tfor _, p := range parsed.Candidates[0].Content.Parts {\n" +
+	"\t\tsb.WriteString(p.Text)\n" +
+	"\t}\n" +
+	"\treturn sb.String()\n" +
 	"}\n\n"
 
 const dispatcherLLMTest = `func _tt_llm(prompt string) string {

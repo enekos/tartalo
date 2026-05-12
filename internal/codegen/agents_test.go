@@ -472,6 +472,70 @@ func TestLlm_KimiStreaming(t *testing.T) {
 	}
 }
 
+// TestLlm_GeminiProvider verifies that TARTALO_LLM_PROVIDER=gemini routes
+// llm() to Google's generateContent endpoint, sends the prompt as a user
+// part, and returns the candidate's first text part. We point the helper
+// at a local httptest server via TARTALO_GEMINI_BASE_URL so no real network
+// call is made.
+func TestLlm_GeminiProvider(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not on PATH; required by the shell-target Gemini helper")
+	}
+	var gotKey, gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-goog-api-key")
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi from gemini"}]}}]}`))
+	}))
+	defer server.Close()
+
+	src := `func main(): void { echo(llm("hello")) }`
+	out, code := runShellWith(t, compileBuild(t, src), map[string]string{
+		"TARTALO_LLM_PROVIDER":    "gemini",
+		"GEMINI_API_KEY":          "test-key",
+		"TARTALO_GEMINI_BASE_URL": server.URL,
+		"TARTALO_GEMINI_MODEL":    "gemini-2.5-flash",
+	})
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if got := strings.TrimSpace(out); got != "hi from gemini" {
+		t.Errorf("got %q, want %q", got, "hi from gemini")
+	}
+	if gotKey != "test-key" {
+		t.Errorf("X-goog-api-key header = %q, want %q", gotKey, "test-key")
+	}
+	if gotPath != "/models/gemini-2.5-flash:generateContent" {
+		t.Errorf("path = %q, want /models/gemini-2.5-flash:generateContent", gotPath)
+	}
+	if !strings.Contains(gotBody, `"text":"hello"`) {
+		t.Errorf("body missing prompt text:\n%s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"role":"user"`) {
+		t.Errorf("body missing user role:\n%s", gotBody)
+	}
+}
+
+// TestLlm_GeminiMissingKey verifies the helper aborts with a clear message
+// when GEMINI_API_KEY is not set, rather than silently letting upstream
+// return a 401.
+func TestLlm_GeminiMissingKey(t *testing.T) {
+	src := `func main(): void { echo(llm("hello")) }`
+	out, code := runShellWith(t, compileBuild(t, src), map[string]string{
+		"TARTALO_LLM_PROVIDER": "gemini",
+		"GEMINI_API_KEY":       "",
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, got 0; output:\n%s", out)
+	}
+	if !strings.Contains(out, "GEMINI_API_KEY not set") {
+		t.Errorf("expected guidance about GEMINI_API_KEY, got:\n%s", out)
+	}
+}
+
 // TestLlm_KimiMissingKey verifies the helper aborts with a clear message
 // when KIMI_API_KEY is not set, rather than silently letting upstream
 // return a 401.

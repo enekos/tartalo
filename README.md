@@ -155,16 +155,21 @@ import { matches, findOr }       from "tartalo:regex/regex"
 `moonshot`) calls Moonshot's OpenAI-compatible chat/completions API using
 `KIMI_API_KEY`; override `TARTALO_KIMI_BASE_URL` / `TARTALO_KIMI_MODEL` to
 point at a self-hosted endpoint or a different model (default
-`moonshot-v1-8k`). With no provider set, the prompt is piped to
-`TARTALO_LLM_CMD` (default `claude -p`) so any CLI tool works as a fallback.
-The native target talks HTTP directly; the sh target shells out through
-`curl` for the kimi path. Set `TARTALO_LLM_STREAM=1` to switch the kimi
-path to SSE — each delta is mirrored to stderr as the model writes it,
-and the assembled content is still returned.
+`moonshot-v1-8k`). Setting it to `gemini` calls Google's `generateContent`
+endpoint using `GEMINI_API_KEY` (sent as `X-goog-api-key`); override
+`TARTALO_GEMINI_BASE_URL` / `TARTALO_GEMINI_MODEL` for a self-hosted proxy
+or a different model (default `gemini-2.5-flash`). With no provider set,
+the prompt is piped to `TARTALO_LLM_CMD` (default `claude -p`) so any CLI
+tool works as a fallback. The native target talks HTTP directly; the sh
+target shells out through `curl` for both API paths. Set
+`TARTALO_LLM_STREAM=1` to switch the kimi path to SSE — each delta is
+mirrored to stderr as the model writes it, and the assembled content is
+still returned.
 
 ```
-TARTALO_LLM_PROVIDER=kimi KIMI_API_KEY=sk-... ./demo.sh "hello"
-TARTALO_LLM_PROVIDER=kimi TARTALO_LLM_STREAM=1 KIMI_API_KEY=sk-... ./demo.sh "hello"
+TARTALO_LLM_PROVIDER=kimi   KIMI_API_KEY=sk-...     ./demo.sh "hello"
+TARTALO_LLM_PROVIDER=kimi   TARTALO_LLM_STREAM=1 KIMI_API_KEY=sk-... ./demo.sh "hello"
+TARTALO_LLM_PROVIDER=gemini GEMINI_API_KEY=AIza... ./demo.sh "hello"
 ```
 
 ## Testing
