@@ -117,6 +117,31 @@ type Generator struct {
 	usesMockArgs     bool
 	usesMockStdin    bool
 
+	// Write-side filesystem mocks. Each flag gates emission of the
+	// matching `_tt_mockX` / `_tt_mockXCalls` helper; the dispatcher
+	// for the real builtin (writeFile / appendFile / removeFile / mkdir)
+	// also branches on the underlying mock state to enforce strict mode.
+	usesMockWriteFile  bool
+	usesMockAppendFile bool
+	usesMockRemoveFile bool
+	usesMockMkdir      bool
+
+	// Read-side filesystem state mocks.
+	usesMockListDir bool
+	usesMockExists  bool
+	usesMockIsFile  bool
+	usesMockIsDir   bool
+	usesMockStat    bool
+
+	// Process-boundary mocks.
+	usesMockSleep    bool
+	usesMockApproval bool
+
+	// usesRuntimeSleep gates emission of the `_tt_sleep` dispatcher in
+	// test/eval mode. Plain run mode inlines `time.Sleep(...)` so the
+	// flag stays false there.
+	usesRuntimeSleep bool
+
 	// csvReaders / csvWriters are deduplicated record types that the
 	// program calls readCsv / writeCsv against. emitCsvHelpers (csv.go)
 	// emits one per-type helper function for each entry at end-of-program.

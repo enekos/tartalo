@@ -5021,11 +5021,23 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 	case "mockLlmCalls":
 		return g.compileMockLlmCalls(prologue)
 	case "mockExec", "mockFetch", "mockReadFile",
-		"mockExecCalls", "mockFetchCalls", "mockReadFileCalls":
+		"mockExecCalls", "mockFetchCalls", "mockReadFileCalls",
+		"mockWriteFile", "mockWriteFileCalls", "mockWriteFileContents",
+		"mockAppendFile", "mockAppendFileCalls", "mockAppendFileContents",
+		"mockRemoveFile", "mockRemoveFileCalls",
+		"mockMkdir", "mockMkdirCalls",
+		"mockListDir", "mockListDirCalls",
+		"mockExists", "mockExistsCalls",
+		"mockIsFile", "mockIsFileCalls",
+		"mockIsDir", "mockIsDirCalls",
+		"mockStat", "mockStatCalls",
+		"mockSleep", "mockSleepCalls",
+		"mockApproval", "mockApprovalCalls":
 		// Native already supports the full mock set; the sh backend ships
-		// with the four name/value-style mocks above. exec/fetch/readFile
-		// mocks need response-record serialisation (multi-line stdout,
-		// embedded base64) that isn't worth the runtime weight for v1 —
+		// with the four name/value-style mocks above. The richer mocks
+		// (regex match + Process/Response/FileInfo response, write-side
+		// recording, etc.) need response-record serialisation and
+		// per-test state that isn't worth the runtime weight for v1 —
 		// users who need them should switch to --target=native, which is
 		// the recommended target for shipping anyway.
 		prologue = append(prologue, fmt.Sprintf(

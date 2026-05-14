@@ -578,7 +578,7 @@ func _tt_mockLlmCalls() []string {
 
 `
 
-const runtimeApproval = `func _tt_approval(prompt string) bool {
+const runtimeApproval = `func _tt_approval_real(prompt string) bool {
 	fmt.Fprintf(os.Stderr, "%s [y/N] ", prompt)
 	tty, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
 	var reader = os.Stdin

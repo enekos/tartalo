@@ -2402,7 +2402,18 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 			return types.Void
 		case "mockExec", "mockFetch", "mockEnv", "mockReadFile", "mockLlm", "mockLlmCalls",
 			"mockNow", "mockArgs", "mockReadStdin",
-			"mockExecCalls", "mockFetchCalls", "mockReadFileCalls":
+			"mockExecCalls", "mockFetchCalls", "mockReadFileCalls",
+			"mockWriteFile", "mockWriteFileCalls", "mockWriteFileContents",
+			"mockAppendFile", "mockAppendFileCalls", "mockAppendFileContents",
+			"mockRemoveFile", "mockRemoveFileCalls",
+			"mockMkdir", "mockMkdirCalls",
+			"mockListDir", "mockListDirCalls",
+			"mockExists", "mockExistsCalls",
+			"mockIsFile", "mockIsFileCalls",
+			"mockIsDir", "mockIsDirCalls",
+			"mockStat", "mockStatCalls",
+			"mockSleep", "mockSleepCalls",
+			"mockApproval", "mockApprovalCalls":
 			// All mock builtins must be invoked from inside a `test`
 			// body. Type-checking falls through to the regular path
 			// once we've enforced the scope rule.
@@ -3562,6 +3573,44 @@ func builtins() []*Symbol {
 		mk("mockExecCalls", nil, stringArr),
 		mk("mockFetchCalls", nil, stringArr),
 
+		// Write-side filesystem mocks. Each `mockWriteFile(pat)` etc. is a
+		// regex pattern; once any rule is registered, matching calls are
+		// swallowed silently and an unmatched call fails the test (strict
+		// mode). With no rule registered the real builtin runs unchanged.
+		// `mockXCalls()` always returns every recorded path, and the
+		// content-bearing variants (`mockWriteFileContents`, etc.) return
+		// parallel arrays so a test can assert "the SUT wrote 'foo' to
+		// '/tmp/x'" without touching disk.
+		mk("mockWriteFile", []types.Type{str}, void),
+		mk("mockWriteFileCalls", nil, stringArr),
+		mk("mockWriteFileContents", nil, stringArr),
+		mk("mockAppendFile", []types.Type{str}, void),
+		mk("mockAppendFileCalls", nil, stringArr),
+		mk("mockAppendFileContents", nil, stringArr),
+		mk("mockRemoveFile", []types.Type{str}, void),
+		mk("mockRemoveFileCalls", nil, stringArr),
+		mk("mockMkdir", []types.Type{str}, void),
+		mk("mockMkdirCalls", nil, stringArr),
+
+		// Read-side filesystem state mocks. Each takes a pattern plus the
+		// canned answer; matched calls return the canned value, unmatched
+		// (once any rule is set) fail the test.
+		mk("mockListDir", []types.Type{str, stringArr}, void),
+		mk("mockListDirCalls", nil, stringArr),
+		mk("mockExists", []types.Type{str, bln}, void),
+		mk("mockExistsCalls", nil, stringArr),
+		mk("mockIsFile", []types.Type{str, bln}, void),
+		mk("mockIsFileCalls", nil, stringArr),
+		mk("mockIsDir", []types.Type{str, bln}, void),
+		mk("mockIsDirCalls", nil, stringArr),
+
+		// Process-boundary mocks. `mockSleep()` is parameterless: once
+		// called, sleep() becomes a no-op and durations are recorded so
+		// tests can assert "slept 3s total" without actually waiting.
+		mk("mockSleep", nil, void),
+		mk("mockSleepCalls", nil, numArr),
+		mk("mockApprovalCalls", nil, stringArr),
+
 		// Agent-platform builtins.
 		//
 		//   llm(prompt) -> string         shells out to $TARTALO_LLM_CMD; effect !ai
@@ -3691,6 +3740,15 @@ func builtinsWithTypes(typeNames map[string]types.Type) []*Symbol {
 		// outside a `test "..." { ... }` body).
 		{Name: "mockExec", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, process}, Result: types.Void}},
 		{Name: "mockFetch", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, response}, Result: types.Void}},
+
+		// `mockStat(pat, info)` returns `info` from any matching stat()
+		// call. Useful for SUTs that read .Size / .Mode / .Mtime without
+		// hitting the real filesystem.
+		{Name: "mockStat", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, fileInfo}, Result: types.Void}},
+
+		// `mockApproval(pat, response)` short-circuits the y/n prompt on
+		// /dev/tty so tests don't hang on terminal input.
+		{Name: "mockApproval", IsFunc: true, IsBuiltin: true, Type: &types.Func{Params: []types.Type{types.String, types.Bool}, Result: types.Void}},
 	}
 }
 

@@ -1,4 +1,4 @@
-.PHONY: all build install test cover bench fmt fmt-check lint vet check examples wasm clean help
+.PHONY: all build install test cover bench bench-suite bench-micro bench-cross bench-all fmt fmt-check lint vet check examples wasm clean help
 
 GO         ?= go
 BIN        ?= tartalo
@@ -26,9 +26,24 @@ cover:
 	$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "wrote coverage.html"
 
-## bench: run benchmarks
-bench:
-	$(GO) test -bench=. -benchmem -run=^$$ $(PKG)
+## bench: run Go micro-benchmarks (alias for bench-micro)
+bench: bench-micro
+
+## bench-suite: end-to-end workload benchmarks (sh + native; compile + run)
+bench-suite: build
+	$(GO) run scripts/bench_runner.go suite
+
+## bench-micro: Go-level micro-benchmarks (codegen, nativegen, parser)
+bench-micro: build
+	$(GO) run scripts/bench_runner.go micro
+
+## bench-cross: sh ↔ native parity + per-target speed
+bench-cross: build
+	$(GO) run scripts/bench_runner.go cross
+
+## bench-all: suite + micro + cross
+bench-all: build
+	$(GO) run scripts/bench_runner.go all
 
 ## fmt: format every .tt example and every .go file in place
 fmt: build

@@ -874,6 +874,146 @@ func TestNativeMockResetBetweenTests(t *testing.T) {
 	}
 }
 
+func TestNativeMockWriteFileRecords(t *testing.T) {
+	bin := buildTestMode(t, `
+		test "writeFile recorded, no real I/O" {
+			mockWriteFile("/tmp/.*")
+			writeFile("/tmp/tartalo-mock-should-not-exist-x9", "hello")
+			writeFile("/tmp/tartalo-mock-should-not-exist-x9", "world")
+			let paths = mockWriteFileCalls()
+			let contents = mockWriteFileContents()
+			assertEq(len(paths), 2)
+			assertEq(paths[1], "/tmp/tartalo-mock-should-not-exist-x9")
+			assertEq(contents[0], "hello")
+			assertEq(contents[1], "world")
+			// And no file landed on disk.
+			assertEq(exists("/tmp/tartalo-mock-should-not-exist-x9"), false)
+		}
+	`)
+	out, code := runTestBin(t, bin)
+	if code != 0 {
+		t.Errorf("expected pass, got exit %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "1 passed") {
+		t.Errorf("expected 1 passed, got:\n%s", out)
+	}
+}
+
+func TestNativeMockWriteFileStrictFail(t *testing.T) {
+	bin := buildTestMode(t, `
+		test "unmatched write fails the test" {
+			mockWriteFile("/safe/.*")
+			writeFile("/etc/passwd", "oops")
+			fail("unreachable")
+		}
+	`)
+	out, code := runTestBin(t, bin)
+	if code == 0 {
+		t.Errorf("expected non-zero exit, got 0\n%s", out)
+	}
+	if !strings.Contains(out, "writeFile: no mock matched: /etc/passwd") {
+		t.Errorf("expected strict failure message, got:\n%s", out)
+	}
+}
+
+func TestNativeMockAppendRemoveMkdir(t *testing.T) {
+	bin := buildTestMode(t, `
+		test "appendFile / removeFile / mkdir are intercepted" {
+			mockAppendFile(".*")
+			mockRemoveFile(".*")
+			mockMkdir(".*")
+			appendFile("/tmp/x.log", "line1\n")
+			appendFile("/tmp/x.log", "line2\n")
+			removeFile("/tmp/x.log")
+			mkdir("/tmp/no-such-dir")
+			assertEq(len(mockAppendFileCalls()), 2)
+			assertEq(mockAppendFileContents()[0], "line1\n")
+			assertEq(len(mockRemoveFileCalls()), 1)
+			assertEq(len(mockMkdirCalls()), 1)
+			assertEq(exists("/tmp/no-such-dir"), false)
+		}
+	`)
+	out, code := runTestBin(t, bin)
+	if code != 0 {
+		t.Errorf("expected pass, got exit %d:\n%s", code, out)
+	}
+}
+
+func TestNativeMockFsStateReads(t *testing.T) {
+	bin := buildTestMode(t, `
+		test "exists / isFile / isDir / listDir come from mocks" {
+			mockExists("/fake/.*", true)
+			mockIsFile("/fake/file", true)
+			mockIsDir("/fake/dir", true)
+			mockListDir("/fake/dir", ["a.txt", "b.txt", "sub"])
+			check(exists("/fake/anything"))
+			check(isFile("/fake/file"))
+			check(isDir("/fake/dir"))
+			let xs = listDir("/fake/dir")
+			assertEq(len(xs), 3)
+			assertEq(xs[2], "sub")
+			assertEq(len(mockExistsCalls()), 1)
+			assertEq(len(mockListDirCalls()), 1)
+		}
+	`)
+	out, code := runTestBin(t, bin)
+	if code != 0 {
+		t.Errorf("expected pass, got exit %d:\n%s", code, out)
+	}
+}
+
+func TestNativeMockStat(t *testing.T) {
+	bin := buildTestMode(t, `
+		test "stat returns canned FileInfo" {
+			mockStat("/big", FileInfo{exists: true, isFile: true, isDir: false, size: 4096, mtime: 1700000000, mode: "644"})
+			let s = stat("/big")
+			check(s.exists)
+			check(s.isFile)
+			assertEq(s.size, 4096)
+			assertEq(s.mtime, 1700000000)
+			assertEq(s.mode, "644")
+		}
+	`)
+	out, code := runTestBin(t, bin)
+	if code != 0 {
+		t.Errorf("expected pass, got exit %d:\n%s", code, out)
+	}
+}
+
+func TestNativeMockSleep(t *testing.T) {
+	bin := buildTestMode(t, `
+		test "mockSleep makes sleep a no-op" {
+			mockSleep()
+			sleep(3600)  // would block the suite for an hour without the mock
+			sleep(2)
+			let xs = mockSleepCalls()
+			assertEq(len(xs), 2)
+			assertEq(xs[0], 3600)
+			assertEq(xs[1], 2)
+		}
+	`)
+	out, code := runTestBin(t, bin)
+	if code != 0 {
+		t.Errorf("expected pass, got exit %d:\n%s", code, out)
+	}
+}
+
+func TestNativeMockApproval(t *testing.T) {
+	bin := buildTestMode(t, `
+		test "approval returns canned answer without /dev/tty" {
+			mockApproval("delete .*", false)
+			mockApproval("proceed", true)
+			check(!approval("delete everything"))
+			check(approval("proceed"))
+			assertEq(len(mockApprovalCalls()), 2)
+		}
+	`)
+	out, code := runTestBin(t, bin)
+	if code != 0 {
+		t.Errorf("expected pass, got exit %d:\n%s", code, out)
+	}
+}
+
 // TestNativeCalcTestParity runs examples/calc_test.tt through both test
 // harnesses and checks the output is byte-identical. This pins down the
 // banner text, per-test pass/fail glyphs, skip formatting, and final

@@ -225,6 +225,14 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return "_tt_now()"
 	case "sleep":
 		g.addImport("time")
+		// In test/eval mode route through the mockable dispatcher so a
+		// `mockSleep()` can convert the call into a no-op (and record
+		// the duration). In plain run mode keep the inline call so the
+		// generated Go stays compact.
+		if g.emitMode == EmitTest || g.emitMode == EmitEval {
+			g.usesRuntimeSleep = true
+			return iife("", "_tt_sleep("+args[0]+")")
+		}
 		return iife("", "time.Sleep(time.Duration("+args[0]+") * time.Second)")
 
 	// --- string operations ---
@@ -358,9 +366,23 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return iife("", "_tt_appendFile("+args[0]+", "+args[1]+")")
 	case "removeFile":
 		g.addImport("os")
+		if g.emitMode == EmitTest || g.emitMode == EmitEval {
+			g.usesRuntimeFile = true
+			g.addImport("fmt")
+			g.addImport("io")
+			g.addImport("strings")
+			return iife("", "_tt_removeFile("+args[0]+")")
+		}
 		return iife("", "os.Remove("+args[0]+")")
 	case "mkdir":
 		g.addImport("os")
+		if g.emitMode == EmitTest || g.emitMode == EmitEval {
+			g.usesRuntimeFile = true
+			g.addImport("fmt")
+			g.addImport("io")
+			g.addImport("strings")
+			return iife("", "_tt_mkdir("+args[0]+")")
+		}
 		return iife("", "os.MkdirAll("+args[0]+", 0o755)")
 	case "listDir":
 		g.usesRuntimeFile = true
@@ -371,18 +393,39 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		return "_tt_listDir(" + args[0] + ")"
 	case "exists":
 		g.addImport("os")
+		if g.emitMode == EmitTest || g.emitMode == EmitEval {
+			g.usesRuntimeFile = true
+			g.addImport("fmt")
+			g.addImport("io")
+			g.addImport("strings")
+			return "_tt_exists(" + args[0] + ")"
+		}
 		return iife("bool",
 			"_, err := os.Stat("+args[0]+")",
 			"return err == nil",
 		)
 	case "isFile":
 		g.addImport("os")
+		if g.emitMode == EmitTest || g.emitMode == EmitEval {
+			g.usesRuntimeFile = true
+			g.addImport("fmt")
+			g.addImport("io")
+			g.addImport("strings")
+			return "_tt_isFile(" + args[0] + ")"
+		}
 		return iife("bool",
 			"i, err := os.Stat("+args[0]+")",
 			"return err == nil && i.Mode().IsRegular()",
 		)
 	case "isDir":
 		g.addImport("os")
+		if g.emitMode == EmitTest || g.emitMode == EmitEval {
+			g.usesRuntimeFile = true
+			g.addImport("fmt")
+			g.addImport("io")
+			g.addImport("strings")
+			return "_tt_isDir(" + args[0] + ")"
+		}
 		return iife("bool",
 			"i, err := os.Stat("+args[0]+")",
 			"return err == nil && i.IsDir()",
@@ -924,6 +967,212 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 		g.addImport("os")
 		g.addImport("strings")
 		return "_tt_mockReadStdin(" + args[0] + ")"
+
+	// --- write-side filesystem mocks ---
+	case "mockWriteFile":
+		g.usesMockWriteFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockWriteFile(" + args[0] + ")"
+	case "mockWriteFileCalls":
+		g.usesMockWriteFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockWriteFileCalls()"
+	case "mockWriteFileContents":
+		g.usesMockWriteFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockWriteFileContents()"
+	case "mockAppendFile":
+		g.usesMockAppendFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockAppendFile(" + args[0] + ")"
+	case "mockAppendFileCalls":
+		g.usesMockAppendFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockAppendFileCalls()"
+	case "mockAppendFileContents":
+		g.usesMockAppendFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockAppendFileContents()"
+	case "mockRemoveFile":
+		g.usesMockRemoveFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockRemoveFile(" + args[0] + ")"
+	case "mockRemoveFileCalls":
+		g.usesMockRemoveFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockRemoveFileCalls()"
+	case "mockMkdir":
+		g.usesMockMkdir = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockMkdir(" + args[0] + ")"
+	case "mockMkdirCalls":
+		g.usesMockMkdir = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockMkdirCalls()"
+
+	// --- read-side filesystem state mocks ---
+	case "mockListDir":
+		g.usesMockListDir = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockListDir(" + args[0] + ", " + args[1] + ")"
+	case "mockListDirCalls":
+		g.usesMockListDir = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockListDirCalls()"
+	case "mockExists":
+		g.usesMockExists = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockExists(" + args[0] + ", " + args[1] + ")"
+	case "mockExistsCalls":
+		g.usesMockExists = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockExistsCalls()"
+	case "mockIsFile":
+		g.usesMockIsFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockIsFile(" + args[0] + ", " + args[1] + ")"
+	case "mockIsFileCalls":
+		g.usesMockIsFile = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockIsFileCalls()"
+	case "mockIsDir":
+		g.usesMockIsDir = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockIsDir(" + args[0] + ", " + args[1] + ")"
+	case "mockIsDirCalls":
+		g.usesMockIsDir = true
+		g.usesRuntimeFile = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("io")
+		g.addImport("os")
+		g.addImport("strings")
+		return "_tt_mockIsDirCalls()"
+	case "mockStat":
+		g.usesMockStat = true
+		g.usesRuntimeStat = true
+		g.addImport("regexp")
+		g.addImport("os")
+		g.addImport("strconv")
+		return "_tt_mockStat(" + args[0] + ", " + args[1] + ")"
+	case "mockStatCalls":
+		g.usesMockStat = true
+		g.usesRuntimeStat = true
+		g.addImport("regexp")
+		g.addImport("os")
+		g.addImport("strconv")
+		return "_tt_mockStatCalls()"
+
+	// --- process-boundary mocks ---
+	case "mockSleep":
+		g.usesMockSleep = true
+		g.usesRuntimeSleep = true
+		g.addImport("time")
+		return "_tt_mockSleep()"
+	case "mockSleepCalls":
+		g.usesMockSleep = true
+		g.usesRuntimeSleep = true
+		g.addImport("time")
+		return "_tt_mockSleepCalls()"
+	case "mockApproval":
+		g.usesMockApproval = true
+		g.usesAgentApproval = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("os")
+		return "_tt_mockApproval(" + args[0] + ", " + args[1] + ")"
+	case "mockApprovalCalls":
+		g.usesMockApproval = true
+		g.usesAgentApproval = true
+		g.addImport("regexp")
+		g.addImport("fmt")
+		g.addImport("os")
+		return "_tt_mockApprovalCalls()"
 
 	// --- agent-platform builtins ---
 	case "llm":

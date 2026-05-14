@@ -8,14 +8,6 @@ shipping cross-platform tools. Think of it as a thin TypeScript-ish layer over
 shell scripting: catch type errors at compile time, choose the runtime that
 fits.
 
-It also doubles as an **agent platform**: `tool` and `agent` declarations
-expose typed entry points to LLMs via auto-generated JSON schemas. Agents
-declare which tools they can invoke with a `uses (...)` clause, get a
-runtime-enforced `budget(N)` on `llm()` calls, and dispatch tools by name
-through `callTool()` — all in a self-contained `.sh` (or native binary)
-with no `pip`, no `node_modules`, no Docker. See the [agent
-platform](SPEC.md#agent-platform) section of the spec.
-
 ```tartalo
 // hello.tt
 func main(): void {
@@ -52,7 +44,7 @@ v0 limits.
 
 Concurrency comes in two flavours: `parallel { task { ... } }` for
 structured fork-join, and `spawn fn(args)` + typed `chan[T]` mailboxes
-for long-lived agents that communicate by message passing. Both lower
+for long-lived workers that communicate by message passing. Both lower
 to backgrounded subshells + `wait` on the sh backend and to goroutines
 + `sync.WaitGroup` on the native backend. See
 [`SPEC.md`](SPEC.md#spawn-and-channels) for the full model and
@@ -97,7 +89,6 @@ tartalo build <file.tt> [-o <out>] [--target=sh|native] [--goos=<os>] [--goarch=
 tartalo run   [--target=sh|native] [--no-verify] [--no-trace] <file.tt> [-- args...]
 tartalo check <file.tt>...                                       # type-check only, no codegen
 tartalo test  [--target=sh|native] [--no-verify] <file-or-dir>   # run every `test "..."` block, recursively for a dir
-tartalo eval  <file-or-dir>                                      # run every `eval "..."` block (native target)
 tartalo fmt   [-l|-d|-w] <file.tt>...                            # format source (default: rewrite in place)
 tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]          # time compile phases (and runtime) over N iterations
 tartalo lsp                                                      # Language Server: diagnostics, hover, goto-def, symbols, refs, rename, completion
@@ -128,7 +119,7 @@ before writing or executing it. Pass `--no-verify` (or set
 shellcheck — it's an sh-specific guardrail.
 
 If a `.env` file exists alongside the entry `.tt` file, `tartalo run`,
-`tartalo test`, `tartalo eval`, and `tartalo bench` load its `KEY=VALUE`
+`tartalo test`, and `tartalo bench` load its `KEY=VALUE`
 pairs into the child process's environment before executing. Existing
 environment variables take precedence (they aren't overridden by `.env`).
 Quoted values, `export ` prefixes, and `#` comments are supported. `tartalo
@@ -149,29 +140,6 @@ import { readLines, listFiles }  from "tartalo:fs/fs"
 import { matches, findOr }       from "tartalo:regex/regex"
 ```
 
-## LLM providers
-
-`llm()` dispatches on `TARTALO_LLM_PROVIDER`. Setting it to `kimi` (or
-`moonshot`) calls Moonshot's OpenAI-compatible chat/completions API using
-`KIMI_API_KEY`; override `TARTALO_KIMI_BASE_URL` / `TARTALO_KIMI_MODEL` to
-point at a self-hosted endpoint or a different model (default
-`moonshot-v1-8k`). Setting it to `gemini` calls Google's `generateContent`
-endpoint using `GEMINI_API_KEY` (sent as `X-goog-api-key`); override
-`TARTALO_GEMINI_BASE_URL` / `TARTALO_GEMINI_MODEL` for a self-hosted proxy
-or a different model (default `gemini-2.5-flash`). With no provider set,
-the prompt is piped to `TARTALO_LLM_CMD` (default `claude -p`) so any CLI
-tool works as a fallback. The native target talks HTTP directly; the sh
-target shells out through `curl` for both API paths. Set
-`TARTALO_LLM_STREAM=1` to switch the kimi path to SSE — each delta is
-mirrored to stderr as the model writes it, and the assembled content is
-still returned.
-
-```
-TARTALO_LLM_PROVIDER=kimi   KIMI_API_KEY=sk-...     ./demo.sh "hello"
-TARTALO_LLM_PROVIDER=kimi   TARTALO_LLM_STREAM=1 KIMI_API_KEY=sk-... ./demo.sh "hello"
-TARTALO_LLM_PROVIDER=gemini GEMINI_API_KEY=AIza... ./demo.sh "hello"
-```
-
 ## Testing
 
 Tests live next to the implementation, Rust-style. A `test "..." { ... }`
@@ -188,55 +156,26 @@ test "double doubles" { assertEq(double(21), 42) }
 the directory tree, runs every `.tt` file with at least one `test`
 declaration, and aggregates per-file results.
 
-Mock builtins (test-only) make hermetic tests easy: `mockExec`, `mockFetch`,
-`mockReadFile`, `mockEnv`, `mockNow`, `mockArgs`, `mockReadStdin`. Strict
-mode is on by default for `exec`/`fetch`/`readFile` — once a rule is
-registered, an unmatched real call fails the test. See SPEC.md for the full
-table. Native target supports the full mock set; the sh backend ships with
-the four name/value-style mocks (env / now / args / readStdin).
+Mock builtins (test-only) make hermetic tests easy. They cover every
+side-effecting boundary the language exposes:
 
-## Evals
+- **processes**: `mockExec` / `mockExecCalls`, `mockSleep` /
+  `mockSleepCalls`
+- **filesystem reads**: `mockReadFile`, `mockListDir`, `mockExists`,
+  `mockIsFile`, `mockIsDir`, `mockStat`, `mockReadStdin` (+ matching
+  `Calls()` recorders)
+- **filesystem writes**: `mockWriteFile`, `mockAppendFile`,
+  `mockRemoveFile`, `mockMkdir` — block real disk I/O and record what
+  the SUT tried to write (`mockWriteFileCalls()` / `mockWriteFileContents()`,
+  etc.)
+- **network**: `mockFetch` / `mockFetchCalls` — one rule covers
+  `fetch`, `fetchTimeout`, `fetchHeaders`, `postJson`, `postForm`,
+  `request`
+- **ambient inputs**: `mockEnv`, `mockNow`, `mockArgs`
 
-`eval "..." { ... }` is a sibling of `test`, designed for grading LLM
-output. A library of scoring builtins covers the common cases —
-- string-pair: `jaccard`, `exactMatch`, `containsScore`, `f1Tokens`,
-  `levenshtein` / `levenshteinRatio`, `bleu`, `rougeL`
-- batch / vector: `f1Score` (over arrays), `cosineSimilarity` (for
-  embeddings)
-
-Each returns a float you record with `score(label, value)`; gate the eval
-on the mean with `expect(label, threshold)`. The runner prints a compact
-scorecard with the mean per label, the threshold pass-count, and a final
-summary.
-
-```tartalo
-eval "classify sentiment" {
-  mockLlm("love",     "positive")
-  mockLlm("terrible", "negative")
-
-  let cases = [
-    {input: "I love it",     expected: "positive"},
-    {input: "It's terrible", expected: "negative"},
-  ]
-  for c in cases {
-    let pred = lower(llm(c.input))
-    score("exact", exactMatch(pred, c.expected))
-  }
-  expect("exact", 1.0)
-}
-```
-
-```
-$ tartalo eval sentiment.tt
-running 1 eval(s) in sentiment.tt
-
-✓ eval "classify sentiment"
-  ✓ exact  1.00  (2/2 above 1.00, mean of 2)
-  2 sample(s) · 0s
-
-1 passed (1 total)
-```
-
-Evals are native-only — the harness needs Go's clock and most real evals
-end up calling `llm()`. See SPEC.md for the full builtin catalogue and
-output format.
+Strict mode is on by default for the recording mocks — once a rule is
+registered, an unmatched real call fails the test, so no test can
+accidentally write to `/etc` or hit the network. See SPEC.md for the
+full table. The native target supports every mock; the sh backend ships
+with the four ambient mocks (env / now / args / readStdin) and aborts
+with a clear `requires --target=native` message for the rest.

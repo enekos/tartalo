@@ -91,3 +91,38 @@ test "exec mock not supported in sh" {
 		t.Errorf("expected guidance message, got:\n%s", out)
 	}
 }
+
+// The newer filesystem / sleep / approval mocks are also native-only on the
+// sh backend. Each surfaces the same "requires --target=native" message so
+// users know to switch backends.
+func TestSh_NewMocksAbortWithGuidance(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"mockWriteFile", `mockWriteFile(".*")`},
+		{"mockAppendFile", `mockAppendFile(".*")`},
+		{"mockRemoveFile", `mockRemoveFile(".*")`},
+		{"mockMkdir", `mockMkdir(".*")`},
+		{"mockListDir", `mockListDir(".*", ["a","b"])`},
+		{"mockExists", `mockExists(".*", true)`},
+		{"mockIsFile", `mockIsFile(".*", true)`},
+		{"mockIsDir", `mockIsDir(".*", true)`},
+		{"mockStat", `mockStat(".*", FileInfo{exists: true, isFile: true, isDir: false, size: 0, mtime: 0, mode: "644"})`},
+		{"mockSleep", `mockSleep()`},
+		{"mockApproval", `mockApproval(".*", true)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "test \"sh abort\" {\n  " + tc.body + "\n}\n"
+			out, code := compileAndRunTest(t, src)
+			if code == 0 {
+				t.Errorf("expected non-zero exit, got 0\n%s", out)
+			}
+			want := tc.name + " requires --target=native"
+			if !strings.Contains(out, want) {
+				t.Errorf("expected %q, got:\n%s", want, out)
+			}
+		})
+	}
+}

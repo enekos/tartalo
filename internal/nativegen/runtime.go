@@ -153,9 +153,41 @@ func (g *Generator) writeMockableDispatchers(out *strings.Builder) {
 		if test {
 			out.WriteString(dispatcherReadFileTest)
 			out.WriteString(dispatcherReadStdinTest)
+			out.WriteString(dispatcherWriteFileTest)
+			out.WriteString(dispatcherAppendFileTest)
+			out.WriteString(dispatcherRemoveFileTest)
+			out.WriteString(dispatcherMkdirTest)
+			out.WriteString(dispatcherListDirTest)
+			out.WriteString(dispatcherExistsTest)
+			out.WriteString(dispatcherIsFileTest)
+			out.WriteString(dispatcherIsDirTest)
 		} else {
 			out.WriteString(`func _tt_readFile(path string) string { return _tt_readFile_real(path) }` + "\n\n")
 			out.WriteString(`func _tt_readStdin() string { return _tt_readStdin_real() }` + "\n\n")
+			out.WriteString(`func _tt_writeFile(path, content string) { _tt_writeFile_real(path, content) }` + "\n\n")
+			out.WriteString(`func _tt_appendFile(path, content string) { _tt_appendFile_real(path, content) }` + "\n\n")
+			out.WriteString(`func _tt_listDir(path string) []string { return _tt_listDir_real(path) }` + "\n\n")
+		}
+	}
+	if g.usesRuntimeStat {
+		if test {
+			out.WriteString(dispatcherStatTest)
+		} else {
+			out.WriteString(`func _tt_stat(path string) Tt_FileInfo { return _tt_stat_real(path) }` + "\n\n")
+		}
+	}
+	if g.usesRuntimeSleep {
+		if test {
+			out.WriteString(dispatcherSleepTest)
+		}
+		// Run mode keeps the inline `time.Sleep(...)` call from the
+		// builtin lowering; no dispatcher needed.
+	}
+	if g.usesAgentApproval {
+		if test {
+			out.WriteString(dispatcherApprovalTest)
+		} else {
+			out.WriteString(`func _tt_approval(prompt string) bool { return _tt_approval_real(prompt) }` + "\n\n")
 		}
 	}
 	if g.usesRuntimeEnv {
@@ -206,6 +238,39 @@ func (g *Generator) writeMockSetters(out *strings.Builder) {
 	if g.usesMockStdin {
 		out.WriteString(mockSettersStdin)
 	}
+	if g.usesMockWriteFile {
+		out.WriteString(mockSettersWriteFile)
+	}
+	if g.usesMockAppendFile {
+		out.WriteString(mockSettersAppendFile)
+	}
+	if g.usesMockRemoveFile {
+		out.WriteString(mockSettersRemoveFile)
+	}
+	if g.usesMockMkdir {
+		out.WriteString(mockSettersMkdir)
+	}
+	if g.usesMockListDir {
+		out.WriteString(mockSettersListDir)
+	}
+	if g.usesMockExists {
+		out.WriteString(mockSettersExists)
+	}
+	if g.usesMockIsFile {
+		out.WriteString(mockSettersIsFile)
+	}
+	if g.usesMockIsDir {
+		out.WriteString(mockSettersIsDir)
+	}
+	if g.usesMockStat {
+		out.WriteString(mockSettersStat)
+	}
+	if g.usesMockSleep {
+		out.WriteString(mockSettersSleep)
+	}
+	if g.usesMockApproval {
+		out.WriteString(mockSettersApproval)
+	}
 }
 
 func (g *Generator) anyRuntimeUsed() bool {
@@ -220,7 +285,7 @@ func (g *Generator) anyRuntimeUsed() bool {
 		g.usesRuntimeEnv || g.usesRuntimeNow || g.usesRuntimeTry ||
 		g.usesRuntimeTypeError ||
 		g.usesAgentLLM || g.usesAgentApproval || g.usesAgentTrace ||
-		g.usesAgentSpawn ||
+		g.usesAgentSpawn || g.usesRuntimeSleep ||
 		g.usesRuntimeSpawn
 }
 
@@ -326,14 +391,14 @@ const runtimeFile = `func _tt_readFile_real(path string) string {
 	return strings.TrimRight(string(b), "\n")
 }
 
-func _tt_writeFile(path, content string) {
+func _tt_writeFile_real(path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "tartalo: writeFile: cannot write %s\n", path)
 		os.Exit(1)
 	}
 }
 
-func _tt_appendFile(path, content string) {
+func _tt_appendFile_real(path, content string) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tartalo: appendFile: cannot write %s\n", path)
@@ -346,7 +411,15 @@ func _tt_appendFile(path, content string) {
 	}
 }
 
-func _tt_listDir(path string) []string {
+func _tt_removeFile_real(path string) {
+	_ = os.Remove(path)
+}
+
+func _tt_mkdir_real(path string) {
+	_ = os.MkdirAll(path, 0o755)
+}
+
+func _tt_listDir_real(path string) []string {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tartalo: listDir: cannot list %s\n", path)
@@ -357,6 +430,21 @@ func _tt_listDir(path string) []string {
 		out = append(out, e.Name())
 	}
 	return out
+}
+
+func _tt_exists_real(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func _tt_isFile_real(path string) bool {
+	i, err := os.Stat(path)
+	return err == nil && i.Mode().IsRegular()
+}
+
+func _tt_isDir_real(path string) bool {
+	i, err := os.Stat(path)
+	return err == nil && i.IsDir()
 }
 
 func _tt_readStdin_real() string {
@@ -401,7 +489,7 @@ func _tt_parsePath(path string) Tt_PathParts {
 
 `
 
-const runtimeStat = `func _tt_stat(path string) Tt_FileInfo {
+const runtimeStat = `func _tt_stat_real(path string) Tt_FileInfo {
 	info, err := os.Stat(path)
 	if err != nil {
 		return Tt_FileInfo{}
@@ -776,6 +864,25 @@ type _tt_mockReadFileRule struct {
 	content string
 }
 
+type _tt_mockPatRule struct {
+	pat *regexp.Regexp
+}
+
+type _tt_mockListDirRule struct {
+	pat     *regexp.Regexp
+	entries []string
+}
+
+type _tt_mockBoolRule struct {
+	pat   *regexp.Regexp
+	value bool
+}
+
+type _tt_mockStatRule struct {
+	pat  *regexp.Regexp
+	info Tt_FileInfo
+}
+
 type _tt_mockStateT struct {
 	execRules     []_tt_mockExecRule
 	execCalls     []string
@@ -788,6 +895,36 @@ type _tt_mockStateT struct {
 	nowFrozen     *int64
 	argsOverride  *[]string
 	stdinOverride *string
+
+	// write-side fs
+	writeFileRules     []_tt_mockPatRule
+	writeFileCalls     []string
+	writeFileContents  []string
+	appendFileRules    []_tt_mockPatRule
+	appendFileCalls    []string
+	appendFileContents []string
+	removeFileRules    []_tt_mockPatRule
+	removeFileCalls    []string
+	mkdirRules         []_tt_mockPatRule
+	mkdirCalls         []string
+
+	// read-side fs state
+	listDirRules []_tt_mockListDirRule
+	listDirCalls []string
+	existsRules  []_tt_mockBoolRule
+	existsCalls  []string
+	isFileRules  []_tt_mockBoolRule
+	isFileCalls  []string
+	isDirRules   []_tt_mockBoolRule
+	isDirCalls   []string
+	statRules    []_tt_mockStatRule
+	statCalls    []string
+
+	// process boundary
+	sleepActive    bool
+	sleepCalls     []int64
+	approvalRules  []_tt_mockBoolRule
+	approvalCalls  []string
 }
 
 var _tt_mock _tt_mockStateT
@@ -1061,6 +1198,330 @@ const mockSettersArgs = `func _tt_mockArgs(xs []string) {
 const mockSettersStdin = `func _tt_mockReadStdin(s string) {
 	v := s
 	_tt_mock.stdinOverride = &v
+}
+
+`
+
+// --- write-side filesystem mocks ------------------------------------------
+//
+// Each dispatcher: in test mode, the call is always recorded (so
+// mockXCalls() can observe call counts even when no rule has fired).
+// If any rule has been registered for this builtin, only matching
+// paths are accepted (silently — the return is void); a non-matching
+// call panics with _tt_testFailure so the test fails fast.
+//
+// With no rule registered the real implementation runs unchanged,
+// matching the behaviour of the read-side strict mocks (exec / fetch
+// / readFile).
+
+const dispatcherWriteFileTest = `func _tt_writeFile(path, content string) {
+	_tt_mock.writeFileCalls = append(_tt_mock.writeFileCalls, path)
+	_tt_mock.writeFileContents = append(_tt_mock.writeFileContents, content)
+	if len(_tt_mock.writeFileRules) > 0 {
+		for _, r := range _tt_mock.writeFileRules {
+			if r.pat.MatchString(path) {
+				return
+			}
+		}
+		panic(_tt_testFailure{msg: "writeFile: no mock matched: " + path})
+	}
+	_tt_writeFile_real(path, content)
+}
+
+`
+
+const dispatcherAppendFileTest = `func _tt_appendFile(path, content string) {
+	_tt_mock.appendFileCalls = append(_tt_mock.appendFileCalls, path)
+	_tt_mock.appendFileContents = append(_tt_mock.appendFileContents, content)
+	if len(_tt_mock.appendFileRules) > 0 {
+		for _, r := range _tt_mock.appendFileRules {
+			if r.pat.MatchString(path) {
+				return
+			}
+		}
+		panic(_tt_testFailure{msg: "appendFile: no mock matched: " + path})
+	}
+	_tt_appendFile_real(path, content)
+}
+
+`
+
+const dispatcherRemoveFileTest = `func _tt_removeFile(path string) {
+	_tt_mock.removeFileCalls = append(_tt_mock.removeFileCalls, path)
+	if len(_tt_mock.removeFileRules) > 0 {
+		for _, r := range _tt_mock.removeFileRules {
+			if r.pat.MatchString(path) {
+				return
+			}
+		}
+		panic(_tt_testFailure{msg: "removeFile: no mock matched: " + path})
+	}
+	_tt_removeFile_real(path)
+}
+
+`
+
+const dispatcherMkdirTest = `func _tt_mkdir(path string) {
+	_tt_mock.mkdirCalls = append(_tt_mock.mkdirCalls, path)
+	if len(_tt_mock.mkdirRules) > 0 {
+		for _, r := range _tt_mock.mkdirRules {
+			if r.pat.MatchString(path) {
+				return
+			}
+		}
+		panic(_tt_testFailure{msg: "mkdir: no mock matched: " + path})
+	}
+	_tt_mkdir_real(path)
+}
+
+`
+
+const dispatcherListDirTest = `func _tt_listDir(path string) []string {
+	_tt_mock.listDirCalls = append(_tt_mock.listDirCalls, path)
+	if len(_tt_mock.listDirRules) > 0 {
+		for _, r := range _tt_mock.listDirRules {
+			if r.pat.MatchString(path) {
+				out := make([]string, len(r.entries))
+				copy(out, r.entries)
+				return out
+			}
+		}
+		panic(_tt_testFailure{msg: "listDir: no mock matched: " + path})
+	}
+	return _tt_listDir_real(path)
+}
+
+`
+
+const dispatcherExistsTest = `func _tt_exists(path string) bool {
+	_tt_mock.existsCalls = append(_tt_mock.existsCalls, path)
+	if len(_tt_mock.existsRules) > 0 {
+		for _, r := range _tt_mock.existsRules {
+			if r.pat.MatchString(path) {
+				return r.value
+			}
+		}
+		panic(_tt_testFailure{msg: "exists: no mock matched: " + path})
+	}
+	return _tt_exists_real(path)
+}
+
+`
+
+const dispatcherIsFileTest = `func _tt_isFile(path string) bool {
+	_tt_mock.isFileCalls = append(_tt_mock.isFileCalls, path)
+	if len(_tt_mock.isFileRules) > 0 {
+		for _, r := range _tt_mock.isFileRules {
+			if r.pat.MatchString(path) {
+				return r.value
+			}
+		}
+		panic(_tt_testFailure{msg: "isFile: no mock matched: " + path})
+	}
+	return _tt_isFile_real(path)
+}
+
+`
+
+const dispatcherIsDirTest = `func _tt_isDir(path string) bool {
+	_tt_mock.isDirCalls = append(_tt_mock.isDirCalls, path)
+	if len(_tt_mock.isDirRules) > 0 {
+		for _, r := range _tt_mock.isDirRules {
+			if r.pat.MatchString(path) {
+				return r.value
+			}
+		}
+		panic(_tt_testFailure{msg: "isDir: no mock matched: " + path})
+	}
+	return _tt_isDir_real(path)
+}
+
+`
+
+const dispatcherStatTest = `func _tt_stat(path string) Tt_FileInfo {
+	_tt_mock.statCalls = append(_tt_mock.statCalls, path)
+	if len(_tt_mock.statRules) > 0 {
+		for _, r := range _tt_mock.statRules {
+			if r.pat.MatchString(path) {
+				return r.info
+			}
+		}
+		panic(_tt_testFailure{msg: "stat: no mock matched: " + path})
+	}
+	return _tt_stat_real(path)
+}
+
+`
+
+const dispatcherSleepTest = `func _tt_sleep(secs int64) {
+	_tt_mock.sleepCalls = append(_tt_mock.sleepCalls, secs)
+	if _tt_mock.sleepActive {
+		return
+	}
+	time.Sleep(time.Duration(secs) * time.Second)
+}
+
+`
+
+const dispatcherApprovalTest = `func _tt_approval(prompt string) bool {
+	_tt_mock.approvalCalls = append(_tt_mock.approvalCalls, prompt)
+	if len(_tt_mock.approvalRules) > 0 {
+		for _, r := range _tt_mock.approvalRules {
+			if r.pat.MatchString(prompt) {
+				return r.value
+			}
+		}
+		panic(_tt_testFailure{msg: "approval: no mock matched: " + prompt})
+	}
+	return _tt_approval_real(prompt)
+}
+
+`
+
+// --- write-side mock setters ----------------------------------------------
+
+const mockSettersWriteFile = `func _tt_mockWriteFile(pat string) {
+	_tt_mock.writeFileRules = append(_tt_mock.writeFileRules, _tt_mockPatRule{pat: regexp.MustCompile(pat)})
+}
+
+func _tt_mockWriteFileCalls() []string {
+	out := make([]string, len(_tt_mock.writeFileCalls))
+	copy(out, _tt_mock.writeFileCalls)
+	return out
+}
+
+func _tt_mockWriteFileContents() []string {
+	out := make([]string, len(_tt_mock.writeFileContents))
+	copy(out, _tt_mock.writeFileContents)
+	return out
+}
+
+`
+
+const mockSettersAppendFile = `func _tt_mockAppendFile(pat string) {
+	_tt_mock.appendFileRules = append(_tt_mock.appendFileRules, _tt_mockPatRule{pat: regexp.MustCompile(pat)})
+}
+
+func _tt_mockAppendFileCalls() []string {
+	out := make([]string, len(_tt_mock.appendFileCalls))
+	copy(out, _tt_mock.appendFileCalls)
+	return out
+}
+
+func _tt_mockAppendFileContents() []string {
+	out := make([]string, len(_tt_mock.appendFileContents))
+	copy(out, _tt_mock.appendFileContents)
+	return out
+}
+
+`
+
+const mockSettersRemoveFile = `func _tt_mockRemoveFile(pat string) {
+	_tt_mock.removeFileRules = append(_tt_mock.removeFileRules, _tt_mockPatRule{pat: regexp.MustCompile(pat)})
+}
+
+func _tt_mockRemoveFileCalls() []string {
+	out := make([]string, len(_tt_mock.removeFileCalls))
+	copy(out, _tt_mock.removeFileCalls)
+	return out
+}
+
+`
+
+const mockSettersMkdir = `func _tt_mockMkdir(pat string) {
+	_tt_mock.mkdirRules = append(_tt_mock.mkdirRules, _tt_mockPatRule{pat: regexp.MustCompile(pat)})
+}
+
+func _tt_mockMkdirCalls() []string {
+	out := make([]string, len(_tt_mock.mkdirCalls))
+	copy(out, _tt_mock.mkdirCalls)
+	return out
+}
+
+`
+
+const mockSettersListDir = `func _tt_mockListDir(pat string, entries []string) {
+	cp := make([]string, len(entries))
+	copy(cp, entries)
+	_tt_mock.listDirRules = append(_tt_mock.listDirRules, _tt_mockListDirRule{pat: regexp.MustCompile(pat), entries: cp})
+}
+
+func _tt_mockListDirCalls() []string {
+	out := make([]string, len(_tt_mock.listDirCalls))
+	copy(out, _tt_mock.listDirCalls)
+	return out
+}
+
+`
+
+const mockSettersExists = `func _tt_mockExists(pat string, value bool) {
+	_tt_mock.existsRules = append(_tt_mock.existsRules, _tt_mockBoolRule{pat: regexp.MustCompile(pat), value: value})
+}
+
+func _tt_mockExistsCalls() []string {
+	out := make([]string, len(_tt_mock.existsCalls))
+	copy(out, _tt_mock.existsCalls)
+	return out
+}
+
+`
+
+const mockSettersIsFile = `func _tt_mockIsFile(pat string, value bool) {
+	_tt_mock.isFileRules = append(_tt_mock.isFileRules, _tt_mockBoolRule{pat: regexp.MustCompile(pat), value: value})
+}
+
+func _tt_mockIsFileCalls() []string {
+	out := make([]string, len(_tt_mock.isFileCalls))
+	copy(out, _tt_mock.isFileCalls)
+	return out
+}
+
+`
+
+const mockSettersIsDir = `func _tt_mockIsDir(pat string, value bool) {
+	_tt_mock.isDirRules = append(_tt_mock.isDirRules, _tt_mockBoolRule{pat: regexp.MustCompile(pat), value: value})
+}
+
+func _tt_mockIsDirCalls() []string {
+	out := make([]string, len(_tt_mock.isDirCalls))
+	copy(out, _tt_mock.isDirCalls)
+	return out
+}
+
+`
+
+const mockSettersStat = `func _tt_mockStat(pat string, info Tt_FileInfo) {
+	_tt_mock.statRules = append(_tt_mock.statRules, _tt_mockStatRule{pat: regexp.MustCompile(pat), info: info})
+}
+
+func _tt_mockStatCalls() []string {
+	out := make([]string, len(_tt_mock.statCalls))
+	copy(out, _tt_mock.statCalls)
+	return out
+}
+
+`
+
+const mockSettersSleep = `func _tt_mockSleep() {
+	_tt_mock.sleepActive = true
+}
+
+func _tt_mockSleepCalls() []int64 {
+	out := make([]int64, len(_tt_mock.sleepCalls))
+	copy(out, _tt_mock.sleepCalls)
+	return out
+}
+
+`
+
+const mockSettersApproval = `func _tt_mockApproval(pat string, value bool) {
+	_tt_mock.approvalRules = append(_tt_mock.approvalRules, _tt_mockBoolRule{pat: regexp.MustCompile(pat), value: value})
+}
+
+func _tt_mockApprovalCalls() []string {
+	out := make([]string, len(_tt_mock.approvalCalls))
+	copy(out, _tt_mock.approvalCalls)
+	return out
 }
 
 `

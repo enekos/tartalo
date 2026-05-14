@@ -68,7 +68,7 @@ Constraints in v0:
 - Numbers: integer literals only in v0 (`42`, `-3`).
 - Strings: double-quoted, with `\n \t \\ \" \$` escapes and `${expr}` interpolation.
 - Command literals: backticks, e.g. `` `ls -1` ``. Substitutes to a `string` (stdout, trailing newline trimmed).
-- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `while`, `break`, `continue`, `match`, `type`, `import`, `export`, `test`, `defer`, `parallel`, `task`, `tool`, `agent`, `as`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
+- Keywords: `let`, `const`, `func`, `return`, `if`, `else`, `for`, `in`, `while`, `break`, `continue`, `match`, `type`, `import`, `export`, `test`, `defer`, `parallel`, `task`, `as`, `null`, `true`, `false`, `string`, `number`, `float`, `bool`, `void`.
 
 ## Types (v0)
 
@@ -592,7 +592,7 @@ to shared locals would race — so the language forbids both.
 ## Spawn and channels
 
 `parallel { task { ... } }` is the structured-concurrency primitive — every
-task joins before the block returns. For long-lived agents that outlive a
+task joins before the block returns. For long-lived workers that outlive a
 single block and communicate with each other or with the spawning function,
 v1 adds `spawn` and typed channels.
 
@@ -617,9 +617,9 @@ func main(): void {
 
 ### `spawn`
 
-`spawn fn(args)` starts a new agent — a function call that runs
+`spawn fn(args)` starts a new worker — a function call that runs
 concurrently with its caller. The arguments are evaluated in the spawning
-scope before the agent starts, then captured into the new context. Spawn
+scope before the worker starts, then captured into the new context. Spawn
 is a statement; it has no value.
 
 Rules (enforced by the checker):
@@ -629,10 +629,10 @@ Rules (enforced by the checker):
 - Generic functions cannot be spawned in v1.
 - `spawn` is only valid inside a function body.
 
-`waitAll()` blocks until every agent spawned by the program has returned.
-v1 has no per-agent handle, so you can only join them all at once. Pair
+`waitAll()` blocks until every worker spawned by the program has returned.
+v1 has no per-worker handle, so you can only join them all at once. Pair
 `spawn` with `waitAll()` (or with channel-driven coordination) so the
-program doesn't exit while agents are still running.
+program doesn't exit while workers are still running.
 
 ### `chan[T]`
 
@@ -647,7 +647,7 @@ optionals, and maps are not allowed as channel element types in v1.
 | `send(ch, v)` | send a value (blocks if the buffer is full on native) |
 | `let m: string? = recv(ch)` | receive; `null` after close-and-drained |
 | `closeChan(ch)` | signal "no more sends" |
-| `waitAll()` | join every spawned agent |
+| `waitAll()` | join every spawned worker |
 
 `chan()` requires a typed context — the LHS annotation supplies `T`, just
 like `mapNew()` for maps. The element type cannot be inferred from
@@ -694,7 +694,7 @@ a viable sh lowering, v1 sticks to one-channel-at-a-time `recv`. Workarounds:
 
 - For "either of two channels", merge them at the producer side onto a
   single channel and tag each message.
-- For timeouts, `spawn` an agent that sends a sentinel after `sleep(n)`,
+- For timeouts, `spawn` a worker that sends a sentinel after `sleep(n)`,
   then `recv` from the merged channel.
 
 ## Result and the `?` operator
@@ -800,7 +800,7 @@ A command in statement position runs for side effects:
 - `len(s | T[]): number` — UTF-8 codepoint (rune) count for strings; element
   count for arrays. For raw byte length use `byteLen`.
 - `env(name: string): string?` — read env var (`null` if unset, empty string if set to `""`).
-  When invoked via `tartalo run` / `test` / `eval` / `bench`, a `.env` file
+  When invoked via `tartalo run` / `test` / `bench`, a `.env` file
   in the same directory as the entry `.tt` is auto-loaded into the child
   process's environment before execution; existing env vars take precedence
   over `.env` entries. Supported syntax: `KEY=VALUE` lines, optional
@@ -965,7 +965,7 @@ These builtins back the `spawn` statement and `chan[T]` type. See the
   closed and drained
 - `closeChan(ch: chan[T]): void` — signal "no more sends"; subsequent
   sends abort the script
-- `waitAll(): void` — block until every spawned agent has returned
+- `waitAll(): void` — block until every spawned worker has returned
 
 `T` must be a scalar primitive (`string`, `number`, `float`, `bool`)
 in v1.
@@ -1038,8 +1038,6 @@ is selected.
 
 ### v0 limitations
 
-- Generics on `tool` and `agent` declarations are rejected — those
-  carry compile-time schemas that must remain monomorphic.
 - No explicit type-argument syntax (`f<int>(x)`); inference only.
 - No bounded constraints — all type parameters are universally
   quantified. Operations that need a particular shape (arithmetic,
@@ -1119,224 +1117,78 @@ Mocks intercept calls to the side-effecting builtins so tests can run
 hermetically. Each mock setter is test-only (the checker rejects calls
 outside a `test` body) and per-test: each test starts with a clean slate.
 
+Four kinds of mock are bundled.
+
+**Processes** (`exec`, `execTimeout`, `sleep`):
+
 | Setter | Strict? | Behaviour |
 |---|---|---|
 | `mockExec(pat, resp: Process)` | yes | when `pat` (regex) matches the cmd, return `resp`; with mocks set, an unmatched call fails the test |
 | `mockExecCalls(): string[]` | — | cmds the SUT passed to `exec`/`execTimeout` during this test |
-| `mockFetch(pat, resp: Response)` | yes | regex over the URL, same shape as `mockExec` |
-| `mockFetchCalls(): string[]` | — | URLs the SUT passed to `fetch` during this test |
+| `mockSleep()` | — | makes every `sleep(n)` a no-op for this test; durations are still recorded |
+| `mockSleepCalls(): number[]` | — | seconds the SUT passed to `sleep()` (in call order) |
+
+**Filesystem — read side** (`readFile`, `listDir`, `exists`, `isFile`, `isDir`, `stat`, `readStdin`):
+
+| Setter | Strict? | Behaviour |
+|---|---|---|
 | `mockReadFile(pat, content: string)` | yes | regex over the path; matched call returns `content` |
 | `mockReadFileCalls(): string[]` | — | paths the SUT passed to `readFile` during this test |
+| `mockListDir(pat, entries: string[])` | yes | matched paths return `entries`; unmatched paths fail the test once any rule is set |
+| `mockListDirCalls(): string[]` | — | paths the SUT passed to `listDir` |
+| `mockExists(pat, value: bool)` | yes | replaces the answer of `exists()` for matching paths |
+| `mockExistsCalls(): string[]` | — | paths the SUT passed to `exists` |
+| `mockIsFile(pat, value: bool)` | yes | replaces the answer of `isFile()` |
+| `mockIsFileCalls(): string[]` | — | paths the SUT passed to `isFile` |
+| `mockIsDir(pat, value: bool)` | yes | replaces the answer of `isDir()` |
+| `mockIsDirCalls(): string[]` | — | paths the SUT passed to `isDir` |
+| `mockStat(pat, info: FileInfo)` | yes | matched paths return `info`; unmatched fail once any rule is set |
+| `mockStatCalls(): string[]` | — | paths the SUT passed to `stat` |
+| `mockReadStdin(s: string)` | no | replaces the result of `readStdin()` for this test |
+
+**Filesystem — write side** (`writeFile`, `appendFile`, `removeFile`, `mkdir`). All four void builtins share the same shape: registering a regex with `mockX(pat)` blocks real disk I/O on matching paths (the call is silently swallowed) and fails the test on an unmatched path. Recorders return the recorded path list; for the content-bearing builtins, a parallel array of the data the SUT tried to write is also exposed.
+
+| Setter | Strict? | Behaviour |
+|---|---|---|
+| `mockWriteFile(pat)` | yes | matching `writeFile()` calls are intercepted instead of hitting disk |
+| `mockWriteFileCalls(): string[]` | — | paths passed to `writeFile()` (in call order) |
+| `mockWriteFileContents(): string[]` | — | parallel array of contents passed to `writeFile()` |
+| `mockAppendFile(pat)` | yes | matching `appendFile()` calls are intercepted |
+| `mockAppendFileCalls(): string[]` | — | paths passed to `appendFile()` |
+| `mockAppendFileContents(): string[]` | — | parallel array of contents passed to `appendFile()` |
+| `mockRemoveFile(pat)` | yes | matching `removeFile()` calls are intercepted |
+| `mockRemoveFileCalls(): string[]` | — | paths passed to `removeFile()` |
+| `mockMkdir(pat)` | yes | matching `mkdir()` calls are intercepted |
+| `mockMkdirCalls(): string[]` | — | paths passed to `mkdir()` |
+
+**Network** (`fetch`, `fetchTimeout`, `fetchHeaders`, `postJson`, `postForm`, `request`):
+
+| Setter | Strict? | Behaviour |
+|---|---|---|
+| `mockFetch(pat, resp: Response)` | yes | regex over the URL — covers every fetch-family builtin |
+| `mockFetchCalls(): string[]` | — | URLs the SUT passed to `fetch`/`fetchTimeout`/`fetchHeaders`/`postJson`/`postForm`/`request` |
+
+**Ambient inputs** (`env`, `now`, `args`):
+
+| Setter | Strict? | Behaviour |
+|---|---|---|
 | `mockEnv(name, value: string?)` | no | replaces the value for `name` only; `null` simulates "unset"; other names fall through |
 | `mockNow(secs: number)` | no | freezes the clock so `now()` returns `secs` |
 | `mockArgs(xs: string[])` | no | replaces the result of `args()` for this test |
-| `mockReadStdin(s: string)` | no | replaces the result of `readStdin()` for this test |
 
-Strict-mode builtins (exec / fetch / readFile) fail the test on an
-unmatched real call once any rule has been registered for that builtin —
-preventing accidental network or filesystem hits.
+Strict-mode builtins fail the test on an unmatched real call once *any*
+rule has been registered for that builtin — preventing accidental
+network, subprocess, or filesystem hits. The fall-through builtins
+(`env`, `now`, `args`, `readStdin`, `sleep`) replace only what the test
+asks for and leave the rest of the program's behaviour unchanged.
 
 The native backend implements every mock listed above. The sh backend
 ships with the four name/value-style mocks (env, now, args, readStdin);
-exec, fetch, and readFile mocks abort at runtime with a clear "use
---target=native" message when reached.
+every other mock aborts at runtime with a clear "use --target=native"
+message when reached, so suites can still compile against both backends
+and pick the right target at run time.
 
-## Evals
-
-`eval "name" { ... }` declares an LLM accuracy/quality evaluation. It looks
-like a `test` block but the goal is different: instead of pass/fail
-assertions, an eval *records numeric metrics* about model output and prints
-a scorecard. The harness is built to keep the source readable as a spec —
-inputs, calls, and metrics live next to each other — and to keep the
-output skimmable.
-
-```tartalo
-type Case = {input: string, expected: string}
-
-eval "sentiment classification" {
-  let cases: Case[] = [
-    Case{input: "I love it",     expected: "positive"},
-    Case{input: "It's terrible", expected: "negative"},
-    Case{input: "It is okay",    expected: "neutral"},
-  ]
-
-  for c in cases {
-    let pred = lower(llm("One word — positive/negative/neutral: " + c.input))
-    score("exact_match", exactMatch(pred, c.expected))
-    score("contains",    containsScore(pred, [c.expected]))
-  }
-
-  expect("exact_match", 0.8)
-  expect("contains",    1.0)
-}
-```
-
-Output (with mocked LLM, three cases):
-
-```
-running 1 eval(s) in sentiment.tt
-
-✓ eval "sentiment classification"
-  ✓ exact_match  1.00  (3/3 above 0.80, mean of 3)
-  ✓ contains     1.00  (3/3 above 1.00, mean of 3)
-  3 sample(s) · 0s
-
-1 passed (1 total)
-```
-
-Run a file with `tartalo eval foo.tt`; pass a directory and `tartalo eval ./`
-walks it and runs every `.tt` containing at least one `eval` declaration.
-Evals are native-only — the harness uses Go's clock and sort, and most
-real evals call `llm()` (or some mocked variant) which compiles cleanly only
-on the native target. Sh builds silently skip eval declarations.
-
-#### Eval-only builtins
-
-These may only be called inside an `eval "..." { ... }` body.
-
-- `score(label: string, value: float): void` — append `value` to a labeled
-  bucket. Multiple calls with the same label accumulate; the harness reports
-  the mean. The second argument may be a `number` and is widened.
-- `expect(label: string, threshold: float): void` — at end of eval, assert
-  that `mean(label) >= threshold`. Emits a ✓/✗ row in the scorecard and
-  exits the binary non-zero if any expectation fails. Calling `expect` on
-  a label with no `score` samples fails.
-
-`eval` bodies inherit the test-builtin context: `check`, `assertEq`, `fail`,
-`skip`, and every mock setter (notably `mockLlm`) work the same way they do
-in `test` blocks. Use them to stub the LLM during development and to gate
-on per-sample preconditions.
-
-#### Scoring builtins
-
-Callable anywhere; especially useful in eval bodies. The float-returning
-ones land in `[0.0, 1.0]` so they compose with `score(...)` directly.
-
-**String-pair metrics**
-
-- `jaccard(a: string, b: string): float` — word-set Jaccard similarity.
-  Splits both strings on whitespace; comparison is byte-for-byte. Lowercase
-  the inputs (`jaccard(lower(a), lower(b))`) for case-folded matching.
-- `exactMatch(a: string, b: string): float` — `1.0` if `a == b`, else `0.0`.
-- `containsScore(text: string, terms: string[]): float` — fraction of `terms`
-  that occur as substrings in `text`. Empty `terms` returns `1.0`.
-- `f1Tokens(predicted: string, expected: string): float` — single-pair
-  token-level F1 (the SQuAD metric). Tokenises both strings on whitespace,
-  computes F1 over the resulting word sets.
-- `levenshtein(a: string, b: string): number` — raw Levenshtein edit
-  distance between two strings, counted in unicode codepoints (not bytes).
-  Returns `0` for equal strings, `len(a)` against the empty string, etc.
-- `levenshteinRatio(a: string, b: string): float` — Levenshtein normalised
-  to `[0.0, 1.0]` via `1 - dist / max(len)`. Equal strings score `1.0`.
-- `bleu(hypothesis: string, reference: string): float` — sentence-level
-  BLEU-4 with the standard brevity penalty and add-1 smoothing on each
-  n-gram precision. Useful for translation / open-ended generation evals.
-- `rougeL(hypothesis: string, reference: string): float` — F1 derived from
-  the longest-common-subsequence between the two token streams. Standard
-  for summarisation evals; insensitive to word order beyond the LCS.
-
-**Batch & vector metrics**
-
-- `f1Score(predicted: string[], expected: string[]): float` — element-wise
-  token-level F1 averaged across the two arrays. Mismatched lengths scale
-  by the longer side, so a missing prediction counts as a miss. Use when
-  you've collected many `(pred, ref)` pairs and want one number out.
-- `cosineSimilarity(a: float[], b: float[]): float` — cosine of the angle
-  between two embedding vectors. Returns `0.0` against an all-zero vector
-  rather than `NaN`. Lengths needn't match — extra components on the
-  longer vector contribute to its norm only.
-
-#### Output format
-
-The runner prints, per eval:
-
-- a `✓ eval "..."` / `✗ eval "..."` header
-- one row per metric label, sorted with gated metrics first:
-  - **gated** (covered by `expect`): `✓` or `✗`, label, mean, `(n above t, mean of N)`
-  - **ungated**: `·`, label, mean, `(mean of N)` (or `(no samples)`)
-- a sample-count + duration footer
-
-Followed by an aggregate summary line. Output goes to stdout; honours
-`NO_COLOR` and "stdout is not a TTY" the same way the test runner does.
-
-## Agent platform
-
-Tartalo doubles as an agent platform. The wedge: agents distributed as a
-single self-contained `.sh` (or native binary) — no `pip install`, no
-`node_modules`, no Docker. The shell is already the universal tool-calling
-protocol; tartalo gives it types, schemas, capability annotations, and
-replayable traces.
-
-### Tool & agent declarations
-
-```tartalo
-tool searchFiles(pattern: string): string {
-  desc("recursively grep the working tree for a pattern")
-  return exec("grep -rIn " + pattern + " .").stdout
-}
-
-agent assistant(question: string) uses (searchFiles): string !ai {
-  desc("answer a question, possibly using tools")
-  budget(5)
-  let prompt = "Tools: " + agentTools() + "\nQ: " + question
-  return llm(prompt)
-}
-```
-
-`tool` and `agent` parse identically to `func` — same parameter list, same
-return type, same body — but each is tagged in the AST so the codegen knows
-to register them in the schema table. The first lines of a tool/agent body
-may be `desc("...")` and `budget(N)` calls; these are pulled off as
-metadata, not executed.
-
-An optional `uses (toolA, toolB, ...)` clause sits between the parameter
-list and the return-type colon. It declares which tools the agent may
-invoke; `agentTools()` resolves to a JSON array of just those tools'
-schemas, suitable for prompt-injecting only the tools that are in scope.
-The checker rejects unknown names so a typo can't ship to runtime.
-
-`budget(N)` is enforced at runtime: each `llm()` call inside the agent body
-decrements an invocation-local counter, and the program aborts with a
-clear error on the (N+1)th call. The counter resets every time the agent
-is invoked.
-
-### Effect annotations
-
-Postfix `!effect` markers on the return type record what a function may do.
-Standard tags: `!ai !net !fs:read !fs:write !exec !io`. Effects are
-currently advisory — they appear in `toolSchemas()` and document intent.
-Future work will enforce them via a compile-time `--caps=` capability set.
-
-### Agent-platform builtins
-
-| Builtin | Type | Effect | Notes |
-|---|---|---|---|
-| `llm(prompt: string): string` | `(string) → string` | `!ai` | Dispatches on `$TARTALO_LLM_PROVIDER`. `kimi` (or `moonshot`) calls Moonshot's OpenAI-compatible chat/completions API using `$KIMI_API_KEY` (overridable via `$TARTALO_KIMI_BASE_URL` / `$TARTALO_KIMI_MODEL`, default `moonshot-v1-8k`). `gemini` calls Google's `generateContent` endpoint using `$GEMINI_API_KEY` sent as `X-goog-api-key` (overridable via `$TARTALO_GEMINI_BASE_URL` / `$TARTALO_GEMINI_MODEL`, default `gemini-2.5-flash`). Set `$TARTALO_LLM_STREAM=1` to switch the kimi path to SSE: deltas are mirrored to stderr as they arrive, and the assembled content is still what the call returns. Anything else pipes the prompt to `$TARTALO_LLM_CMD` (default `claude -p`). The shell target needs `curl` for the API paths; the native target uses Go's `net/http` directly. In test mode every call must be matched by `mockLlm` or the test fails. |
-| `approval(prompt: string): bool` | `(string) → bool` | `!io` | Prints prompt on stderr, reads y/n from `/dev/tty` (falls back to stdin). Returns true for y/Y/yes, else false. |
-| `trace(label: string, value: string): void` | `(string,string) → void` | `!fs:write` | Appends one NDJSON record `{ts, label, value}` to `$TARTALO_TRACE` if set; no-op otherwise. |
-| `spawnAgent(name: string, input: string): string` | `(string,string) → string` | inherits | Calls a declared agent by name through a compile-time-built `case` dispatcher. No eval, no string-to-function lookup. Aborts with a clear error on unknown names. Restricted to `(string) → string` agents. |
-| `callTool(name: string, input: string): string` | `(string,string) → string` | inherits | Same shape as `spawnAgent` but for tools. Useful when an LLM response names the tool to invoke. Restricted to `(string) → string` tools. |
-| `agentTools(): string` | `() → string` | none | Returns a JSON array of the schemas of the tools declared in the surrounding agent's `uses (...)` clause; returns `"[]"` outside an agent context. Resolved at compile time per call site. |
-| `toolSchemas(): string` | `() → string` | none | Returns a static JSON string with one entry per tool/agent: `{name, kind, params:[{name,type}], returns, description?, effects?, budget?, tools?}`. Built at compile time, stored as a sh constant / Go `const` — every call is O(1). |
-| `mockLlm(pat, resp: string): void` | `(string,string) → void` | test-only | Registers a regex → response rule for `llm()` during a test. |
-| `mockLlmCalls(): string[]` | `() → string[]` | test-only | Prompts seen this run, in order. |
-
-### Tracing & replay
-
-Setting `TARTALO_TRACE=path` at runtime makes every `trace(...)` call emit
-one NDJSON record to that file. Combined with the existing mock family,
-this gives you reproducible agent runs: capture once, replay deterministically
-under `--target=native` with `mockExec` / `mockFetch` / `mockLlm` rules
-filling in for the recorded calls.
-
-### Capabilities (future)
-
-The annotation half of capabilities ships in v1. Enforcement (`--caps=net`
-refusing to compile a program whose effects exceed the cap set) is on
-deck — the call-graph traversal lives in the checker; what's missing is
-the propagation pass and the CLI hook.
-
-### Predeclared types
+## Predeclared types
 
 ```tartalo
 type Response = {

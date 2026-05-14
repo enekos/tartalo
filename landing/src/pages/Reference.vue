@@ -91,7 +91,7 @@
             <li>Numbers: integer literals only in v0 (<code>42</code>, <code>-3</code>).</li>
             <li>Strings: double-quoted, with <code>\n \t \\ \" \$</code> escapes and <code>${'${expr}'}</code> interpolation.</li>
             <li>Command literals: backticks, e.g. <code>`ls -1`</code>. Substitutes to a <code>string</code> (stdout, trailing newline trimmed).</li>
-            <li>Keywords: <code>let</code>, <code>const</code>, <code>func</code>, <code>return</code>, <code>if</code>, <code>else</code>, <code>for</code>, <code>in</code>, <code>match</code>, <code>type</code>, <code>import</code>, <code>export</code>, <code>test</code>, <code>defer</code>, <code>parallel</code>, <code>task</code>, <code>spawn</code>, <code>tool</code>, <code>agent</code>, <code>as</code>, <code>null</code>, <code>true</code>, <code>false</code>, <code>string</code>, <code>number</code>, <code>float</code>, <code>bool</code>, <code>void</code>.</li>
+            <li>Keywords: <code>let</code>, <code>const</code>, <code>func</code>, <code>return</code>, <code>if</code>, <code>else</code>, <code>for</code>, <code>in</code>, <code>match</code>, <code>type</code>, <code>import</code>, <code>export</code>, <code>test</code>, <code>defer</code>, <code>parallel</code>, <code>task</code>, <code>spawn</code>, <code>as</code>, <code>null</code>, <code>true</code>, <code>false</code>, <code>string</code>, <code>number</code>, <code>float</code>, <code>bool</code>, <code>void</code>.</li>
           </ul>
         </section>
 
@@ -381,7 +381,7 @@
           <h2>Spawn and channels</h2>
           <p>
             <code>parallel</code> is the structured-concurrency primitive — it
-            joins every task before the block returns. For long-lived agents
+            joins every task before the block returns. For long-lived workers
             that outlive a single block and communicate by message passing,
             v1 adds <code>spawn fn(args)</code> and typed
             <code>chan[T]</code> mailboxes. The element type
@@ -397,7 +397,7 @@
             <code>recv</code> on a closed-and-drained channel returns
             <code>null</code>, so consumers loop until the optional becomes
             <code>null</code> and then break. <code>waitAll()</code> blocks
-            until every spawned agent has returned.
+            until every spawned worker has returned.
           </p>
           <p>
             Codegen: sh stores each channel as a temp directory holding a
@@ -470,7 +470,6 @@
             <li>No explicit type-argument syntax (<code>f&lt;int&gt;(x)</code>); inference only.</li>
             <li>No bounded constraints — all type parameters are universally quantified.</li>
             <li>No generic record or sum types.</li>
-            <li>Generics on <code>tool</code> and <code>agent</code> declarations are rejected.</li>
           </ul>
         </section>
 
@@ -781,8 +780,6 @@ const toc = [
   { id: "json", label: "json", sub: true },
   { id: "test", label: "test framework", sub: true },
   { id: "mocks", label: "mocks", sub: true },
-  { id: "evals", label: "evals", sub: true },
-  { id: "scoring", label: "scoring metrics", sub: true },
   { id: ids.operators, label: "Operators" },
   { id: ids.model, label: "Compilation model" },
 ];
@@ -921,7 +918,7 @@ const builtins = [
       { sig: "send(ch: chan[T], v: T): void", desc: "send a message; on native this can block if the per-channel buffer (16384) is full" },
       { sig: "recv(ch: chan[T]): T?", desc: "receive a message; returns <code>null</code> once the channel is closed and drained" },
       { sig: "closeChan(ch: chan[T]): void", desc: 'signal "no more sends"; subsequent sends abort the script' },
-      { sig: "waitAll(): void", desc: "block until every spawned agent has returned" },
+      { sig: "waitAll(): void", desc: "block until every spawned worker has returned" },
     ],
   },
   {
@@ -963,46 +960,40 @@ const builtins = [
     id: "mocks",
     title: "Mocks",
     intro:
-      "Mocks intercept calls to side-effecting builtins so tests can run hermetically. Each setter is test-only and per-test (state resets between tests automatically). Strict-mode setters (<code>mockExec</code>, <code>mockFetch</code>, <code>mockReadFile</code>) fail the test on an unmatched real call once any rule has been registered. Native supports the full set; the sh backend supports the four name/value-style mocks (env / now / args / readStdin).",
+      "Mocks intercept calls to side-effecting builtins so tests can run hermetically. Each setter is test-only and per-test (state resets between tests automatically). Strict-mode setters fail the test on an unmatched real call once any rule has been registered — covering processes, filesystem, and network so an accidental shell-out, write to <code>/etc</code>, or HTTP request can't slip through. Native supports the full set; the sh backend supports the four ambient mocks (env / now / args / readStdin) and aborts other mocks at runtime with a clear &quot;requires <code>--target=native</code>&quot; message.",
     items: [
-      { sig: "mockExec(pat: string, resp: Process): void", desc: "regex over the cmd; matched call returns <code>resp</code>; <em>strict</em>" },
+      { sig: "mockExec(pat: string, resp: Process): void", desc: "regex over the cmd; matched call returns <code>resp</code>; <em>strict</em>. Also covers <code>execTimeout</code>." },
       { sig: "mockExecCalls(): string[]", desc: "every cmd the SUT passed to <code>exec</code>/<code>execTimeout</code> during this test" },
-      { sig: "mockFetch(pat: string, resp: Response): void", desc: "regex over the URL; matched call returns <code>resp</code>; <em>strict</em>" },
-      { sig: "mockFetchCalls(): string[]", desc: "every URL the SUT passed to <code>fetch</code> during this test" },
+      { sig: "mockSleep(): void", desc: "make every <code>sleep(n)</code> a no-op for this test; durations are still recorded" },
+      { sig: "mockSleepCalls(): number[]", desc: "seconds the SUT passed to <code>sleep()</code>, in call order" },
+      { sig: "mockFetch(pat: string, resp: Response): void", desc: "regex over the URL — one rule covers <code>fetch</code>/<code>fetchTimeout</code>/<code>fetchHeaders</code>/<code>postJson</code>/<code>postForm</code>/<code>request</code>; <em>strict</em>" },
+      { sig: "mockFetchCalls(): string[]", desc: "every URL the SUT passed to a fetch-family builtin during this test" },
       { sig: "mockReadFile(pat: string, content: string): void", desc: "regex over the path; matched call returns <code>content</code>; <em>strict</em>" },
       { sig: "mockReadFileCalls(): string[]", desc: "every path the SUT passed to <code>readFile</code> during this test" },
+      { sig: "mockListDir(pat: string, entries: string[]): void", desc: "regex over the path; matched call returns <code>entries</code>; <em>strict</em>" },
+      { sig: "mockListDirCalls(): string[]", desc: "paths the SUT passed to <code>listDir()</code>" },
+      { sig: "mockExists(pat: string, value: bool): void", desc: "regex over the path; matched call returns <code>value</code> from <code>exists()</code>; <em>strict</em>" },
+      { sig: "mockExistsCalls(): string[]", desc: "paths the SUT passed to <code>exists()</code>" },
+      { sig: "mockIsFile(pat: string, value: bool): void", desc: "same shape as <code>mockExists</code>, for <code>isFile()</code>" },
+      { sig: "mockIsFileCalls(): string[]", desc: "paths the SUT passed to <code>isFile()</code>" },
+      { sig: "mockIsDir(pat: string, value: bool): void", desc: "same shape as <code>mockExists</code>, for <code>isDir()</code>" },
+      { sig: "mockIsDirCalls(): string[]", desc: "paths the SUT passed to <code>isDir()</code>" },
+      { sig: "mockStat(pat: string, info: FileInfo): void", desc: "matched paths return <code>info</code> from <code>stat()</code> without touching the real filesystem; <em>strict</em>" },
+      { sig: "mockStatCalls(): string[]", desc: "paths the SUT passed to <code>stat()</code>" },
+      { sig: "mockWriteFile(pat: string): void", desc: "matching <code>writeFile()</code> calls are intercepted instead of hitting disk; <em>strict</em>" },
+      { sig: "mockWriteFileCalls(): string[]", desc: "paths the SUT passed to <code>writeFile()</code>, in call order" },
+      { sig: "mockWriteFileContents(): string[]", desc: "parallel array of contents the SUT tried to write" },
+      { sig: "mockAppendFile(pat: string): void", desc: "same shape as <code>mockWriteFile</code>, for <code>appendFile()</code>" },
+      { sig: "mockAppendFileCalls(): string[]", desc: "paths the SUT passed to <code>appendFile()</code>" },
+      { sig: "mockAppendFileContents(): string[]", desc: "parallel contents the SUT tried to append" },
+      { sig: "mockRemoveFile(pat: string): void", desc: "block matching <code>removeFile()</code> calls from touching the real filesystem; <em>strict</em>" },
+      { sig: "mockRemoveFileCalls(): string[]", desc: "paths the SUT passed to <code>removeFile()</code>" },
+      { sig: "mockMkdir(pat: string): void", desc: "block matching <code>mkdir()</code> calls; <em>strict</em>" },
+      { sig: "mockMkdirCalls(): string[]", desc: "paths the SUT passed to <code>mkdir()</code>" },
       { sig: "mockEnv(name: string, value: string?): void", desc: "override a single env name; <code>null</code> simulates &quot;unset&quot;; other names fall through" },
       { sig: "mockNow(secs: number): void", desc: "freeze the clock so <code>now()</code> returns <code>secs</code>" },
       { sig: "mockArgs(xs: string[]): void", desc: "replace the result of <code>args()</code> for this test" },
       { sig: "mockReadStdin(s: string): void", desc: "replace the result of <code>readStdin()</code> for this test" },
-    ],
-  },
-  {
-    id: "evals",
-    title: "Evals",
-    intro:
-      "<code>eval \"...\" { ... }</code> is the LLM-accuracy sibling of <code>test</code>. Bodies record numeric metrics with <code>score(label, value)</code> and gate the eval on the mean with <code>expect(label, threshold)</code>. The runner prints a per-eval scorecard — gated metrics first with ✓/✗, ungated metrics with ·, plus sample count and duration — and exits non-zero on any failed gate. Eval bodies inherit the test-builtin context so <code>check</code>, <code>fail</code>, and every mock setter (notably <code>mockLlm</code>) work the same way they do in <code>test</code> blocks. Native target only — invoke with <code>tartalo eval &lt;file-or-dir&gt;</code>; sh builds skip eval declarations silently.",
-    items: [
-      { sig: "score(label: string, value: float): void", desc: "append <code>value</code> to a labeled bucket; the runner reports the mean across all calls with the same label. Accepts a <code>number</code> for <code>value</code> and widens." },
-      { sig: "expect(label: string, threshold: float): void", desc: "at end-of-eval, assert <code>mean(label) ≥ threshold</code>. Fails the eval (and the binary's exit code) if the mean is lower or no samples were recorded." },
-    ],
-  },
-  {
-    id: "scoring",
-    title: "Scoring metrics",
-    intro:
-      "Callable anywhere; especially useful inside <code>eval</code> bodies. The float-returning ones land in <code>[0.0, 1.0]</code> so they compose with <code>score(...)</code> directly. Pick the metric that matches the task: classification or short-form QA → <code>exactMatch</code> / <code>f1Tokens</code>; fuzzy text → <code>jaccard</code> / <code>levenshteinRatio</code>; generation / translation → <code>bleu</code>; summarisation → <code>rougeL</code>; embeddings → <code>cosineSimilarity</code>.",
-    items: [
-      { sig: "jaccard(a: string, b: string): float", desc: "word-set Jaccard similarity. Splits both strings on whitespace; comparison is byte-for-byte. Lowercase the inputs (<code>jaccard(lower(a), lower(b))</code>) for case-folded matching." },
-      { sig: "exactMatch(a: string, b: string): float", desc: "<code>1.0</code> if <code>a == b</code>, else <code>0.0</code>." },
-      { sig: "containsScore(text: string, terms: string[]): float", desc: "fraction of <code>terms</code> that occur as substrings in <code>text</code>. Empty <code>terms</code> returns <code>1.0</code>." },
-      { sig: "f1Tokens(predicted: string, expected: string): float", desc: "single-pair token-level F1 (the SQuAD metric). Tokenises both strings on whitespace; F1 over the resulting word sets." },
-      { sig: "f1Score(predicted: string[], expected: string[]): float", desc: "element-wise token F1 averaged across the two arrays. Mismatched lengths scale by the longer side. Use when you've collected many <code>(pred, ref)</code> pairs and want one number out." },
-      { sig: "levenshtein(a: string, b: string): number", desc: "raw edit distance, counted in unicode codepoints (not bytes). Returns <code>0</code> for equal strings, <code>len(a)</code> against the empty string." },
-      { sig: "levenshteinRatio(a: string, b: string): float", desc: "Levenshtein normalised to <code>[0.0, 1.0]</code> via <code>1 - dist / max(len)</code>. Equal strings score <code>1.0</code>." },
-      { sig: "bleu(hypothesis: string, reference: string): float", desc: "sentence-level BLEU-4 with the standard brevity penalty and add-1 smoothing on each n-gram precision. Useful for translation / open-ended generation." },
-      { sig: "rougeL(hypothesis: string, reference: string): float", desc: "F1 derived from the longest common subsequence between the two token streams. Standard for summarisation; insensitive to word order beyond the LCS." },
-      { sig: "cosineSimilarity(a: float[], b: float[]): float", desc: "cosine of the angle between two embedding vectors. Returns <code>0.0</code> against an all-zero vector rather than <code>NaN</code>. Lengths needn't match — extras on the longer vector contribute to its norm only." },
     ],
   },
 ];
@@ -1192,7 +1183,7 @@ func main(): void {
     if m == null { break }       // null = closed and drained
     echo(m!)
   }
-  waitAll()                       // join every spawned agent
+  waitAll()                       // join every spawned worker
 }`;
 
 const codeResult = `type IntResult = Ok{value: number} | Err{error: string}

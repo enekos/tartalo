@@ -18,7 +18,17 @@ Lower is better.
 - Binary size: native_binary_total_kb
 
 ## Benchmark
-`go run scripts/bench_runner.go`
+```
+go run scripts/bench_runner.go suite -format metric   # primary: composite_score_ms
+go run scripts/bench_runner.go micro -format metric   # Go-level micro-benchmarks
+go run scripts/bench_runner.go cross -format metric   # sh/native parity + speed
+go run scripts/bench_runner.go all   -format metric   # everything
+```
+
+`make bench-suite` / `make bench-micro` / `make bench-cross` / `make bench-all`
+are equivalent shortcuts. `-format human` (the default) prints a skimmable
+table; `-format metric` emits the `METRIC key=value` lines the autoresearch
+pipeline consumes; `-format json` dumps one JSON document per mode.
 
 ## Workloads
 - perf: fib(10), arrays, strings, records (from scripts/bench_perf.tt)
