@@ -2357,8 +2357,12 @@ func (c *Checker) checkCall(e *ast.CallExpr) types.Type {
 			return c.checkMapCall(e)
 		case "filter":
 			return c.checkFilterCall(e)
-		case "reduce":
+		case "reduce", "fold":
 			return c.checkReduceCall(e)
+		case "zip":
+			return c.checkZipCall(e)
+		case "awk":
+			return c.checkAwkCall(e)
 		case "count":
 			return c.checkCountCall(e)
 		case "unique":
@@ -3294,6 +3298,81 @@ func (c *Checker) checkReduceCall(e *ast.CallExpr) types.Type {
 	return fn.Result
 }
 
+// checkZipCall validates `zip(xs: T[], ys: U[], f: func(T, U): V): V[]`.
+// This is zipWith form (no tuple type in v1). Result length is min(|xs|,|ys|).
+func (c *Checker) checkZipCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 3 {
+		c.errorf(e.LParenPos, "zip expects 3 arguments (xs, ys, function), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	xt := c.checkExpr(e.Args[0])
+	yt := c.checkExpr(e.Args[1])
+	ft := c.checkExpr(e.Args[2])
+	xa, ok := xt.(*types.Array)
+	if !ok {
+		c.errorf(e.Args[0].Pos(), "zip: first argument must be an array, got %s", types.Format(xt))
+		return types.Invalid
+	}
+	ya, ok := yt.(*types.Array)
+	if !ok {
+		c.errorf(e.Args[1].Pos(), "zip: second argument must be an array, got %s", types.Format(yt))
+		return types.Invalid
+	}
+	fn, ok := ft.(*types.Func)
+	if !ok {
+		c.errorf(e.Args[2].Pos(), "zip: third argument must be a function, got %s", types.Format(ft))
+		return types.Invalid
+	}
+	if len(fn.Params) != 2 || !types.Equal(fn.Params[0], xa.Elem) || !types.Equal(fn.Params[1], ya.Elem) {
+		c.errorf(e.Args[2].Pos(), "zip: function must take (%s, %s)",
+			types.Format(xa.Elem), types.Format(ya.Elem))
+		return types.Invalid
+	}
+	if !c.isAllowedRecordFieldType(fn.Result) && fn.Result != types.Float {
+		c.errorf(e.Args[2].Pos(), "zip: function result must be a primitive, got %s", types.Format(fn.Result))
+		return types.Invalid
+	}
+	return &types.Array{Elem: fn.Result}
+}
+
+// checkAwkCall validates `awk(xs: float[] | number[], expr: <string literal>): float[]`.
+// The expression must be a literal string with no interpolation so it can be
+// embedded directly into the generated awk program; runtime-built code can't
+// be safely passed to awk. Inside the expression, the binding `x` refers to
+// the current element. The result is always float[] (awk arithmetic).
+func (c *Checker) checkAwkCall(e *ast.CallExpr) types.Type {
+	if len(e.Args) != 2 {
+		c.errorf(e.LParenPos, "awk expects 2 arguments (array, expression), got %d", len(e.Args))
+		for _, a := range e.Args {
+			c.checkExpr(a)
+		}
+		return types.Invalid
+	}
+	at := c.checkExpr(e.Args[0])
+	arr, ok := at.(*types.Array)
+	if !ok || (arr.Elem != types.Float && arr.Elem != types.Number) {
+		c.errorf(e.Args[0].Pos(), "awk: first argument must be float[] or number[], got %s", types.Format(at))
+		c.checkExpr(e.Args[1])
+		return types.Invalid
+	}
+	// Force-check the second arg so its identifiers resolve (even though we
+	// only accept literals — we still want consistent error reporting).
+	c.checkExpr(e.Args[1])
+	sl, ok := e.Args[1].(*ast.StringLit)
+	if !ok || len(sl.Parts) != 1 {
+		c.errorf(e.Args[1].Pos(), "awk: expression must be a literal string with no interpolation")
+		return types.Invalid
+	}
+	if _, ok := sl.Parts[0].(*ast.StringChunk); !ok {
+		c.errorf(e.Args[1].Pos(), "awk: expression must be a literal string with no interpolation")
+		return types.Invalid
+	}
+	return &types.Array{Elem: types.Float}
+}
+
 // builtins returns the symbol set seeded into the global scope. These do not
 // reference any predeclared user-record types.
 
@@ -3485,6 +3564,9 @@ func builtins() []*Symbol {
 		mk("map", []types.Type{stringArr, str}, stringArr),
 		mk("filter", []types.Type{stringArr, str}, stringArr),
 		mk("reduce", []types.Type{stringArr, str, str}, str),
+		mk("fold", []types.Type{stringArr, str, str}, str),
+		mk("zip", []types.Type{stringArr, stringArr, str}, stringArr),
+		mk("awk", []types.Type{floatArr, str}, floatArr),
 
 		// Pandas-lite. Like map/filter/reduce, the signatures are
 		// placeholders; checkCountCall/checkUniqueCall/checkReadCsvCall/

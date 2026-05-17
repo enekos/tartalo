@@ -1,0 +1,42 @@
+// zip, fold, and the awk escape hatch.
+//
+// * zip is zipWith: pairs elements of two arrays and applies a function. Stops
+//   at min(|xs|, |ys|). v1 has no tuple type, so the function must produce a
+//   primitive value.
+// * fold is an alias of reduce — same signature, same semantics.
+// * awk is an escape hatch for numeric work on float[]/number[]. The second
+//   argument MUST be a string literal so the compiler can embed it verbatim
+//   into the generated awk program; inside the expression, `x` is the current
+//   element.
+
+func add(a: number, b: number): number {
+  return a + b
+}
+
+func sum(xs: number[]): number {
+  return fold(xs, 0, add)
+}
+
+func main(): void {
+  let xs: number[] = [1, 2, 3, 4]
+  let ys: number[] = [10, 20, 30, 40]
+
+  // zip-with-add → pointwise sums.
+  let sums: number[] = zip(xs, ys, add)
+  echo("zip(xs, ys, add) =")
+  for s in sums {
+    echo("  " + str(s))
+  }
+
+  // fold to total via |>.
+  echo("total = " + str(sum(sums)))
+
+  // awk over a float[]: vectorised numeric work, lowered to a single awk
+  // process (no per-element sh fork).
+  let zs: float[] = [1.0, 4.0, 9.0, 16.0]
+  let roots: float[] = awk(awk(zs, "sqrt(x)"), "x + 1")
+  echo("sqrt(zs) + 1 =")
+  for r in roots {
+    echo("  " + str(r))
+  }
+}

@@ -42,6 +42,14 @@ where keys are primitive (`string` / `number` / `bool`) and values are
 non-optional primitives. See [`SPEC.md`](SPEC.md#maps) for the rules and
 v0 limits.
 
+Array work is covered by a small higher-order set — `map`, `filter`,
+`reduce` (alias `fold`), `zip` — that takes Tartalo functions (or
+lambdas) and composes naturally with the `|>` pipeline operator:
+`xs |> filter(even) |> map(square) |> fold(0, add)`. For numeric work
+that benefits from staying inside a single awk process, the `awk(xs,
+"<expr>")` escape hatch runs an awk expression against each element of
+a `float[]` or `number[]` and returns the result as `float[]`.
+
 Concurrency comes in two flavours: `parallel { task { ... } }` for
 structured fork-join, and `spawn fn(args)` + typed `chan[T]` mailboxes
 for long-lived workers that communicate by message passing. Both lower

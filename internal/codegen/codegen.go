@@ -3713,6 +3713,60 @@ func (g *Generator) compileReduce(args []exprValue, prologue []string) exprValue
 	return exprValue{prologue: prologue, value: "${" + acc + "}", form: formStr}
 }
 
+// compileZip lowers `zip(xs, ys, f)` — zipWith form, since v1 has no tuples.
+// Iterates over min(|xs|,|ys|) pairs and accumulates f(x,y) into a newline-
+// separated array. We feed xs as the loop's stdin and ys on file descriptor
+// 3, both via heredocs, so element bytes are byte-faithful (no awk -v escape
+// processing).
+func (g *Generator) compileZip(args []exprValue, prologue []string) exprValue {
+	a := g.tmp("zip_a")
+	b := g.tmp("zip_b")
+	fn := g.tmp("zip_f")
+	out := g.tmp("zip_o")
+	first := g.tmp("zip_i")
+	prologue = append(prologue, fmt.Sprintf("%s=%s", a, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", b, args[1].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf("%s=%s", fn, args[2].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=""`, out))
+	prologue = append(prologue, fmt.Sprintf(`%s=1`, first))
+	prologue = append(prologue, fmt.Sprintf(`if [ -n "$%s" ] && [ -n "$%s" ]; then`, a, b))
+	loop := fmt.Sprintf(
+		"  while IFS= read -r __tt_x; do\n"+
+			"    IFS= read -r __tt_y <&3 || break\n"+
+			`    "$%s" "$__tt_x" "$__tt_y"`+"\n"+
+			`    if [ "$%s" = 1 ]; then %s="$__ret"; %s=0; else %s=$(printf '%%s\n%%s' "$%s" "$__ret"); fi`+"\n"+
+			"  done 3<<__TT_ZIP_B__ <<__TT_ZIP_A__\n"+
+			"$%s\n__TT_ZIP_B__\n"+
+			"$%s\n__TT_ZIP_A__",
+		fn, first, out, first, out, out, b, a)
+	prologue = append(prologue, loop)
+	prologue = append(prologue, `fi`)
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
+// compileAwk lowers `awk(xs, "<expr>")` — the awk escape hatch for numeric
+// work on float[] (or number[]) arrays. The expression is required to be a
+// string literal by the checker, so it can be embedded directly into the
+// generated awk program. Inside the expression, `x` is the current element
+// (already coerced to a number via `+0`). The result is float[].
+func (g *Generator) compileAwk(args []exprValue, prologue []string, call *ast.CallExpr) exprValue {
+	in := g.tmp("awk_in")
+	out := g.tmp("awk_o")
+	// The checker has already enforced shape; pull out the raw literal text.
+	var expr string
+	if sl, ok := call.Args[1].(*ast.StringLit); ok && len(sl.Parts) == 1 {
+		if sc, ok := sl.Parts[0].(*ast.StringChunk); ok {
+			expr = sc.Value
+		}
+	}
+	prologue = append(prologue, fmt.Sprintf("%s=%s", in, args[0].assignmentRHS()))
+	prologue = append(prologue, fmt.Sprintf(`%s=""`, out))
+	prologue = append(prologue, fmt.Sprintf(
+		`if [ -n "$%s" ]; then %s=$(printf '%%s\n' "$%s" | awk '{ x = $1 + 0; print (%s) }'); fi`,
+		in, out, in, escForSingleQuoted(expr)))
+	return exprValue{prologue: prologue, value: "${" + out + "}", form: formStr}
+}
+
 // compileIntOf truncates a float to an int (toward zero).
 func (g *Generator) compileIntOf(args []exprValue, prologue []string) exprValue {
 	t := g.tmp("intof")
@@ -4455,7 +4509,7 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 	}
 
 	if sym.IsBuiltin {
-		return g.compileBuiltinCall(sym, argVals, argTypes, prologue, isStmt, call.LParenPos)
+		return g.compileBuiltinCall(sym, argVals, argTypes, prologue, isStmt, call.LParenPos, call)
 	}
 
 	// User-defined function or function-typed variable. The callee word is
@@ -4624,7 +4678,7 @@ func (g *Generator) compileCall(call *ast.CallExpr, isStmt bool) exprValue {
 	}
 }
 
-func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, argTypes []types.Type, prologue []string, isStmt bool, callPos token.Pos) exprValue {
+func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, argTypes []types.Type, prologue []string, isStmt bool, callPos token.Pos, call *ast.CallExpr) exprValue {
 	switch sym.Name {
 	case "echo":
 		prologue = append(prologue, "printf '%s\\n' "+shQuoteDouble(args[0].shString()))
@@ -4878,8 +4932,12 @@ func (g *Generator) compileBuiltinCall(sym *checker.Symbol, args []exprValue, ar
 		return g.compileMap(args, prologue)
 	case "filter":
 		return g.compileFilter(args, prologue)
-	case "reduce":
+	case "reduce", "fold":
 		return g.compileReduce(args, prologue)
+	case "zip":
+		return g.compileZip(args, prologue)
+	case "awk":
+		return g.compileAwk(args, prologue, call)
 
 	// --- float helpers ---
 	case "floatOf":

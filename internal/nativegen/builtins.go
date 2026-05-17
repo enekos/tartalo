@@ -744,7 +744,7 @@ func (g *Generator) compileBuiltin(sym *checker.Symbol, e *ast.CallExpr) string 
 	case "filter":
 		g.usesRuntimeHigherOrder = true
 		return "_tt_filter(" + args[0] + ", " + args[1] + ")"
-	case "reduce":
+	case "reduce", "fold":
 		g.usesRuntimeHigherOrder = true
 		// Tartalo: reduce(arr, init, fn). The init's type is the accumulator
 		// type; fn must take (acc, elem) -> acc. Coerce init to match the

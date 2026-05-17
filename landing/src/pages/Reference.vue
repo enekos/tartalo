@@ -906,6 +906,9 @@ const builtins = [
       { sig: "map(arr: T[], f: func(T): U): U[]" },
       { sig: "filter(arr: T[], pred: func(T): bool): T[]" },
       { sig: "reduce(arr: T[], init: U, f: func(U, T): U): U" },
+      { sig: "fold(arr: T[], init: U, f: func(U, T): U): U", desc: "alias of <code>reduce</code>" },
+      { sig: "zip(xs: T[], ys: U[], f: func(T, U): V): V[]", desc: "zipWith form (no tuples in v1); stops at <code>min(|xs|, |ys|)</code>" },
+      { sig: 'awk(xs: float[] | number[], expr: "<literal>"): float[]', desc: "escape hatch: embed an awk expression verbatim; <code>x</code> is the current element. The expression argument must be a string literal — it is enforced at the type-check stage so runtime-built code cannot reach awk. Use it for awk-only functions (e.g. <code>sqrt</code>) or to fuse a chain of per-element ops into one awk process. Not supported on <code>--target=native</code>." },
     ],
   },
   {

@@ -975,6 +975,17 @@ in v1.
 - `map(arr: T[], f: func(T): U): U[]`
 - `filter(arr: T[], pred: func(T): bool): T[]`
 - `reduce(arr: T[], init: U, f: func(U, T): U): U`
+- `fold(arr: T[], init: U, f: func(U, T): U): U` — alias of `reduce`
+- `zip(xs: T[], ys: U[], f: func(T, U): V): V[]` — zipWith form (v1 has no
+  tuple type). Stops at `min(|xs|, |ys|)`.
+- `awk(xs: float[] | number[], expr: <string literal>): float[]` — escape
+  hatch for vectorised numeric work. The expression is embedded verbatim
+  into a single awk process and `x` is the current element; the literal
+  requirement is enforced by the checker so the expression cannot be
+  built at runtime. Useful for awk-only functions like `sqrt`, or for
+  fusing a chain of per-element ops into one awk invocation. On the
+  `--target=native` backend, `awk` is not supported (calls panic at
+  runtime); use `map` with a Tartalo function instead.
 
 These are typed by hand in the checker (no generics yet). The function
 argument is a reference to a top-level user-declared function — pass the
@@ -986,6 +997,15 @@ reference. Functions are values — you can store them in variables with type
 func square(n: number): number { return n * n }
 let f: func(number): number = square
 echo(str(f(7)))
+```
+
+Combined with the `|>` pipeline operator (see [Pipelines](#pipelines)) these
+read top-to-bottom:
+
+```tartalo
+let totals: number[] = zip(prices, qtys, mul)
+let grand: number = totals |> fold(0, add)
+let roots: float[] = xs |> awk("sqrt(x)")
 ```
 
 ### Generic functions
