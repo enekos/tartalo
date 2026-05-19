@@ -47,8 +47,9 @@ func (g *Generator) emitTestRunnerCall(entry *loader.Module) {
 		return
 	}
 	type info struct {
-		idx  int
-		name string
+		idx   int
+		name  string
+		xfail bool
 	}
 	var tests []info
 	for _, d := range entry.File.Decls {
@@ -56,7 +57,11 @@ func (g *Generator) emitTestRunnerCall(entry *loader.Module) {
 		if !ok {
 			continue
 		}
-		tests = append(tests, info{idx: len(tests) + 1, name: td.Name})
+		tests = append(tests, info{
+			idx:   len(tests) + 1,
+			name:  td.Name,
+			xfail: ast.IsXfailTestName(td.Name),
+		})
 	}
 	suite := entry.File.Path
 	if suite == "" {
@@ -72,7 +77,11 @@ func (g *Generator) emitTestRunnerCall(entry *loader.Module) {
 		}
 		b.WriteString("{name: ")
 		b.WriteString(strconv.Quote(t.name))
-		b.WriteString(", fn: _tt_test_" + itoa(t.idx) + "}")
+		b.WriteString(", fn: _tt_test_" + itoa(t.idx))
+		if t.xfail {
+			b.WriteString(", xfail: true")
+		}
+		b.WriteString("}")
 	}
 	b.WriteString("})")
 	g.writeLine(b.String())

@@ -87,6 +87,10 @@ func run(args []string) error {
 		return cmdRun(rest)
 	case "check":
 		return cmdCheck(rest)
+	case "explain":
+		return cmdExplain(rest)
+	case "doctor":
+		return cmdDoctor(rest)
 	case "test":
 		return cmdTest(rest)
 	case "eval":
@@ -112,7 +116,9 @@ func printUsage(w io.Writer) {
   tartalo run   [--target=sh|native] [--no-verify] [--no-trace] <file.tt> [-- args...]
   tartalo test  [--target=sh|native] [--no-verify] <file.tt>   # run all `+"`test \"...\" { ... }`"+` declarations
   tartalo eval  <file-or-dir>                                # run all `+"`eval \"...\" { ... }`"+` declarations (native target)
-  tartalo check <file.tt>             # type-check without emitting sh
+  tartalo check [--json] <file.tt>...   # type-check; --json emits a structured diagnostics packet
+  tartalo explain <code>                # print the long-form explanation of a diagnostic code
+  tartalo doctor [--json]               # audit host tools tartalo depends on
   tartalo fmt   [-l|-d|-w] <file.tt>...   # format source (default: rewrite in place)
   tartalo bench <file.tt> [-n N] [--no-run] [--no-verify]   # time compile phases (and run) over N iterations
   tartalo lsp                             # Language Server: diagnostics, hover, definition, symbols, refs, rename, completion
@@ -481,15 +487,30 @@ func cmdBuild(args []string) error {
 }
 
 func cmdCheck(args []string) error {
-	if len(args) == 0 {
+	var (
+		jsonOut bool
+		inputs  []string
+	)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			jsonOut = true
+		case a == "-h" || a == "--help":
+			fmt.Println("usage: tartalo check [--json] <file.tt>...")
+			return nil
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("check: unknown flag %q", a)
+		default:
+			inputs = append(inputs, a)
+		}
+	}
+	if len(inputs) == 0 {
 		return fmt.Errorf("check: expected at least one input file")
 	}
 	var combined []error
 	combinedSources := map[string]string{}
-	for _, in := range args {
-		if strings.HasPrefix(in, "-") {
-			return fmt.Errorf("check: unknown flag %q", in)
-		}
+	for _, in := range inputs {
 		if _, _, err := frontEnd(in); err != nil {
 			var ce *compileErrors
 			if errors.As(err, &ce) {
@@ -502,8 +523,75 @@ func cmdCheck(args []string) error {
 			}
 		}
 	}
+	if jsonOut {
+		diags := diag.FromErrors(combined)
+		if err := diag.EncodePacket(os.Stdout, diags); err != nil {
+			return err
+		}
+		if len(diags) > 0 {
+			os.Exit(1)
+		}
+		return nil
+	}
 	if len(combined) > 0 {
 		return &compileErrors{errs: combined, sources: combinedSources}
+	}
+	return nil
+}
+
+// cmdExplain implements `tartalo explain <code>`. The bundled markdown for
+// each stable diagnostic code lives under internal/diag/explain/. With
+// `--list` the command prints a table of every documented code instead.
+func cmdExplain(args []string) error {
+	if len(args) == 0 {
+		fmt.Println(diag.FormatExplainList())
+		fmt.Println("usage: tartalo explain <code>   (e.g. tartalo explain TT-NAM001)")
+		return nil
+	}
+	switch args[0] {
+	case "-h", "--help":
+		fmt.Println("usage: tartalo explain <code>")
+		fmt.Println("       tartalo explain --list")
+		return nil
+	case "--list":
+		fmt.Print(diag.FormatExplainList())
+		return nil
+	}
+	code := strings.ToUpper(strings.TrimSpace(args[0]))
+	body, ok := diag.Explain(code)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "tartalo: no explanation bundled for %q\n", code)
+		fmt.Fprintln(os.Stderr, "Run `tartalo explain --list` to see every documented code.")
+		os.Exit(1)
+	}
+	fmt.Println(body)
+	return nil
+}
+
+// cmdDoctor implements `tartalo explain`'s companion: a PATH audit for the
+// host tools tartalo's emitted scripts and the native target depend on.
+// Output is human-readable by default; pass --json for a structured shape.
+func cmdDoctor(args []string) error {
+	var jsonOut bool
+	for _, a := range args {
+		switch a {
+		case "--json":
+			jsonOut = true
+		case "-h", "--help":
+			fmt.Println("usage: tartalo doctor [--json]")
+			return nil
+		default:
+			return fmt.Errorf("doctor: unknown flag %q", a)
+		}
+	}
+	report := buildDoctorReport()
+	if jsonOut {
+		enc := newJSONEncoder(os.Stdout)
+		return enc.Encode(report)
+	}
+	renderDoctorReport(os.Stdout, report)
+	if !report.Ok {
+		os.Exit(1)
 	}
 	return nil
 }

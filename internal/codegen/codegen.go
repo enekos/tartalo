@@ -1009,8 +1009,9 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 	}
 	// Collect tests with their display names.
 	type testRef struct {
-		idx  int
-		name string
+		idx   int
+		name  string
+		xfail bool
 	}
 	var tests []testRef
 	idx := 0
@@ -1020,7 +1021,11 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 			continue
 		}
 		idx++
-		tests = append(tests, testRef{idx: idx, name: td.Name})
+		tests = append(tests, testRef{
+			idx:   idx,
+			name:  td.Name,
+			xfail: ast.IsXfailTestName(td.Name),
+		})
 	}
 
 	g.writeLine("")
@@ -1028,6 +1033,8 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 		`__tt_passed=0`,
 		`__tt_failed=0`,
 		`__tt_skipped=0`,
+		`__tt_xfailed=0`,
+		`__tt_xpassed=0`,
 		`__tt_total=0`,
 		`__tt_c_pass=""`,
 		`__tt_c_fail=""`,
@@ -1044,9 +1051,14 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 		`  __tt_c_off=$(printf '\033[0m')`,
 		`fi`,
 		``,
+		`# __tt_run_test NAME FN [xfail]`,
+		`# When the third argument is the literal "xfail", the verdict is inverted:`,
+		`# an actual failure is recorded as expected-fail (no error), and an actual`,
+		`# pass becomes "unexpected pass" which fails the suite.`,
 		`__tt_run_test() {`,
 		`  __tt_name=$1`,
 		`  __tt_fn=$2`,
+		`  __tt_xfail=${3:-}`,
 		`  __tt_total=$((__tt_total + 1))`,
 		`  __tt_msg_file=$(mktemp 2>/dev/null || printf '/tmp/tt_msg_%s_%s' "$$" "$__tt_total")`,
 		`  __tt_skip_file=$(mktemp 2>/dev/null || printf '/tmp/tt_skip_%s_%s' "$$" "$__tt_total")`,
@@ -1060,6 +1072,17 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 		`  if [ -n "$__tt_skip" ]; then`,
 		`    __tt_skipped=$((__tt_skipped + 1))`,
 		`    printf '  %s-%s %s %s(skipped: %s)%s\n' "$__tt_c_skip" "$__tt_c_off" "$__tt_name" "$__tt_c_dim" "$__tt_skip" "$__tt_c_off"`,
+		`    return 0`,
+		`  fi`,
+		`  if [ "$__tt_xfail" = "xfail" ]; then`,
+		`    if [ "$__tt_status" -ne 0 ] || [ -n "$__tt_msg" ]; then`,
+		`      __tt_xfailed=$((__tt_xfailed + 1))`,
+		`      printf '  %sx%s %s %s(expected fail)%s\n' "$__tt_c_skip" "$__tt_c_off" "$__tt_name" "$__tt_c_dim" "$__tt_c_off"`,
+		`      return 0`,
+		`    fi`,
+		`    __tt_xpassed=$((__tt_xpassed + 1))`,
+		`    __tt_failed=$((__tt_failed + 1))`,
+		`    printf '  %s\342\234\227%s %s%s%s %s(unexpected pass: xfail test passed)%s\n' "$__tt_c_fail" "$__tt_c_off" "$__tt_c_bold" "$__tt_name" "$__tt_c_off" "$__tt_c_dim" "$__tt_c_off"`,
 		`    return 0`,
 		`  fi`,
 		`  if [ "$__tt_status" -eq 0 ] && [ -z "$__tt_msg" ]; then`,
@@ -1086,8 +1109,13 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 		len(tests), escForSingleQuoted(suite)))
 	g.writeLine("")
 	for _, t := range tests {
-		g.writeLine(fmt.Sprintf(`__tt_run_test '%s' __tt_test_%d`,
-			escForSingleQuoted(t.name), t.idx))
+		if t.xfail {
+			g.writeLine(fmt.Sprintf(`__tt_run_test '%s' __tt_test_%d xfail`,
+				escForSingleQuoted(t.name), t.idx))
+		} else {
+			g.writeLine(fmt.Sprintf(`__tt_run_test '%s' __tt_test_%d`,
+				escForSingleQuoted(t.name), t.idx))
+		}
 	}
 	g.writeLine("")
 	g.writeLines([]string{
@@ -1099,6 +1127,12 @@ func (g *Generator) emitTestHarness(entry *loader.Module) {
 		`fi`,
 		`if [ "$__tt_skipped" -gt 0 ]; then`,
 		`  printf ', %s%d skipped%s' "$__tt_c_skip" "$__tt_skipped" "$__tt_c_off"`,
+		`fi`,
+		`if [ "$__tt_xfailed" -gt 0 ]; then`,
+		`  printf ', %s%d xfail%s' "$__tt_c_skip" "$__tt_xfailed" "$__tt_c_off"`,
+		`fi`,
+		`if [ "$__tt_xpassed" -gt 0 ]; then`,
+		`  printf ', %s%d unexpected pass%s' "$__tt_c_fail" "$__tt_xpassed" "$__tt_c_off"`,
 		`fi`,
 		`printf ' (%d total)\n' "$__tt_total"`,
 		`if [ "$__tt_failed" -gt 0 ]; then exit 1; fi`,

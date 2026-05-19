@@ -1121,6 +1121,34 @@ directory and `tartalo test ./` walks it, runs every `.tt` file containing
 at least one `test` declaration, and aggregates per-file results. Hidden
 directories and `node_modules` are skipped.
 
+#### Expected-fail tests (`xfail`)
+
+A test whose name starts with one of the markers below is *expected to
+fail*. The runner inverts its verdict:
+
+- the test failing at runtime is recorded as `xfail` and counted as a
+  success — it does not contribute to the failed count
+- the test passing unexpectedly is reported as "unexpected pass" and fails
+  the suite
+
+```tartalo
+test "xfail: arithmetic is still broken" {
+  assertEq(1 + 1, 3)        // expected to fail; suite stays green
+}
+
+test "expected fail: known issue #42" {
+  fail("not yet fixed")
+}
+
+test "[xfail] also recognised" {
+  check(false)
+}
+```
+
+The marker is recognised case-insensitively, with optional leading
+whitespace. Both the sh and native backends report the same xfail and
+unexpected-pass counts in the summary line.
+
 #### Assertions
 
 These builtins may only be called inside a `test "..." { ... }` block.
@@ -1286,6 +1314,94 @@ Grouping: `( ... )`
 Postfix cast: `expr as Type` (record-to-record only — see "Type casts")
 Optional unwrap: `expr ?? default`, `expr!`, `expr?` (Result short-circuit)
 Record spread: `Foo{...source, field: value}` (see "Record spread")
+
+## Diagnostics
+
+Every error reported by `tartalo check` carries a stable identifier of the
+form `TT-XYZNNN`. Codes do not change between releases; the human-readable
+message can. Use the code when looking something up programmatically.
+
+```text
+error[TT-NAM001]: undefined name "user"
+  --> foo.tt:3:8
+   |
+ 3 |     echo(user)
+   |          ^^^^
+```
+
+`tartalo check --json` emits a structured diagnostics packet for editors,
+agents, and CI:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "diagnostics": [
+    {
+      "code": "TT-NAM001",
+      "severity": "error",
+      "message": "undefined name \"user\"",
+      "path": "foo.tt",
+      "line": 3,
+      "column": 8,
+      "explain": "tartalo explain TT-NAM001"
+    }
+  ]
+}
+```
+
+Each record carries the stable `code`, the human message, the source span,
+and an `explain` field whose value is the literal command an agent can run
+to load the long-form explanation. The packet's `ok` field is `true` only
+when no diagnostics were produced; the process exits non-zero on errors.
+
+`tartalo explain <code>` prints a markdown explanation of a code:
+
+```sh
+tartalo explain TT-NAM001
+tartalo explain --list           # every documented code
+```
+
+Code prefixes:
+
+| Prefix     | Category                                             |
+|------------|------------------------------------------------------|
+| `TT-LEX`   | lexer                                                |
+| `TT-PAR`   | parser                                               |
+| `TT-IMP`   | imports, cycles, no-export                           |
+| `TT-NAM`   | undeclared / duplicate / redeclaration               |
+| `TT-TYP`   | type mismatch, bad type expression                   |
+| `TT-OPT`   | optionals and `null`                                 |
+| `TT-FLD`   | record fields                                        |
+| `TT-VAR`   | sum / variants                                       |
+| `TT-MAP`   | map operations                                       |
+| `TT-CALL`  | call arity / argument mismatch                       |
+| `TT-CTL`   | break / continue / return / defer placement          |
+| `TT-MUT`   | assignment / mutability                              |
+| `TT-RNG`   | for-range / iterables                                |
+| `TT-GEN`   | generic functions / type parameters                  |
+| `TT-RES`   | Result `?` operator                                  |
+| `TT-CON`   | concurrency (parallel / task / spawn / chan)         |
+| `TT-CST`   | `as` cast                                            |
+| `TT-INF`   | type-inference failure                               |
+| `TT-SPRD`  | record spread                                        |
+| `TT-MCK`   | test-only API used outside a test                    |
+| `TT-UNS`   | intentional v0 limitations                           |
+
+## Host readiness
+
+`tartalo doctor` audits PATH for the host tools the emitted scripts and the
+native pipeline depend on:
+
+```sh
+tartalo doctor          # human-readable
+tartalo doctor --json   # structured shape for CI
+```
+
+The checked tools are `sh`, `awk`, `jq`, `curl`, `shellcheck`,
+`timeout`/`gtimeout`, and `go`. Required tools (`sh`, `awk`) cause a
+non-zero exit when missing; optional tools are reported with an install
+hint but do not fail the audit.
 
 ## Compilation model
 

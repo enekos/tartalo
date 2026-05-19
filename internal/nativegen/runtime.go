@@ -1567,8 +1567,9 @@ func _tt_skip(reason string) {
 }
 
 type _tt_testCase struct {
-	name string
-	fn   func()
+	name  string
+	fn    func()
+	xfail bool
 }
 
 func _tt_colors() (pass, fail, skip, dim, bold, off string) {
@@ -1585,6 +1586,7 @@ func _tt_runTests(suite string, tests []_tt_testCase) {
 	cPass, cFail, cSkip, cDim, cBold, cOff := _tt_colors()
 	fmt.Printf("%srunning %d test(s) in %s%s\n\n", cDim, len(tests), suite, cOff)
 	passed, failed, skipped := 0, 0, 0
+	xfailed, xpassed := 0, 0
 	for _, tc := range tests {
 		var skipReason string
 		var failMsg string
@@ -1609,6 +1611,18 @@ func _tt_runTests(suite string, tests []_tt_testCase) {
 			fmt.Printf("  %s-%s %s %s(skipped: %s)%s\n", cSkip, cOff, tc.name, cDim, skipReason, cOff)
 			continue
 		}
+		if tc.xfail {
+			if failMsg != "" {
+				xfailed++
+				fmt.Printf("  %sx%s %s %s(expected fail)%s\n", cSkip, cOff, tc.name, cDim, cOff)
+				continue
+			}
+			xpassed++
+			failed++
+			fmt.Printf("  %s✗%s %s%s%s %s(unexpected pass: xfail test passed)%s\n",
+				cFail, cOff, cBold, tc.name, cOff, cDim, cOff)
+			continue
+		}
 		if failMsg == "" {
 			passed++
 			fmt.Printf("  %s✓%s %s\n", cPass, cOff, tc.name)
@@ -1628,6 +1642,12 @@ func _tt_runTests(suite string, tests []_tt_testCase) {
 	}
 	if skipped > 0 {
 		fmt.Printf(", %s%d skipped%s", cSkip, skipped, cOff)
+	}
+	if xfailed > 0 {
+		fmt.Printf(", %s%d xfail%s", cSkip, xfailed, cOff)
+	}
+	if xpassed > 0 {
+		fmt.Printf(", %s%d unexpected pass%s", cFail, xpassed, cOff)
 	}
 	fmt.Printf(" (%d total)\n", len(tests))
 	if failed > 0 {
